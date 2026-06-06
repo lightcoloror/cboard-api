@@ -7,6 +7,8 @@ const SETTINGS_SCHEMA_DEFINITION = {
   display: {},
   scanning: {},
   navigation: {},
+  communicationSupport: {},
+  tuyujia: {},
   user: {
     type: Schema.Types.ObjectId,
     ref: 'User',
