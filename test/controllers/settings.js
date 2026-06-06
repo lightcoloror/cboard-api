@@ -45,6 +45,39 @@ describe('Settings API calls', function () {
       );
     });
 
+    it('it should persist communication support fields and keep legacy compatibility.', async function () {
+      const communicationSupport = {
+        savedPhrases: [
+          {
+            sentence: 'I want water',
+            output: [{ label: 'I' }, { label: 'want' }, { label: 'water' }]
+          }
+        ],
+        history: [
+          {
+            direction: 'receive',
+            sentence: 'I want water',
+            labels: ['I', 'want', 'water']
+          }
+        ]
+      };
+
+      const res = await request(server)
+        .post('/settings')
+        .send({
+          ...helper.settingsData,
+          communicationSupport,
+          tuyujia: communicationSupport
+        })
+        .set('Authorization', `Bearer ${user.token}`)
+        .set('Accept', 'application/json')
+        .expect('Content-Type', /json/)
+        .expect(200);
+
+      res.body.communicationSupport.should.to.deep.equal(communicationSupport);
+      res.body.tuyujia.should.to.deep.equal(communicationSupport);
+    });
+
     it('it should NOT creates or updates a user s settings object in database without auth.', async function () {
       const res = await request(server)
         .post('/settings')
@@ -83,8 +116,24 @@ describe('Settings API calls', function () {
           'display',
           'scanning',
           'navigation',
+          'communicationSupport',
+          'tuyujia',
           'user'
         );
+    });
+
+    it('it should return communication support fields after persistence.', async function () {
+      const res = await request(server)
+        .get('/settings')
+        .set('Authorization', `Bearer ${user.token}`)
+        .set('Accept', 'application/json')
+        .expect('Content-Type', /json/)
+        .expect(200);
+
+      res.body.communicationSupport.should.be.an('object');
+      res.body.tuyujia.should.be.an('object');
+      res.body.communicationSupport.savedPhrases.should.be.an('array');
+      res.body.tuyujia.history.should.be.an('array');
     });
 
     it('it should NOT Returns settings for current user without auth.', async function () {
