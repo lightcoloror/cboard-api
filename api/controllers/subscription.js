@@ -3,6 +3,12 @@ const { paginatedResponse } = require('../helpers/response');
 const { gapiAuth } = require('../helpers/auth');
 const { getORQuery } = require('../helpers/query');
 const PayPal = require('../helpers/paypal');
+const {
+  listAllGooglePlaySubscriptions
+} = require('../helpers/googlePlaySubscriptionCatalog');
+const {
+  reconcileStaleLocalSubscriptions
+} = require('../helpers/subscriptionCatalogReconciliation');
 const paypal = new PayPal({});
 
 const { google } = require('googleapis');
@@ -117,7 +123,7 @@ function deleteSubscription(req, res) {
 async function syncSubscriptions(req, res) {
   console.log('Synchcronizing subscriptions...');
   await gapiAuth();
-  const params = { packageName: 'com.unicef.cboard' };
+  const packageName = 'com.unicef.cboard';
   let paypalPlans = [];
   // get PayPal plans 
   try {
@@ -127,8 +133,10 @@ async function syncSubscriptions(req, res) {
   }
   try {
     // get subscriptions from Google API
-    const remoteData = await playConsole.monetization.subscriptions.list(params);
-    const remoteSubscrs = remoteData.data.subscriptions;
+    const remoteSubscrs = await listAllGooglePlaySubscriptions({
+      client: playConsole,
+      packageName
+    });
     
     // loop remote subscriptions
     for (const subscription of remoteSubscrs) {
@@ -144,7 +152,7 @@ async function syncSubscriptions(req, res) {
         }
 
         const result = await newSubscription.save();
-        if (!subscr) {
+        if (!userSubscription) {
           console.log("New subscription added: " + result.name);
         } else {
           console.log("Subscription updated: " + result.name);
@@ -154,36 +162,24 @@ async function syncSubscriptions(req, res) {
       }
     }
     
-    // get subscriptions from database 
+    const reconciliation = await reconcileStaleLocalSubscriptions({
+      Subscription,
+      remoteSubscriptions: remoteSubscrs
+    });
+    reconciliation.deleted.forEach(deletedSubscr => {
+      console.log('Subscription deleted: ' + deletedSubscr.name);
+    });
+
     const { search = '' } = req.query;
     const searchFields = ['name'];
-    const query = search && search.length ? getORQuery(searchFields, search, true) : {};
-    const localSubscrs = await paginatedResponse(Subscription, { query }, req.query);
-    // check the local subscription against remote 
-    for (const localSubscr of localSubscrs.data) {
-      try {
-        const id = localSubscr.subscriptionId;
-        let found = false;
-        
-        for (const remoteSubscr of remoteSubscrs) {
-          const mappedRemoteSubscr = mapRemoteSubscr(remoteSubscr, paypalPlans.plans);
-          if (id == mappedRemoteSubscr.subscriptionId) {
-            found = true;
-            break;
-          }
-        }
-        
-        if (!found) {
-          const deletedSubscr = await Subscription.findOneAndDelete({ subscriptionId: id });
-          if (deletedSubscr) {
-            console.log("Subscription deleted: " + deletedSubscr.name);
-          }
-        }
-      } catch (err) {
-        console.error('Error processing local subscription:', err);
-      }
-    }
-
+    const query = search && search.length
+      ? getORQuery(searchFields, search, true)
+      : {};
+    const localSubscrs = await paginatedResponse(
+      Subscription,
+      { query },
+      req.query
+    );
     return res.status(200).json(localSubscrs);
   } catch (err) {
     console.log(err.message);

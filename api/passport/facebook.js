@@ -2,6 +2,10 @@ const passport = require('passport');
 const { Strategy: FacebookStrategy } = require('passport-facebook');
 const config = require('../../config');
 const UserController = require('../controllers/user');
+const {
+  hasRequiredStrategyConfig,
+  warnStrategyDisabled
+} = require('./strategyUtils');
 
 const FBStrategy = {
   clientID: process.env.FACEBOOK_APP_ID,
@@ -12,9 +16,23 @@ const FBStrategy = {
   graphAPIVersion: 'v19.0'
 };
 
-passport.use(new FacebookStrategy(FBStrategy, UserController.facebookLogin));
+const isFacebookStrategyEnabled = hasRequiredStrategyConfig([
+  FBStrategy.clientID,
+  FBStrategy.clientSecret,
+  FBStrategy.callbackURL
+]);
+
+if (isFacebookStrategyEnabled) {
+  passport.use(new FacebookStrategy(FBStrategy, UserController.facebookLogin));
+} else {
+  warnStrategyDisabled('facebook');
+}
 
 const configureFacebookStrategy = app => {
+  if (!isFacebookStrategyEnabled) {
+    return;
+  }
+
   app.get(
     '/login/facebook',
     passport.authenticate('facebook', {

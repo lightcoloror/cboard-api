@@ -1,0 +1,31 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+}
+
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 12MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	reverse_proxy api:10010 {
+		health_uri /health
+		health_interval 15s
+		health_timeout 3s
+		lb_try_duration 5s
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

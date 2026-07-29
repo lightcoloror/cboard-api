@@ -2,6 +2,10 @@ const passport = require('passport');
 const AppleStrategy = require('passport-apple');
 const config = require('../../config');
 const UserController = require('../controllers/user');
+const {
+  hasRequiredStrategyConfig,
+  warnStrategyDisabled
+} = require('./strategyUtils');
 
 const appleStrategyConfig = {
   APP_CLIENT_ID: process.env.APPLE_APP_CLIENT_ID || "mock_client_id",
@@ -14,39 +18,50 @@ const appleStrategyConfig = {
   USE_POP_UP: true
 };
 
-passport.use(
-  'apple-app',
-  new AppleStrategy(
-    {
-      clientID: appleStrategyConfig.APP_CLIENT_ID,
-      teamID: appleStrategyConfig.TEAM_ID,
-      callbackURL: appleStrategyConfig.REDIRECT_URI,
-      keyID: appleStrategyConfig.KEY_ID,
-      scope: appleStrategyConfig.SCOPE,
-      privateKeyLocation: appleStrategyConfig.PRIVATE_KEY_LOCATION,
-      passReqToCallback: true,
-      usePopup: appleStrategyConfig.USE_POP_UP
-    },
-    UserController.appleLogin
-  )
-);
+const isAppleStrategyEnabled = hasRequiredStrategyConfig([
+  process.env.APPLE_APP_CLIENT_ID,
+  appleStrategyConfig.TEAM_ID,
+  appleStrategyConfig.KEY_ID,
+  appleStrategyConfig.REDIRECT_URI
+]);
 
-passport.use(
-  'apple-web',
-  new AppleStrategy(
-    {
-      clientID: appleStrategyConfig.WEB_CLIENT_ID,
-      teamID: appleStrategyConfig.TEAM_ID,
-      callbackURL: appleStrategyConfig.REDIRECT_URI,
-      keyID: appleStrategyConfig.KEY_ID,
-      scope: appleStrategyConfig.SCOPE,
-      privateKeyLocation: appleStrategyConfig.PRIVATE_KEY_LOCATION,
-      passReqToCallback: true,
-      usePopup: appleStrategyConfig.USE_POP_UP
-    },
-    UserController.appleLogin
-  )
-);
+if (isAppleStrategyEnabled) {
+  passport.use(
+    'apple-app',
+    new AppleStrategy(
+      {
+        clientID: appleStrategyConfig.APP_CLIENT_ID,
+        teamID: appleStrategyConfig.TEAM_ID,
+        callbackURL: appleStrategyConfig.REDIRECT_URI,
+        keyID: appleStrategyConfig.KEY_ID,
+        scope: appleStrategyConfig.SCOPE,
+        privateKeyLocation: appleStrategyConfig.PRIVATE_KEY_LOCATION,
+        passReqToCallback: true,
+        usePopup: appleStrategyConfig.USE_POP_UP
+      },
+      UserController.appleLogin
+    )
+  );
+
+  passport.use(
+    'apple-web',
+    new AppleStrategy(
+      {
+        clientID: appleStrategyConfig.WEB_CLIENT_ID,
+        teamID: appleStrategyConfig.TEAM_ID,
+        callbackURL: appleStrategyConfig.REDIRECT_URI,
+        keyID: appleStrategyConfig.KEY_ID,
+        scope: appleStrategyConfig.SCOPE,
+        privateKeyLocation: appleStrategyConfig.PRIVATE_KEY_LOCATION,
+        passReqToCallback: true,
+        usePopup: appleStrategyConfig.USE_POP_UP
+      },
+      UserController.appleLogin
+    )
+  );
+} else {
+  warnStrategyDisabled('apple');
+}
 
 passport.serializeUser((user, done) => {
   done(null, user);
@@ -57,6 +72,10 @@ passport.deserializeUser((user, done) => {
 });
 
 const configureAppleStrategy = app => {
+  if (!isAppleStrategyEnabled) {
+    return;
+  }
+
   app.get('/login/apple-web', passport.authenticate('apple-web'));
 
   const passportAuthCallback = (err, user, info, req, res, next) => {

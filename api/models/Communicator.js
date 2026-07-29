@@ -25,6 +25,13 @@ const COMMUNICATOR_SCHEMA_DEFINITION = {
     required: true,
     trim: true
   },
+  clientCreationKey: {
+    type: String,
+    required: false,
+    trim: true,
+    immutable: true,
+    select: false
+  },
   description: {
     type: String,
     unique: false,
@@ -63,6 +70,17 @@ const COMMUNICATOR_SCHEMA_OPTIONS = {
 const communicatorSchema = new Schema(
   COMMUNICATOR_SCHEMA_DEFINITION,
   COMMUNICATOR_SCHEMA_OPTIONS
+);
+
+communicatorSchema.index(
+  { email: 1, clientCreationKey: 1 },
+  {
+    name: 'email_1_clientCreationKey_1',
+    unique: true,
+    partialFilterExpression: {
+      clientCreationKey: { $type: 'string' }
+    }
+  }
 );
 
 const validatePresenceOf = value => value && value.length;

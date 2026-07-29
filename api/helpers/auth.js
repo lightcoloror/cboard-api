@@ -4,7 +4,12 @@ const config = require('../../config');
 
 const { secret: jwtSecret, issuer } = config.jwt;
 
-const getTokenData = (token) => {
+const normalizeAuthVersion = value => {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+};
+
+const getTokenData = token => {
   let data = null;
 
   try {
@@ -49,11 +54,23 @@ const verifyToken = (req, token) => {
   return isValid;
 };
 
-const issueToken = ({ email, id }) => {
-  return jwt.sign({ email, id, issuer }, jwtSecret);
+const issueToken = ({ email, id, authVersion }) => {
+  return jwt.sign(
+    {
+      email,
+      id,
+      authVersion: normalizeAuthVersion(authVersion),
+      issuer
+    },
+    jwtSecret
+  );
 };
 
-const getAuthDataFromReq = (req) => {
+const isTokenCurrentForUser = (tokenData, user) =>
+  normalizeAuthVersion(tokenData && tokenData.authVersion) ===
+  normalizeAuthVersion(user && user.authVersion);
+
+const getAuthDataFromReq = req => {
   const reqToken = req.get('Authorization');
   const tokenString = reqToken.split(' ')[1];
   const decodedToken = getTokenData(tokenString);
@@ -61,11 +78,11 @@ const getAuthDataFromReq = (req) => {
   if (!reqToken || !decodedToken)
     return {
       requestedBy: null,
-      isAdmin: false,
+      isAdmin: false
     };
   return {
     requestedBy,
-    isAdmin: req.user.id == requestedBy && req.user.isAdmin,
+    isAdmin: req.user.id == requestedBy && req.user.isAdmin
   };
 };
 
@@ -79,16 +96,17 @@ async function gapiAuth() {
     const authClient = await auth.getClient();
     google.options({ auth: authClient });
   } catch (error) {
-    console.error('error during Google API auth', error)
+    console.error('error during Google API auth', error);
   }
 }
-
 
 module.exports = {
   getTokenData,
   authorizeRequest,
   verifyToken,
   issueToken,
+  isTokenCurrentForUser,
+  normalizeAuthVersion,
   getAuthDataFromReq,
   gapiAuth
 };

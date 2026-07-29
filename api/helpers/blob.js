@@ -1,22 +1,51 @@
 const uuidv1 = require('uuid/v1');
 const azure = require('azure-storage');
-const blobService = azure.createBlobService(
-  process.env.AZURE_STORAGE_CONNECTION_STRING
-);
+
+let blobService = null;
 
 module.exports = {
-  createBlockBlobFromText
+  createBlockBlobFromText,
+  deleteBlobIfExists,
+  getBlobToBuffer,
+  isBlobStorageConfigured
 };
 
-function createContainerIfNotExists(shareName) {
+function isBlobStorageConfigured() {
+  return Boolean(
+    String(process.env.AZURE_STORAGE_CONNECTION_STRING || '').trim()
+  );
+}
+
+function getBlobService() {
+  if (blobService) {
+    return blobService;
+  }
+
+  const connectionString = String(
+    process.env.AZURE_STORAGE_CONNECTION_STRING || ''
+  ).trim();
+  if (!isBlobStorageConfigured()) {
+    throw new Error('Azure Blob storage is not configured.');
+  }
+
+  blobService = azure.createBlobService(connectionString);
+  return blobService;
+}
+
+function createContainerIfNotExists(service, shareName, containerOptions = {}) {
   return new Promise((resolve, reject) => {
-    blobService.createContainerIfNotExists(shareName, function(error, result) {
+    const callback = function(error, result) {
       if (!error) {
         resolve(result);
       } else {
         reject(error);
       }
-    });
+    };
+    if (Object.keys(containerOptions).length) {
+      service.createContainerIfNotExists(shareName, containerOptions, callback);
+      return;
+    }
+    service.createContainerIfNotExists(shareName, callback);
   });
 }
 
@@ -25,9 +54,12 @@ async function createBlockBlobFromText(
   containerName,
   fileName,
   file,
-  prefix = ''
+  prefix = '',
+  contentSettings = {},
+  containerOptions = {}
 ) {
-  await createContainerIfNotExists(containerName);
+  const service = getBlobService();
+  await createContainerIfNotExists(service, containerName, containerOptions);
 
   const { buffer, mimetype } = file;
 
@@ -37,6 +69,12 @@ async function createBlockBlobFromText(
     options.contentSettings = {
       contentType: mimetype,
       cacheControl: `max-age=${cacheMaxAgeInSeconds}`
+    };
+  }
+  if (contentSettings && Object.keys(contentSettings).length) {
+    options.contentSettings = {
+      ...(options.contentSettings || {}),
+      ...contentSettings
     };
   }
 
@@ -49,7 +87,7 @@ async function createBlockBlobFromText(
     .trim()}`;
 
   return new Promise((resolve, reject) => {
-    blobService.createBlockBlobFromText(
+    service.createBlockBlobFromText(
       containerName,
       finalName,
       buffer,
@@ -60,8 +98,45 @@ async function createBlockBlobFromText(
           return;
         }
 
-        resolve([file, blobService.getUrl(file.container, file.name)]);
+        resolve([file, service.getUrl(file.container, file.name)]);
       }
     );
+  });
+}
+
+function getBlobToBuffer(containerName, blobName) {
+  const service = getBlobService();
+  const chunks = [];
+  const writable = new (require('stream').Writable)({
+    write(chunk, encoding, callback) {
+      chunks.push(Buffer.from(chunk));
+      callback();
+    }
+  });
+
+  return new Promise((resolve, reject) => {
+    service.getBlobToStream(containerName, blobName, writable, function(error) {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(Buffer.concat(chunks));
+    });
+  });
+}
+
+function deleteBlobIfExists(containerName, blobName) {
+  const service = getBlobService();
+  return new Promise((resolve, reject) => {
+    service.deleteBlobIfExists(containerName, blobName, function(
+      error,
+      result
+    ) {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(Boolean(result));
+    });
   });
 }

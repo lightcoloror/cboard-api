@@ -3,6 +3,15 @@ const Settings = require('../models/Settings');
 const Communicator = require('../models/Communicator');
 const Board = require('../models/Board');
 const Subscribers = require('../models/Subscribers');
+const CommunicationReceiverRecord = require('../models/CommunicationReceiverRecord');
+const CommunicationSavedPhrase = require('../models/CommunicationSavedPhrase');
+const CommunicationAiUsage = require('../models/CommunicationAiUsage');
+const {
+  deletePrivateLibraryForUser
+} = require('./communicationPrivateLibrary');
+const {
+  deletePrivateDeviceDataForUser
+} = require('./communicationPrivateDeviceData');
 
 const { getAuthDataFromReq } = require('../helpers/auth');
 
@@ -26,6 +35,20 @@ async function removeAccount(req, res) {
 
   const response = {};
   try {
+    response.deletedCommunicationPrivateLibrary = await deletePrivateLibraryForUser(
+      id
+    );
+    response.deletedCommunicationPrivateDeviceData = await deletePrivateDeviceDataForUser(
+      id
+    );
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      message: 'Error deleting private account archive backup'
+    });
+  }
+
+  try {
     const user = await User.findByIdAndRemove(id);
     response.user = user;
   } catch (error) {
@@ -42,6 +65,61 @@ async function removeAccount(req, res) {
     console.error(error);
     return res.status(500).json({
       message: 'Error deleting user setting'
+    });
+  }
+
+  try {
+    const deletedCommunicationReceiverRecords = await CommunicationReceiverRecord.deleteMany(
+      { user: id }
+    );
+    response.deletedCommunicationReceiverRecords =
+      deletedCommunicationReceiverRecords.deletedCount;
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      message: 'Error deleting confirmed receiver records'
+    });
+  }
+
+  try {
+    const deletedCommunicationSavedPhrases = await CommunicationSavedPhrase.deleteMany(
+      { user: id }
+    );
+    response.deletedCommunicationSavedPhrases =
+      deletedCommunicationSavedPhrases.deletedCount;
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      message: 'Error deleting communication saved phrases'
+    });
+  }
+
+  try {
+    const deletedCommunicationAiUsage = await CommunicationAiUsage.deleteMany({
+      user: id
+    });
+    response.deletedCommunicationAiUsage =
+      deletedCommunicationAiUsage.deletedCount;
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      message: 'Error deleting communication AI usage'
+    });
+  }
+
+  try {
+    response.deletedCommunicationAiTokenQuota =
+      req.communicationAiTokenQuotaService &&
+      typeof req.communicationAiTokenQuotaService.deleteUserQuota ===
+        'function'
+        ? await req.communicationAiTokenQuotaService.deleteUserQuota({
+            userId: id
+          })
+        : false;
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      message: 'Error deleting communication AI token quota'
     });
   }
 

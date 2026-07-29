@@ -35,28 +35,26 @@ const settingsSchema = new Schema(
   SETTINGS_SCHEMA_OPTIONS
 );
 
+settingsSchema.index({ user: 1 }, { name: 'user_1', unique: true });
+
 settingsSchema.statics = {
   getOrCreate: async function(user) {
-    let settings = null;
-    try {
-      settings = await Settings.findOne({ user: user.id }).exec();
-    } catch (e) {}
-
-    // No settings yet? We need to create them
-    if (!settings) {
-      settings = new Settings();
-      settings.user = user.id;
-
-      try {
-        settings = await settings.save().exec();
-      } catch (e) {}
+    if (!user || !user.id) {
+      throw new Error('A user id is required to load settings');
     }
 
-    if (settings) {
-      settings = settings.toJSON();
-    }
+    const settings = await this.findOneAndUpdate(
+      { user: user.id },
+      { $setOnInsert: { user: user.id } },
+      {
+        new: true,
+        runValidators: true,
+        setDefaultsOnInsert: true,
+        upsert: true
+      }
+    ).exec();
 
-    return settings;
+    return settings ? settings.toJSON() : null;
   }
 };
 

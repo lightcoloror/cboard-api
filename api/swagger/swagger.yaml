@@ -50,6 +50,15 @@ parameters:
     required: true
     schema:
       $ref: "#/definitions/Communicator" 
+  CommunicatorIdempotencyKey:
+    name: Idempotency-Key
+    in: header
+    description: Optional stable client-side communicator id used to safely replay create requests for the authenticated user
+    required: false
+    type: string
+    minLength: 1
+    maxLength: 64
+    pattern: '^[A-Za-z0-9_-]+$'
   LanguageParameter:
     in: query
     name: lang
@@ -67,6 +76,41 @@ parameters:
     in: formData
     type: file
     description: The files to upload.
+    required: true
+  CommunicationAacImportFile:
+    name: file
+    in: formData
+    type: file
+    description: One Snap .sps/.spb or TouchChat .ce AAC file, at most 20 MiB; the API converts it transiently and does not persist it.
+    required: true
+  CommunicationAacImportFormat:
+    name: format
+    in: query
+    type: string
+    enum:
+      - snap
+      - touchchat
+    description: Source AAC file format.
+    required: true
+  CommunicationAacImportLocale:
+    name: locale
+    in: query
+    type: string
+    default: zh-CN
+    pattern: '^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$'
+    description: Fallback locale used when the imported page has no locale.
+    required: false
+  PrivatePictureLibraryArchive:
+    name: file
+    in: formData
+    type: file
+    description: A client-side encrypted PicInterpreter private picture-library envelope. The server stores ciphertext only and cannot recover the password or plaintext pictures.
+    required: true
+  PrivateDeviceDataArchive:
+    name: file
+    in: formData
+    type: file
+    description: A client-side encrypted PicInterpreter complete device-data envelope. The server stores ciphertext only and cannot recover the password or plaintext.
     required: true
   OffsetParameter:
     in: query
@@ -89,7 +133,7 @@ parameters:
   Settings:
     name: settings
     in: body
-    description: Settings data for creating a new custom settings
+    description: Partial mutable settings patch. Identity fields are controlled by the authenticated user.
     required: true
     schema:
       $ref: "#/definitions/Settings" 
@@ -106,6 +150,100 @@ parameters:
     required: true
     schema:
       $ref: "#/definitions/Translate" 
+  PictogramSearch:
+    name: pictogramSearch
+    in: body
+    description: Missing words to search in configured AAC symbol providers
+    required: true
+    schema:
+      $ref: "#/definitions/PictogramSearch"
+  CommunicationSentenceRequest:
+    name: communicationSentenceRequest
+    in: body
+    description: Bounded pictogram labels and optional recent local context
+    required: true
+    schema:
+      $ref: "#/definitions/CommunicationSentenceRequest"
+  CommunicationResegmentRequest:
+    name: communicationResegmentRequest
+    in: body
+    description: Caregiver-approved text and local pictogram vocabulary for AI resegmentation
+    required: true
+    schema:
+      $ref: "#/definitions/CommunicationResegmentRequest"
+  CommunicationPictogramGenerationRequest:
+    name: communicationPictogramGenerationRequest
+    in: body
+    description: One caregiver-reviewed missing concept for an AI pictogram draft
+    required: true
+    schema:
+      $ref: "#/definitions/CommunicationPictogramGenerationRequest"
+  CommunicationSpeechRequest:
+    name: communicationSpeechRequest
+    in: body
+    description: Bounded patient-approved text for transient server-side speech synthesis
+    required: true
+    schema:
+      $ref: "#/definitions/CommunicationSpeechRequest"
+  CommunicationDialectNormalizationRequest:
+    name: communicationDialectNormalizationRequest
+    in: body
+    description: Caregiver-reviewed dialect text and optional bounded pictogram vocabulary
+    required: true
+    schema:
+      $ref: "#/definitions/CommunicationDialectNormalizationRequest"
+  CommunicationDialectAsrAudio:
+    name: audio
+    in: formData
+    description: One transient caregiver-approved audio file, at most 60 seconds and 3 MiB; CBoard does not persist it
+    required: true
+    type: file
+  CommunicationOcrImage:
+    name: image
+    in: formData
+    description: One transient JPEG, PNG, or WebP image for OCR; the API does not persist it
+    required: true
+    type: file
+  CommunicationPictogramMetadataImage:
+    name: image
+    in: formData
+    description: One transient caregiver-approved JPEG, PNG, or WebP image used only to suggest editable pictogram metadata
+    required: true
+    type: file
+  CommunicationBackgroundRemovalImage:
+    name: image
+    in: formData
+    description: One transient caregiver-approved JPEG, PNG, or WebP image; the original is not persisted
+    required: true
+    type: file
+  CommunicationReceiverRecordSyncRequest:
+    name: communicationReceiverRecordSyncRequest
+    in: body
+    description: Bounded confirmed receiver records; drafts and maintenance logs are excluded
+    required: true
+    schema:
+      $ref: "#/definitions/CommunicationReceiverRecordSyncRequest"
+  CommunicationReceiverRecordDeleteRequest:
+    name: communicationReceiverRecordDeleteRequest
+    in: body
+    description: Selected confirmed receiver record ids, or deleteAll for an explicit full clear
+    required: true
+    schema:
+      $ref: "#/definitions/CommunicationReceiverRecordDeleteRequest"
+  CommunicationSavedPhraseSyncRequest:
+    name: communicationSavedPhraseSyncRequest
+    in: body
+    description: Bounded public saved phrases with per-record base versions
+    required: true
+    schema:
+      $ref: "#/definitions/CommunicationSavedPhraseSyncRequest"
+  CommunicationSavedPhraseDeleteRequest:
+    name: communicationSavedPhraseDeleteRequest
+    in: body
+    description: Selected saved phrase ids, or deleteAll for an explicit full clear
+    required: true
+    schema:
+      $ref: "#/definitions/CommunicationSavedPhraseDeleteRequest"
   User:
     name: user
     in: body
@@ -138,6 +276,20 @@ parameters:
 paths:
   /swagger:
     x-swagger-pipe: swagger_raw
+  /health:
+    x-swagger-router-controller: health
+    get:
+      operationId: getHealth
+      description: Reports whether the API can reach MongoDB and has the unique indexes required for communication synchronization.
+      responses:
+        "200":
+          description: API and database are ready; optional capability states are included
+          schema:
+            $ref: "#/definitions/ServiceHealth"
+        "503":
+          description: API is running but the database is not ready
+          schema:
+            $ref: "#/definitions/ServiceHealth"
   /analytics/batchGet:
     x-swagger-router-controller: analytics
     post:
@@ -183,7 +335,9 @@ paths:
     x-swagger-router-controller: board
     post:
       operationId: createBoard
-      description: Create a new board in database and send an email to notify the user.
+      description: >-
+        Creates a board. A regular user's board is always assigned to the
+        authenticated email; admins may create a board for another user.
       security:
         - Bearer: []
       x-security-scopes:
@@ -271,7 +425,9 @@ paths:
             $ref: "#/definitions/ErrorResponse"
     put:
       operationId: updateBoard
-      description: Updates a specific board
+      description: >-
+        Updates a board owned by the authenticated user. Admins may update any
+        board, including its ownership email.
       security:
         - Bearer: []
       x-security-scopes:
@@ -301,7 +457,9 @@ paths:
             $ref: "#/definitions/ErrorResponse"
     delete:
       operationId: deleteBoard
-      description: Deletes a specific board
+      description: >-
+        Deletes a board owned by the authenticated user. Admins may delete any
+        board.
       security:
         - Bearer: []
       x-security-scopes:
@@ -405,6 +563,80 @@ paths:
           description: Error
           schema:
             $ref: "#/definitions/ErrorResponse"
+  /board/public/{id}/bundle:
+    x-swagger-router-controller: board
+    get:
+      operationId: getPublicBoardBundle
+      description: Returns one public board and only its publicly reachable linked boards, without owner email addresses.
+      parameters:
+        - name: id
+          type: string
+          in: path
+          required: true
+          minLength: 24
+          maxLength: 24
+          pattern: '^[a-fA-F0-9]{24}$'
+      responses:
+        "200":
+          description: A bounded public board bundle with explicit licensing and availability warnings.
+          schema:
+            $ref: "#/definitions/PublicBoardBundleResponse"
+        "404":
+          description: The root board does not exist or is not public.
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        "413":
+          description: The public board graph exceeds the safe board or tile limit.
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /board/public/{id}/tile/{tileId}/image:
+    x-swagger-router-controller: board
+    get:
+      operationId: getPublicBoardTileImage
+      description: Returns a normalized PNG only when the public board tile image uses a configured CBoard image host.
+      produces:
+        - image/png
+      parameters:
+        - name: id
+          type: string
+          in: path
+          required: true
+          minLength: 24
+          maxLength: 24
+          pattern: '^[a-fA-F0-9]{24}$'
+        - name: tileId
+          type: string
+          in: path
+          required: true
+          minLength: 1
+          maxLength: 120
+          pattern: '^[^/]+$'
+      responses:
+        "200":
+          description: A validated public board image normalized to PNG.
+          schema:
+            type: string
+            format: binary
+        "404":
+          description: The public board, tile, or image does not exist.
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        "422":
+          description: The image host is outside the configured CBoard image allowlist.
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        "502":
+          description: The upstream image could not be downloaded or normalized.
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
   /board/report:
     x-swagger-router-controller: board
     post:
@@ -457,7 +689,10 @@ paths:
     x-swagger-router-controller: communicator
     post:
       operationId: createCommunicator
-      description: Creates a new communicator in database and send an email to notify the user.
+      description: >-
+        Creates a communicator. A regular user's communicator is always
+        assigned to the authenticated email; admins may create one for another
+        user.
       security:
         - Bearer: []
       x-security-scopes:
@@ -465,6 +700,7 @@ paths:
         - user
       parameters:
         - $ref: '#/parameters/Communicator'
+        - $ref: '#/parameters/CommunicatorIdempotencyKey'
       responses:
         "200":
           description: Success
@@ -476,7 +712,9 @@ paths:
             $ref: "#/definitions/ErrorResponse"
     get:
       operationId: listCommunicators
-      description: Returns the full communicators list.
+      description: >-
+        Returns the authenticated user's communicators. Admins receive the full
+        list.
       security:
         - Bearer: []
       x-security-scopes:
@@ -501,7 +739,9 @@ paths:
     x-swagger-router-controller: communicator
     get:
       operationId: getCommunicator
-      description: Returns a specific communicator
+      description: >-
+        Returns a communicator owned by the authenticated user. Admins may read
+        any communicator.
       security:
         - Bearer: []
       x-security-scopes:
@@ -524,7 +764,9 @@ paths:
             $ref: "#/definitions/ErrorResponse"
     put:
       operationId: updateCommunicator
-      description: Updates a specific communicator
+      description: >-
+        Updates a communicator owned by the authenticated user. Admins may
+        update any communicator, including its ownership email.
       security:
         - Bearer: []
       x-security-scopes:
@@ -683,11 +925,334 @@ paths:
           description: Error
           schema:
             $ref: "#/definitions/ErrorResponse"
+  /communication/aac-import/convert:
+    x-swagger-router-controller: communicationAacImport
+    post:
+      operationId: convertCommunicationAacFile
+      description: Transiently converts one Snap or TouchChat AAC file into bounded Open Board documents without persisting the source file.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      consumes:
+        - multipart/form-data
+      parameters:
+        - $ref: '#/parameters/CommunicationAacImportFile'
+        - $ref: '#/parameters/CommunicationAacImportFormat'
+        - $ref: '#/parameters/CommunicationAacImportLocale'
+      responses:
+        "200":
+          description: Converted Open Board documents and explicit source-format capabilities.
+          schema:
+            $ref: "#/definitions/CommunicationAacImportResponse"
+        "400":
+          description: Missing, malformed, unsupported, or oversized AAC import.
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        "422":
+          description: The source format was recognized but could not be parsed.
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        "429":
+          description: AAC conversion concurrency or communication enhancement quota is exhausted.
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /communication/private-library:
+    x-swagger-router-controller: communicationPrivateLibrary
+    get:
+      operationId: getPrivateLibraryMetadata
+      description: Returns metadata for the current user's latest private picture library backup without exposing its blob URL.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      responses:
+        "200":
+          description: Private picture library backup metadata
+          schema:
+            $ref: "#/definitions/CommunicationPrivateLibraryMetadata"
+        "409":
+          description: A legacy plaintext picture backup exists and must be re-uploaded from the original device with a recovery password.
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        "503":
+          description: Private picture library storage is not configured
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+    post:
+      operationId: uploadPrivateLibrary
+      description: Replaces the current user's private picture backup with a client-side encrypted envelope. Plaintext ZIP uploads are rejected.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      consumes:
+        - multipart/form-data
+      parameters:
+        - $ref: '#/parameters/PrivatePictureLibraryArchive'
+      responses:
+        "200":
+          description: Private picture library backup stored
+          schema:
+            $ref: "#/definitions/CommunicationPrivateLibraryMetadata"
+        "503":
+          description: Private picture library storage is not configured
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+    delete:
+      operationId: deletePrivateLibrary
+      description: Deletes the current user's private picture library backup and its private blob.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      responses:
+        "200":
+          description: Private picture library backup deletion result
+          schema:
+            $ref: "#/definitions/CommunicationPrivateLibraryDeleteResponse"
+        "503":
+          description: Private picture library storage is not configured
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /communication/private-library/download:
+    x-swagger-router-controller: communicationPrivateLibrary
+    get:
+      operationId: downloadPrivateLibrary
+      description: Downloads the current user's private picture library backup through the authenticated API.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      produces:
+        - application/octet-stream
+      responses:
+        "200":
+          description: Client-side encrypted private picture-library envelope
+          schema:
+            type: string
+            format: binary
+        "409":
+          description: A legacy plaintext picture backup exists and must be re-uploaded from the original device with a recovery password.
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        "503":
+          description: Private picture library storage is not configured
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /communication/private-device-data:
+    x-swagger-router-controller: communicationPrivateDeviceData
+    get:
+      operationId: getPrivateDeviceDataMetadata
+      description: Returns metadata for the current user's latest private complete device-data backup without exposing its blob URL.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      responses:
+        "200":
+          description: Private complete device-data backup metadata
+          schema:
+            $ref: "#/definitions/CommunicationPrivateDeviceDataMetadata"
+        "503":
+          description: Private archive storage is not configured
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+    post:
+      operationId: uploadPrivateDeviceData
+      description: Replaces the current user's private complete device-data backup with a client-side encrypted envelope. Plaintext ZIP uploads are rejected.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      consumes:
+        - multipart/form-data
+      parameters:
+        - $ref: '#/parameters/PrivateDeviceDataArchive'
+      responses:
+        "200":
+          description: Private complete device-data backup stored
+          schema:
+            $ref: "#/definitions/CommunicationPrivateDeviceDataMetadata"
+        "503":
+          description: Private archive storage is not configured
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+    delete:
+      operationId: deletePrivateDeviceData
+      description: Deletes the current user's private complete device-data backup and its private blob.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      responses:
+        "200":
+          description: Private complete device-data backup deletion result
+          schema:
+            $ref: "#/definitions/CommunicationPrivateLibraryDeleteResponse"
+        "503":
+          description: Private archive storage is not configured
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /communication/private-device-data/download:
+    x-swagger-router-controller: communicationPrivateDeviceData
+    get:
+      operationId: downloadPrivateDeviceData
+      description: Downloads the current user's private complete device-data backup through the authenticated API.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      produces:
+        - application/octet-stream
+      responses:
+        "200":
+          description: Client-side encrypted complete device-data envelope
+          schema:
+            type: string
+            format: binary
+        "503":
+          description: Private archive storage is not configured
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        "409":
+          description: A legacy plaintext backup exists and must be re-encrypted on the original device before restore.
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /communication/receiver-records:
+    x-swagger-router-controller: communicationRecords
+    delete:
+      operationId: deleteConfirmedReceiverRecords
+      description: Marks selected or all confirmed receiver records as deleted for the current user.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      parameters:
+        - $ref: '#/parameters/CommunicationReceiverRecordDeleteRequest'
+      responses:
+        "200":
+          description: Confirmed receiver records marked as deleted
+          schema:
+            $ref: "#/definitions/CommunicationReceiverRecordDeleteResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /communication/receiver-records/sync:
+    x-swagger-router-controller: communicationRecords
+    post:
+      operationId: syncConfirmedReceiverRecords
+      description: Upserts confirmed receiver records and returns the current user's bounded confirmed history.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      parameters:
+        - $ref: '#/parameters/CommunicationReceiverRecordSyncRequest'
+      responses:
+        "200":
+          description: Confirmed receiver records synchronized
+          schema:
+            $ref: "#/definitions/CommunicationReceiverRecordSyncResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /communication/saved-phrases:
+    x-swagger-router-controller: communicationSavedPhrases
+    delete:
+      operationId: deleteCommunicationSavedPhrases
+      description: Creates final per-record tombstones for selected or all saved phrases.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      parameters:
+        - $ref: '#/parameters/CommunicationSavedPhraseDeleteRequest'
+      responses:
+        "200":
+          description: Saved phrases marked as deleted
+          schema:
+            $ref: "#/definitions/CommunicationSavedPhraseDeleteResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /communication/saved-phrases/sync:
+    x-swagger-router-controller: communicationSavedPhrases
+    post:
+      operationId: syncCommunicationSavedPhrases
+      description: Synchronizes mutable saved phrases with per-record optimistic concurrency.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      parameters:
+        - $ref: '#/parameters/CommunicationSavedPhraseSyncRequest'
+      responses:
+        "200":
+          description: Saved phrases synchronized
+          schema:
+            $ref: "#/definitions/CommunicationSavedPhraseSyncResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
   /settings:
     x-swagger-router-controller: settings
     post:
       operationId: updateSettings
-      description: Creates or updates a user's settings object in database.
+      description: Atomically creates or updates only mutable settings fields for the authenticated user.
       security:
         - Bearer: []
       x-security-scopes:
@@ -733,6 +1298,160 @@ paths:
           description: Success
           schema:
             $ref: "#/definitions/TranslateResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /pictograms/search:
+    x-swagger-router-controller: pictogram
+    post:
+      operationId: searchPictograms
+      description: Searches missing words without uploading a full phrase or communication history.
+      parameters:
+        - $ref: '#/parameters/PictogramSearch'
+      responses:
+        "200":
+          description: Search results with source and license metadata
+          schema:
+            $ref: "#/definitions/PictogramSearchResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /pictograms/arasaac/{id}/image:
+    x-swagger-router-controller: pictogram
+    get:
+      operationId: getArasaacImage
+      description: Proxies one validated ARASAAC PNG so clients only trust this API domain.
+      produces:
+        - image/png
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: string
+          pattern: '^[0-9]{1,12}$'
+      responses:
+        "200":
+          description: ARASAAC pictogram image
+          schema:
+            type: file
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /pictograms/globalsymbols/search:
+    x-swagger-router-controller: pictogram
+    post:
+      operationId: searchGlobalSymbols
+      description: Searches Global Symbols through the server-side v2 API key, with a temporary v1 compatibility path when the key is not configured.
+      parameters:
+        - in: body
+          name: globalSymbolsSearch
+          required: true
+          schema:
+            $ref: "#/definitions/GlobalSymbolsSearch"
+      responses:
+        "200":
+          description: Bounded Global Symbols labels with signed PNG proxy URLs
+          schema:
+            $ref: "#/definitions/GlobalSymbolsSearchResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /pictograms/globalsymbols/{token}/image:
+    x-swagger-router-controller: pictogram
+    get:
+      operationId: getGlobalSymbolsImage
+      description: Proxies one HMAC-validated Global Symbols image as a bounded PNG so clients only trust this API domain.
+      produces:
+        - image/png
+      parameters:
+        - name: token
+          in: path
+          required: true
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,4096}\.[a-f0-9]{32}$'
+      responses:
+        "200":
+          description: Global Symbols pictogram normalized as PNG
+          schema:
+            type: file
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /pictograms/opensymbols/{token}/image:
+    x-swagger-router-controller: pictogram
+    get:
+      operationId: getOpenSymbolsImage
+      description: Proxies one HMAC-validated OpenSymbols image as a bounded PNG so clients only trust this API domain.
+      produces:
+        - image/png
+      parameters:
+        - name: token
+          in: path
+          required: true
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,4096}\.[a-f0-9]{32}$'
+      responses:
+        "200":
+          description: OpenSymbols pictogram normalized as PNG
+          schema:
+            type: file
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /user/phone-verification:
+    x-swagger-router-controller: phoneVerification
+    get:
+      operationId: getPhoneVerificationConfiguration
+      description: Returns the bounded public phone verification capability state.
+      responses:
+        "200":
+          description: Phone verification capability
+          schema:
+            $ref: "#/definitions/PhoneVerificationConfiguration"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+    post:
+      operationId: requestPhoneVerification
+      description: Sends one bounded verification code through the configured server-side provider.
+      parameters:
+        - in: body
+          name: phoneVerificationRequest
+          required: true
+          schema:
+            $ref: "#/definitions/PhoneVerificationRequest"
+      responses:
+        "200":
+          description: Verification challenge created
+          schema:
+            $ref: "#/definitions/PhoneVerificationChallengeResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /user/phone-verification/confirm:
+    x-swagger-router-controller: phoneVerification
+    post:
+      operationId: confirmPhoneVerification
+      description: Confirms a code and returns a short-lived, single-purpose token.
+      parameters:
+        - in: body
+          name: phoneVerificationConfirmation
+          required: true
+          schema:
+            $ref: "#/definitions/PhoneVerificationConfirmation"
+      responses:
+        "200":
+          description: Phone verification confirmed
+          schema:
+            $ref: "#/definitions/PhoneVerificationConfirmationResponse"
         default:
           description: Error
           schema:
@@ -856,7 +1575,7 @@ paths:
     x-swagger-router-controller: user
     post:
       operationId: forgotPassword
-      description: Clear token for a user that can be used for api authentication.
+      description: Sends a password reset link when the account exists and always returns a bounded generic response.
       parameters:
         - name: email
           description: User email
@@ -1128,10 +1847,11 @@ paths:
     x-swagger-router-controller: subscription
     get:
       operationId: syncSubscriptions
+      description: Synchronizes the global provider catalog and removes stale local plans.
       security:
         - Bearer: []
       x-security-scopes:
-        - user
+        - admin
       responses:
         "200":
           description: Success  
@@ -1143,7 +1863,9 @@ paths:
     x-swagger-router-controller: subscriber
     post:
       operationId: createSubscriber
-      description: Create subscriber object in database.
+      description: >-
+        Creates a subscriber for the authenticated account. Regular users cannot
+        choose another owner, initial status, or transaction state.
       parameters: 
         - $ref: "#/parameters/Subscriber"
       security:
@@ -1164,7 +1886,7 @@ paths:
     x-swagger-router-controller: subscriber
     get:
       operationId: getSubscriber
-      description: get a subscriber whith a userId
+      description: Returns the authenticated user's safe subscription summary.
       parameters:
         - name: id
           type: string
@@ -1187,7 +1909,9 @@ paths:
             $ref: "#/definitions/ErrorResponse"
     patch:
       operationId: updateSubscriber
-      description: update a subscriber 
+      description: >-
+        Updates a subscriber. Regular users may only select a product before a
+        subscription becomes active; status and transaction state are server-owned.
       parameters:
         - name: id
           type: string
@@ -1234,7 +1958,9 @@ paths:
     x-swagger-router-controller: subscriber
     post:
       operationId: createTransaction
-      description: create transaction for a subscriber
+      description: >-
+        Verifies a provider transaction against the authenticated owner and the
+        server subscription catalog before storing a bounded transaction summary.
       security:
         - Bearer: []
       x-security-scopes:
@@ -1246,6 +1972,11 @@ paths:
           in: path
           required: true
           minimum: 1
+        - name: transaction
+          in: body
+          required: true
+          schema:
+            $ref: "#/definitions/SubscriptionTransactionRequest"
       responses:
         "200":
           description: Success
@@ -1259,7 +1990,9 @@ paths:
     x-swagger-router-controller: subscriber
     post:
       operationId: cancelPlan
-      description: cancel a PayPal plan for a subscriber
+      description: >-
+        Cancels a PayPal subscription only after its local owner and platform have
+        been verified.
       security:
         - Bearer: []
       x-security-scopes:
@@ -1327,8 +2060,1150 @@ paths:
           description: Error
           schema:
             $ref: "#/definitions/ErrorResponse"
+  /gpt/communication/health:
+    x-swagger-router-controller: gpt
+    get:
+      operationId: getCommunicationAiHealth
+      description: Returns the non-secret configuration state of optional communication enhancement providers.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - user
+        - admin
+      responses:
+        "200":
+          description: Communication enhancement configuration state
+          schema:
+            $ref: "#/definitions/CommunicationAiHealth"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /gpt/communication/sentences:
+    x-swagger-router-controller: gpt
+    post:
+      operationId: generateCommunicationSentences
+      description: Generates optional sentence candidates while preserving offline template fallback.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - user
+        - admin
+      parameters:
+        - $ref: "#/parameters/CommunicationSentenceRequest"
+      responses:
+        "200":
+          description: Generated sentence candidates
+          schema:
+            $ref: "#/definitions/CommunicationSentenceResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /gpt/communication/resegment:
+    x-swagger-router-controller: gpt
+    post:
+      operationId: resegmentCommunicationText
+      description: Resegments caregiver-approved text against a bounded local pictogram vocabulary.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - user
+        - admin
+      parameters:
+        - $ref: "#/parameters/CommunicationResegmentRequest"
+      responses:
+        "200":
+          description: AI-assisted token sequence
+          schema:
+            $ref: "#/definitions/CommunicationResegmentResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /user/store-password/phone:
+    x-swagger-router-controller: user
+    post:
+      operationId: resetPasswordWithPhone
+      description: Resets a regular user's password after consuming one password-reset phone verification token.
+      parameters:
+        - name: info
+          description: Verified mainland China phone password reset
+          in: body
+          required: true
+          schema:
+            $ref: "#/definitions/UserPhonePasswordReset"
+      responses:
+        "200":
+          description: Success
+          schema:
+            $ref: "#/definitions/GeneralResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /user/login/phone:
+    x-swagger-router-controller: user
+    post:
+      operationId: loginUserWithPhone
+      description: Returns a CBoard session after consuming one purpose-bound phone verification token.
+      parameters:
+        - name: info
+          description: Verified mainland China phone login
+          in: body
+          required: true
+          schema:
+            $ref: "#/definitions/UserPhoneLogin"
+      responses:
+        "200":
+          description: Success
+          schema:
+            $ref: "#/definitions/GetUserResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /gpt/communication/usage:
+    x-swagger-router-controller: gpt
+    get:
+      operationId: getCommunicationAiUsage
+      description: Returns the authenticated user's current UTC-month provider-reported token totals without communication content.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - user
+        - admin
+      responses:
+        "200":
+          description: Current-month communication AI usage totals
+          schema:
+            $ref: "#/definitions/CommunicationAiUsage"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /gpt/communication/speech:
+    x-swagger-router-controller: gpt
+    post:
+      operationId: synthesizeCommunicationSpeech
+      description: Synthesizes one transient MP3 without storing the communication text or audio.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - user
+        - admin
+      produces:
+        - audio/mpeg
+      parameters:
+        - $ref: "#/parameters/CommunicationSpeechRequest"
+      responses:
+        "200":
+          description: Transient MP3 speech audio
+          schema:
+            type: file
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /gpt/communication/dialect-normalization:
+    x-swagger-router-controller: gpt
+    post:
+      operationId: normalizeCommunicationDialectText
+      description: Converts dialect wording into an editable Mandarin pictogram-search draft while preserving the source text.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - user
+        - admin
+      parameters:
+        - $ref: "#/parameters/CommunicationDialectNormalizationRequest"
+      responses:
+        "200":
+          description: Caregiver-editable normalized text with the original source retained
+          schema:
+            $ref: "#/definitions/CommunicationDialectNormalizationResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /gpt/communication/dialect-asr:
+    x-swagger-router-controller: gpt
+    post:
+      operationId: recognizeCommunicationDialectAudio
+      description: Recognizes one transient caregiver-approved Cantonese utterance through the configured Tencent Cloud or Volcengine provider; the returned text remains editable and is not matched automatically.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - user
+        - admin
+      consumes:
+        - multipart/form-data
+      parameters:
+        - $ref: "#/parameters/CommunicationDialectAsrAudio"
+      responses:
+        "200":
+          description: Source-preserving Cantonese recognition text for caregiver review
+          schema:
+            $ref: "#/definitions/CommunicationDialectAsrResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /gpt/communication/ocr:
+    x-swagger-router-controller: gpt
+    post:
+      operationId: recognizeCommunicationImageText
+      description: Extracts bounded editable text from one transient caregiver-approved image.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - user
+        - admin
+      consumes:
+        - multipart/form-data
+      parameters:
+        - $ref: "#/parameters/CommunicationOcrImage"
+      responses:
+        "200":
+          description: OCR text for caregiver review
+          schema:
+            $ref: "#/definitions/CommunicationOcrResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /gpt/communication/pictogram-metadata:
+    x-swagger-router-controller: gpt
+    post:
+      operationId: suggestCommunicationPictogramMetadata
+      description: Suggests editable AAC label, synonyms, and category from one transient caregiver-approved image.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - user
+        - admin
+      consumes:
+        - multipart/form-data
+      parameters:
+        - $ref: "#/parameters/CommunicationPictogramMetadataImage"
+      responses:
+        "200":
+          description: Editable pictogram metadata suggestion
+          schema:
+            $ref: "#/definitions/CommunicationPictogramMetadataResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /gpt/communication/pictogram-generation:
+    x-swagger-router-controller: gpt
+    post:
+      operationId: generateCommunicationPictogram
+      description: Generates one bounded AAC pictogram draft for caregiver review; the result is not saved or published automatically.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - user
+        - admin
+      consumes:
+        - application/json
+      parameters:
+        - $ref: "#/parameters/CommunicationPictogramGenerationRequest"
+      responses:
+        "200":
+          description: Normalized PNG draft with explicit private-use and provider disclosure
+          schema:
+            $ref: "#/definitions/CommunicationPictogramGenerationResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+  /gpt/communication/background-removal:
+    x-swagger-router-controller: gpt
+    post:
+      operationId: removeCommunicationImageBackground
+      description: Removes a transient caregiver-approved image background and returns a transparent PNG for review.
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - user
+        - admin
+      consumes:
+        - multipart/form-data
+      parameters:
+        - $ref: "#/parameters/CommunicationBackgroundRemovalImage"
+      responses:
+        "200":
+          description: Transparent PNG candidate; the caregiver must review it before saving
+          schema:
+            $ref: "#/definitions/CommunicationBackgroundRemovalResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
 # complex objects have schema definitions
 definitions:
+  ServiceHealth:
+    type: object
+    additionalProperties: false
+    required:
+      - status
+      - database
+      - communicationIndexes
+      - privatePictureLibrary
+    properties:
+      status:
+        type: string
+        enum:
+          - ok
+          - degraded
+      database:
+        type: string
+        enum:
+          - connected
+          - disconnected
+      communicationIndexes:
+        type: string
+        enum:
+          - pending
+          - building
+          - ready
+          - failed
+      privatePictureLibrary:
+        type: string
+        description: Reports only whether Azure credentials are present; no secret or endpoint is exposed.
+        enum:
+          - configured
+          - unconfigured
+  CommunicationSavedPhraseSyncRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - phrases
+    properties:
+      phrases:
+        type: array
+        maxItems: 100
+        items:
+          $ref: "#/definitions/CommunicationSavedPhrase"
+  CommunicationSavedPhraseSyncResponse:
+    type: object
+    required:
+      - acceptedCount
+      - conflictCount
+      - conflictedPhraseIds
+      - phrases
+      - deletedPhraseIds
+      - deletedPhrases
+    properties:
+      acceptedCount:
+        type: integer
+      conflictCount:
+        type: integer
+      conflictedPhraseIds:
+        type: array
+        maxItems: 100
+        items:
+          type: string
+      phrases:
+        type: array
+        maxItems: 100
+        items:
+          $ref: "#/definitions/CommunicationSavedPhrase"
+      deletedPhraseIds:
+        type: array
+        maxItems: 100
+        items:
+          type: string
+      deletedPhrases:
+        type: array
+        maxItems: 100
+        items:
+          $ref: "#/definitions/CommunicationSavedPhraseTombstone"
+  CommunicationSavedPhraseDeleteRequest:
+    type: object
+    additionalProperties: false
+    minProperties: 1
+    properties:
+      phraseIds:
+        type: array
+        minItems: 1
+        maxItems: 100
+        uniqueItems: true
+        items:
+          type: string
+          minLength: 1
+          maxLength: 200
+      deleteAll:
+        type: boolean
+  CommunicationSavedPhraseDeleteResponse:
+    type: object
+    required:
+      - deletedCount
+      - deletedPhraseIds
+      - deletedPhrases
+    properties:
+      deletedCount:
+        type: integer
+      deletedPhraseIds:
+        type: array
+        maxItems: 100
+        items:
+          type: string
+      deletedPhrases:
+        type: array
+        maxItems: 100
+        items:
+          $ref: "#/definitions/CommunicationSavedPhraseTombstone"
+  CommunicationSavedPhrase:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - sentence
+      - output
+      - usageCount
+      - createdAt
+      - lastUsedAt
+      - updatedAt
+    properties:
+      id:
+        type: string
+        minLength: 1
+        maxLength: 200
+      sentence:
+        type: string
+        minLength: 1
+        maxLength: 500
+      output:
+        type: array
+        maxItems: 50
+        items:
+          $ref: "#/definitions/CommunicationSavedPhraseOutputItem"
+      usageCount:
+        type: integer
+        minimum: 0
+      contractVersion:
+        type: integer
+        minimum: 1
+      createdAt:
+        type: integer
+        format: int64
+        minimum: 1
+      lastUsedAt:
+        type: integer
+        format: int64
+        minimum: 1
+      updatedAt:
+        type: integer
+        format: int64
+        minimum: 1
+      baseVersion:
+        type: integer
+        minimum: 0
+      serverVersion:
+        type: integer
+        minimum: 1
+      conflicted:
+        type: boolean
+  CommunicationSavedPhraseOutputItem:
+    type: object
+    additionalProperties: false
+    required:
+      - label
+    properties:
+      id:
+        type: string
+        maxLength: 200
+      label:
+        type: string
+        maxLength: 160
+      image:
+        type: string
+        maxLength: 1000
+        pattern: '^https://'
+      source:
+        type: string
+        maxLength: 80
+      attribution:
+        $ref: "#/definitions/CommunicationPictogramAttribution"
+  CommunicationSavedPhraseTombstone:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - deletedAt
+      - deletedBy
+      - serverVersion
+    properties:
+      id:
+        type: string
+        minLength: 1
+        maxLength: 200
+      deletedAt:
+        type: integer
+        format: int64
+        minimum: 1
+      deletedBy:
+        type: string
+        minLength: 1
+        maxLength: 200
+      serverVersion:
+        type: integer
+        minimum: 1
+  CommunicationPrivateLibraryMetadata:
+    type: object
+    additionalProperties: false
+    required:
+      - format
+      - contractVersion
+      - size
+      - sha256
+      - createdAt
+      - updatedAt
+    properties:
+      format:
+        type: string
+        enum:
+          - picinterpreter-private-picture-library-encrypted
+      contractVersion:
+        type: integer
+        enum:
+          - 2
+      size:
+        type: integer
+        minimum: 1
+        maximum: 20971520
+      sha256:
+        type: string
+        pattern: '^[a-f0-9]{64}$'
+      createdAt:
+        type: integer
+        format: int64
+        minimum: 1
+      updatedAt:
+        type: integer
+        format: int64
+        minimum: 1
+  CommunicationPrivateLibraryDeleteResponse:
+    type: object
+    additionalProperties: false
+    required:
+      - deleted
+    properties:
+      deleted:
+        type: boolean
+  CommunicationPrivateDeviceDataMetadata:
+    type: object
+    additionalProperties: false
+    required:
+      - format
+      - contractVersion
+      - size
+      - sha256
+      - createdAt
+      - updatedAt
+    properties:
+      format:
+        type: string
+        enum:
+          - picinterpreter-private-device-data-encrypted
+      contractVersion:
+        type: integer
+        enum:
+          - 2
+      size:
+        type: integer
+        minimum: 1
+        maximum: 20971520
+      sha256:
+        type: string
+        pattern: '^[a-f0-9]{64}$'
+      createdAt:
+        type: integer
+        format: int64
+        minimum: 1
+      updatedAt:
+        type: integer
+        format: int64
+        minimum: 1
+  PublicBoardBundleDiagnostics:
+    type: object
+    additionalProperties: false
+    required:
+      - boardCount
+      - tileCount
+      - unavailableLinkedBoardCount
+    properties:
+      boardCount:
+        type: integer
+        minimum: 1
+        maximum: 100
+      tileCount:
+        type: integer
+        minimum: 0
+        maximum: 5000
+      unavailableLinkedBoardCount:
+        type: integer
+        minimum: 0
+  PublicBoardBundleResponse:
+    type: object
+    additionalProperties: false
+    required:
+      - format
+      - contractVersion
+      - rootBoardId
+      - source
+      - sourceUrl
+      - licenseStatus
+      - warnings
+      - data
+      - diagnostics
+    properties:
+      format:
+        type: string
+        enum:
+          - cboard-public-board-bundle
+      contractVersion:
+        type: integer
+        enum:
+          - 1
+      rootBoardId:
+        type: string
+      source:
+        type: string
+        enum:
+          - cboard-public
+      sourceUrl:
+        type: string
+      licenseStatus:
+        type: string
+        enum:
+          - unknown
+      warnings:
+        type: array
+        maxItems: 10
+        items:
+          type: string
+          maxLength: 300
+      data:
+        type: array
+        minItems: 1
+        maxItems: 100
+        items:
+          type: object
+      diagnostics:
+        $ref: "#/definitions/PublicBoardBundleDiagnostics"
+  CommunicationAacImportCapabilities:
+    type: object
+    additionalProperties: false
+    required:
+      - text
+      - layout
+      - embeddedRasterImages
+      - touchChatCustomImages
+    properties:
+      text:
+        type: boolean
+      layout:
+        type: boolean
+      embeddedRasterImages:
+        type: boolean
+      touchChatCustomImages:
+        type: boolean
+  CommunicationAacImportDocument:
+    type: object
+    additionalProperties: false
+    required:
+      - path
+      - board
+    properties:
+      path:
+        type: string
+        minLength: 1
+        maxLength: 300
+      board:
+        type: object
+        description: One Open Board Format 0.1 board document.
+  CommunicationAacImportResponse:
+    type: object
+    additionalProperties: false
+    required:
+      - format
+      - contractVersion
+      - sourceFormat
+      - sourceFileName
+      - capabilities
+      - warnings
+      - documents
+    properties:
+      format:
+        type: string
+        enum:
+          - picinterpreter-aac-conversion
+      contractVersion:
+        type: integer
+        enum:
+          - 1
+      sourceFormat:
+        type: string
+        enum:
+          - snap
+          - touchchat
+      sourceFileName:
+        type: string
+        minLength: 1
+        maxLength: 120
+      capabilities:
+        $ref: "#/definitions/CommunicationAacImportCapabilities"
+      warnings:
+        type: array
+        maxItems: 20
+        items:
+          type: string
+          maxLength: 300
+      documents:
+        type: array
+        minItems: 1
+        maxItems: 100
+        items:
+          $ref: "#/definitions/CommunicationAacImportDocument"
+  CommunicationReceiverRecordSyncRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - records
+    properties:
+      records:
+        type: array
+        maxItems: 100
+        items:
+          $ref: "#/definitions/CommunicationReceiverRecord"
+  CommunicationReceiverRecordSyncResponse:
+    type: object
+    required:
+      - acceptedCount
+      - conflictCount
+      - conflictedRecordIds
+      - records
+      - deletedRecordIds
+      - deletedRecords
+    properties:
+      acceptedCount:
+        type: integer
+      conflictCount:
+        type: integer
+      conflictedRecordIds:
+        type: array
+        maxItems: 100
+        items:
+          type: string
+      records:
+        type: array
+        items:
+          $ref: "#/definitions/CommunicationReceiverRecord"
+      deletedRecordIds:
+        type: array
+        maxItems: 100
+        items:
+          type: string
+      deletedRecords:
+        type: array
+        maxItems: 100
+        items:
+          $ref: "#/definitions/CommunicationReceiverRecordTombstone"
+  CommunicationReceiverRecordDeleteRequest:
+    type: object
+    additionalProperties: false
+    minProperties: 1
+    properties:
+      recordIds:
+        type: array
+        minItems: 1
+        maxItems: 100
+        uniqueItems: true
+        items:
+          type: string
+          minLength: 1
+          maxLength: 200
+      deleteAll:
+        type: boolean
+  CommunicationReceiverRecordDeleteResponse:
+    type: object
+    required:
+      - deletedCount
+      - deletedRecordIds
+      - deletedRecords
+    properties:
+      deletedCount:
+        type: integer
+      deletedRecordIds:
+        type: array
+        maxItems: 100
+        items:
+          type: string
+      deletedRecords:
+        type: array
+        maxItems: 100
+        items:
+          $ref: "#/definitions/CommunicationReceiverRecordTombstone"
+  CommunicationReceiverRecord:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - sessionId
+      - patientId
+      - workspaceId
+      - direction
+      - recordStatus
+      - inputText
+      - labels
+      - createdAt
+      - updatedAt
+      - confirmedAt
+    properties:
+      id:
+        type: string
+        minLength: 1
+        maxLength: 200
+      sessionId:
+        type: string
+        minLength: 1
+        maxLength: 200
+      patientId:
+        type: string
+        minLength: 1
+        maxLength: 200
+      workspaceId:
+        type: string
+        minLength: 1
+        maxLength: 200
+      direction:
+        type: string
+        enum:
+          - receive
+      recordStatus:
+        type: string
+        enum:
+          - confirmed
+      inputText:
+        type: string
+        minLength: 1
+        maxLength: 2000
+      labels:
+        type: array
+        maxItems: 50
+        items:
+          type: string
+          maxLength: 120
+      pictogramSequence:
+        type: array
+        maxItems: 50
+        items:
+          $ref: "#/definitions/CommunicationReceiverSequenceItem"
+      contractVersion:
+        type: integer
+        minimum: 1
+      patientFeedback:
+        type: string
+        enum:
+          - understood
+          - not_understood
+          - repeat_requested
+      patientFeedbackAt:
+        type: integer
+        format: int64
+        minimum: 1
+      patientFeedbackEvents:
+        type: array
+        maxItems: 20
+        items:
+          $ref: "#/definitions/CommunicationReceiverPatientFeedbackEvent"
+      createdAt:
+        type: integer
+        format: int64
+        minimum: 1
+      updatedAt:
+        type: integer
+        format: int64
+        minimum: 1
+      confirmedAt:
+        type: integer
+        format: int64
+        minimum: 1
+      baseVersion:
+        type: integer
+        minimum: 0
+      serverVersion:
+        type: integer
+        minimum: 1
+      conflicted:
+        type: boolean
+  CommunicationReceiverRecordTombstone:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - deletedAt
+      - deletedBy
+      - serverVersion
+    properties:
+      id:
+        type: string
+        minLength: 1
+        maxLength: 200
+      deletedAt:
+        type: integer
+        format: int64
+        minimum: 1
+      deletedBy:
+        type: string
+        minLength: 1
+        maxLength: 200
+      serverVersion:
+        type: integer
+        minimum: 1
+  CommunicationReceiverPatientFeedbackEvent:
+    type: object
+    additionalProperties: false
+    required:
+      - type
+      - createdAt
+    properties:
+      type:
+        type: string
+        enum:
+          - understood
+          - not_understood
+          - repeat_requested
+      createdAt:
+        type: integer
+        format: int64
+        minimum: 1
+  CommunicationReceiverSequenceItem:
+    type: object
+    additionalProperties: false
+    required:
+      - label
+      - source
+      - matchType
+      - confidence
+      - originalToken
+    properties:
+      pictogramId:
+        type: string
+        maxLength: 200
+      label:
+        type: string
+        maxLength: 120
+      source:
+        type: string
+        enum:
+          - local_dict
+          - arasaac
+          - globalsymbols
+          - opensymbols
+          - ai
+          - user
+      matchType:
+        type: string
+        enum:
+          - exact
+          - synonym
+          - lexicon
+          - partial
+          - online
+          - ai
+          - manual
+          - missing
+      confidence:
+        type: number
+        minimum: 0
+        maximum: 1
+      originalToken:
+        type: string
+        maxLength: 120
+      attribution:
+        $ref: "#/definitions/CommunicationPictogramAttribution"
+  CommunicationPictogramAttribution:
+    type: object
+    additionalProperties: false
+    required:
+      - provider
+      - originalId
+      - name
+      - license
+      - sourceUrl
+    properties:
+      provider:
+        type: string
+        enum:
+          - arasaac
+          - globalsymbols
+          - opensymbols
+          - mulberry
+          - cboard
+          - cboard-default
+      originalId:
+        type: string
+        maxLength: 200
+      name:
+        type: string
+        maxLength: 160
+      license:
+        type: string
+        maxLength: 240
+      licenseUrl:
+        type: string
+        format: uri
+        maxLength: 1000
+      author:
+        type: string
+        maxLength: 160
+      authorUrl:
+        type: string
+        format: uri
+        maxLength: 1000
+      sourceUrl:
+        type: string
+        format: uri
+        maxLength: 1000
+      repoKey:
+        type: string
+        maxLength: 80
+  PictogramSearch:
+    type: object
+    required:
+      - tokens
+    properties:
+      tokens:
+        type: array
+        minItems: 1
+        maxItems: 12
+        items:
+          type: string
+          minLength: 1
+          maxLength: 24
+  GlobalSymbolsSearch:
+    type: object
+    additionalProperties: false
+    required:
+      - query
+      - language
+    properties:
+      query:
+        type: string
+        minLength: 1
+        maxLength: 80
+      language:
+        type: string
+        pattern: '^[A-Za-z-]{2,10}$'
+      limit:
+        type: integer
+        minimum: 1
+        maximum: 20
+        default: 20
+  GlobalSymbolsSearchResponse:
+    type: object
+    required:
+      - results
+    properties:
+      results:
+        type: array
+        maxItems: 20
+        items:
+          type: object
+          additionalProperties: true
+  PictogramSearchResponse:
+    type: object
+    description: Returns up to four ordered, de-duplicated candidates per token. Multiple result entries may share the same token.
+    required:
+      - results
+    properties:
+      results:
+        type: array
+        items:
+          $ref: "#/definitions/PictogramSearchResult"
+  PictogramSearchResult:
+    type: object
+    description: One traceable public pictogram candidate. Candidate order follows the upstream provider response.
+    required:
+      - token
+      - pictogram
+    properties:
+      token:
+        type: string
+      pictogram:
+        $ref: "#/definitions/RuntimePictogram"
+  RuntimePictogram:
+    type: object
+    required:
+      - id
+      - imageUrl
+      - labels
+      - categoryId
+      - synonyms
+      - source
+    properties:
+      id:
+        type: string
+      imageUrl:
+        type: string
+      labels:
+        type: object
+        properties:
+          zh:
+            type: array
+            items:
+              type: string
+          en:
+            type: array
+            items:
+              type: string
+      categoryId:
+        type: string
+      categoryIds:
+        type: array
+        items:
+          type: string
+      synonyms:
+        type: array
+        items:
+          type: string
+      source:
+        $ref: "#/definitions/PictogramSource"
+      usageCount:
+        type: integer
+      lastUsedAt:
+        type: integer
+  PictogramSource:
+    type: object
+    required:
+      - provider
+      - originalId
+      - name
+      - license
+      - sourceUrl
+    properties:
+      provider:
+        type: string
+      originalId:
+        type: string
+      name:
+        type: string
+      license:
+        type: string
+      licenseUrl:
+        type: string
+      author:
+        type: string
+      authorUrl:
+        type: string
+      sourceUrl:
+        type: string
+      repoKey:
+        type: string
   AnalyticsReport:
     type: array
     items:
@@ -1431,6 +3306,18 @@ definitions:
         type: string
       email:
         type: string
+      phone:
+        type: string
+        pattern: '^1\d{10}$'
+        description: Optional mainland China phone for local registration; never returned raw
+      phoneMasked:
+        type: string
+        readOnly: true
+        description: Masked account phone returned to authenticated clients
+      phoneVerificationToken:
+        type: string
+        pattern: '^[a-f0-9]{64}$'
+        description: Short-lived one-time token required only when server-side phone verification is enabled
       password:
         type: string
       birthdate:
@@ -1439,6 +3326,114 @@ definitions:
       locale:
         type: string
         enum:  &APP_LANGS ['ar-SA','bn-BD','cs-CZ','da-DK','de-DE','el-GR','en-US','en-GB','es-ES','fi-FI','fr-FR','he-IL','hi-IN','hu-HU','id-ID','it-IT','ja-JP','km-KH','ko-KR','ne-NP','nl-NL','no-NO','pl-PL','pt-BR','pt-PT','ro-RO','ru-RU','si-LK','sk-SK','sv-SE','th-TH','tr-TR','uk-UA','vi-VN','zh-CN','zu-ZA']
+  PhoneVerificationConfiguration:
+    type: object
+    additionalProperties: false
+    required:
+      - available
+      - phoneLoginAvailable
+      - phonePasswordResetAvailable
+      - requiredForPhoneRegistration
+      - challengeExpiresInSeconds
+      - verificationExpiresInSeconds
+      - resendAfterSeconds
+      - codeLength
+    properties:
+      available:
+        type: boolean
+      phoneLoginAvailable:
+        type: boolean
+      phonePasswordResetAvailable:
+        type: boolean
+      requiredForPhoneRegistration:
+        type: boolean
+      challengeExpiresInSeconds:
+        type: integer
+        minimum: 60
+      verificationExpiresInSeconds:
+        type: integer
+        minimum: 60
+      resendAfterSeconds:
+        type: integer
+        minimum: 1
+      codeLength:
+        type: integer
+        enum:
+          - 6
+  PhoneVerificationRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - phone
+    properties:
+      phone:
+        type: string
+        pattern: '^1\d{10}$'
+      purpose:
+        type: string
+        enum:
+          - registration
+          - login
+          - password-reset
+        default: registration
+  PhoneVerificationChallengeResponse:
+    type: object
+    additionalProperties: false
+    required:
+      - challengeId
+      - phoneMasked
+      - expiresInSeconds
+      - resendAfterSeconds
+    properties:
+      challengeId:
+        type: string
+        pattern: '^[a-f0-9]{64}$'
+      phoneMasked:
+        type: string
+        pattern: '^1\d{2}\*{4}\d{4}$'
+      expiresInSeconds:
+        type: integer
+        minimum: 60
+      resendAfterSeconds:
+        type: integer
+        minimum: 1
+  PhoneVerificationConfirmation:
+    type: object
+    additionalProperties: false
+    required:
+      - challengeId
+      - phone
+      - code
+    properties:
+      challengeId:
+        type: string
+        pattern: '^[a-f0-9]{64}$'
+      phone:
+        type: string
+        pattern: '^1\d{10}$'
+      code:
+        type: string
+        pattern: '^\d{6}$'
+      purpose:
+        type: string
+        enum:
+          - registration
+          - login
+          - password-reset
+        default: registration
+  PhoneVerificationConfirmationResponse:
+    type: object
+    additionalProperties: false
+    required:
+      - verificationToken
+      - expiresInSeconds
+    properties:
+      verificationToken:
+        type: string
+        pattern: '^[a-f0-9]{64}$'
+      expiresInSeconds:
+        type: integer
+        minimum: 60
   UserUpdate:
     type: object
     properties:
@@ -1473,12 +3468,11 @@ definitions:
           type: string
   Settings:
     type: object
-    required:
-      - id
-      - user
     properties:
       id:
         type: string
+        readOnly: true
+        description: Server-generated settings id; ignored in update payloads
       language:
         type: object
       speech:
@@ -1489,8 +3483,16 @@ definitions:
         type: object
       navigation:
         type: object
+      communicationSupport:
+        type: object
+        description: Neutral communication support settings and public sync data
+      tuyujia:
+        type: object
+        description: Legacy PicInterpreter communication support compatibility data
       user:
         type: string
+        readOnly: true
+        description: Authenticated owner id; ignored in update payloads
   Communicator:
     type: object
     required:
@@ -1564,6 +3566,37 @@ definitions:
           type: string
         password:
           type: string
+  UserPhoneLogin:
+      type: object
+      additionalProperties: false
+      required:
+      - phone
+      - phoneVerificationToken
+      properties:
+        phone:
+          type: string
+          pattern: '^1\d{10}$'
+        phoneVerificationToken:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+  UserPhonePasswordReset:
+      type: object
+      additionalProperties: false
+      required:
+      - phone
+      - phoneVerificationToken
+      - password
+      properties:
+        phone:
+          type: string
+          pattern: '^1\d{10}$'
+        phoneVerificationToken:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        password:
+          type: string
+          minLength: 6
+          maxLength: 128
   UserForgot:
       type: object
       required:
@@ -1573,6 +3606,7 @@ definitions:
           type: string
   UserStorePassword:
       type: object
+      additionalProperties: false
       required:
       - userid
       - token
@@ -1582,8 +3616,11 @@ definitions:
           type: string
         token:
           type: string
+          pattern: '^[a-f0-9]{64}$'
         password:
           type: string
+          minLength: 6
+          maxLength: 128
   GeneralResponse:
     type: object
     properties:
@@ -1684,12 +3721,24 @@ definitions:
           type: object
         setting:
           type: object
+        deletedCommunicationReceiverRecords:
+          type: integer
+        deletedCommunicationSavedPhrases:
+          type: integer
+        deletedCommunicationAiUsage:
+          type: integer
+        deletedCommunicationAiTokenQuota:
+          type: boolean
+        deletedCommunicationPrivateLibrary:
+          type: boolean
+        deletedCommunicationPrivateDeviceData:
+          type: boolean
         deletedComunicators:
           type: number
         deletedBoards:
           type: number
         subscriber:
-          type: object      
+          type: object
   LogoutResponse:
     required:
       - message
@@ -1756,6 +3805,12 @@ definitions:
       navigation:
         type: object
         description: Settings for Navigation
+      communicationSupport:
+        type: object
+        description: Neutral communication support settings and public sync data
+      tuyujia:
+        type: object
+        description: Legacy PicInterpreter communication support compatibility data
       user:
         type: string
         description: User's id
@@ -1984,36 +4039,214 @@ definitions:
               type: string
           language: 
               type: string
+  SubscriberProduct:
+    type: object
+    required:
+      - subscriptionId
+      - title
+      - billingPeriod
+      - price
+    properties:
+      subscriptionId:
+        type: string
+        maxLength: 128
+        description: Server catalog subscription identifier.
+      planId:
+        type: string
+        maxLength: 128
+        description: Server catalog plan identifier.
+      paypalId:
+        type: string
+        maxLength: 128
+        description: PayPal plan identifier supplied by the server catalog.
+      title:
+        type: string
+        maxLength: 160
+      billingPeriod:
+        type: string
+        maxLength: 40
+      price:
+        description: Display-only string or structured money value; the server catalog remains authoritative.
+      tag:
+        type: string
+        maxLength: 80
+  SafeSubscriptionNativePurchase:
+    type: object
+    description: Provider metadata with receipts, tokens, signatures, payer data, and access tokens removed.
+    properties:
+      id:
+        type: string
+      status:
+        type: string
+      plan_id:
+        type: string
+      custom_id:
+        type: string
+      start_time:
+        type: string
+      orderId:
+        type: string
+      packageName:
+        type: string
+      productId:
+        type: string
+      purchaseTime:
+        type: string
+      purchaseState:
+        type: string
+      quantity:
+        type: integer
+      autoRenewing:
+        type: boolean
+      acknowledged:
+        type: boolean
+      billing_info:
+        type: object
+        properties:
+          next_billing_time:
+            type: string
+  SafeSubscriptionTransaction:
+    type: object
+    description: Bounded provider result safe to return to authenticated clients.
+    properties:
+      platform:
+        type: string
+      subscriptionId:
+        type: string
+      transactionId:
+        type: string
+      productId:
+        type: string
+      state:
+        type: string
+      subscriptionState:
+        type: string
+      expiryDate:
+        type: string
+      purchaseDate:
+        type: string
+      isPending:
+        type: boolean
+      isExpired:
+        type: boolean
+      isBillingRetryPeriod:
+        type: boolean
+      isAcknowledged:
+        type: boolean
+      renewalIntent:
+        type: string
+      nativePurchase:
+        $ref: "#/definitions/SafeSubscriptionNativePurchase"
+  SubscriptionAndroidPurchaseRequest:
+    type: object
+    properties:
+      receipt:
+        type: string
+        maxLength: 65536
+        description: Optional JSON receipt envelope; removed before persistence.
+      orderId:
+        type: string
+        maxLength: 256
+      packageName:
+        type: string
+        maxLength: 256
+      productId:
+        type: string
+        maxLength: 128
+      purchaseTime:
+        description: Provider purchase timestamp.
+      purchaseState:
+        description: Provider purchase state.
+      purchaseToken:
+        type: string
+        maxLength: 4096
+        description: Server-only verification token that is never returned to clients.
+      quantity:
+        type: number
+        minimum: 0
+        maximum: 10000
+      autoRenewing:
+        type: boolean
+      acknowledged:
+        type: boolean
+  SubscriptionTransactionRequest:
+    type: object
+    required:
+      - platform
+    properties:
+      platform:
+        type: string
+        enum:
+          - paypal
+          - android-playstore
+          - ios-appstore
+      subscriptionId:
+        type: string
+        maxLength: 128
+        description: Required for PayPal and verified remotely.
+      id:
+        type: string
+        maxLength: 256
+        description: App Store transaction identifier compatibility field.
+      transactionId:
+        type: string
+        maxLength: 256
+      nativePurchase:
+        $ref: "#/definitions/SubscriptionAndroidPurchaseRequest"
+      purchaseId:
+        type: string
+        maxLength: 512
+      purchaseDate:
+        type: string
+        maxLength: 64
+      isPending:
+        type: boolean
+      isAcknowledged:
+        type: boolean
+      renewalIntent:
+        type: string
+        maxLength: 40
   Subscriber:
     type: object
     required:
-      - userID
+      - country
+    properties:
+      userId:
+        type: string
+        maxLength: 128
+        description: Optional for regular users and must match the authenticated account when provided.
+      country:
+        type: string
+        maxLength: 80
+      status:
+        type: string
+        maxLength: 40
+        description: Server-owned for regular users; a client value is ignored when creating a subscriber.
+      product:
+        $ref: "#/definitions/SubscriberProduct"
+  SubscriberResponse:
+    type: object
+    required:
+      - _id
+      - userId
       - country
       - status
     properties:
-      userID:
+      _id:
+        type: string
+        description: Self-generated id for the subscriber.
+      userId:
         type: string
       country:
         type: string
       status:
         type: string
-  SubscriberResponse:
-    type: object
-    required:
-      - id
-      - userId
-      - country
-      - status
-    properties:
-      id: 
-        type: string
-        description: Self-generated id for the subscriber  
-      userId:
-        type: string
-      country: 
-        type: string
-      status:
-        type: string
+      product:
+        $ref: "#/definitions/SubscriberProduct"
+      transaction:
+        $ref: "#/definitions/SafeSubscriptionTransaction"
+      success:
+        type: boolean
       createdAt:
         type: string
         format: date-time
@@ -2032,22 +4265,561 @@ definitions:
         type: object
         properties:
           transaction:
-            type: object
+            $ref: "#/definitions/SafeSubscriptionTransaction"
           code:
             type: number  
       error:
         $ref: "#/definitions/ErrorResponse"
+  CommunicationSentenceRequest:
+    type: object
+    required:
+      - pictogramLabels
+    properties:
+      pictogramLabels:
+        type: array
+        minItems: 1
+        maxItems: 12
+        items:
+          type: string
+          minLength: 1
+          maxLength: 24
+      candidateCount:
+        type: integer
+        minimum: 1
+        maximum: 5
+        default: 3
+      context:
+        $ref: "#/definitions/CommunicationAiContext"
+  CommunicationSpeechRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - text
+    properties:
+      text:
+        type: string
+        minLength: 1
+        maxLength: 300
+      rate:
+        type: number
+        minimum: 0.5
+        maximum: 2
+      voice:
+        type: string
+        minLength: 1
+        maxLength: 80
+        description: Optional voice from CommunicationAiHealth.speechVoices; omitted uses speechVoice.
+  CommunicationAiContext:
+    type: object
+    properties:
+      recentSentences:
+        type: array
+        maxItems: 6
+        items:
+          type: string
+          maxLength: 120
+      candidateFeedback:
+        type: array
+        maxItems: 20
+        items:
+          $ref: "#/definitions/CommunicationAiCandidateFeedback"
+      scene:
+        type: string
+        enum:
+          - hospital
+          - home
+          - rehab_clinic
+  CommunicationAiCandidateFeedback:
+    type: object
+    required:
+      - sentence
+      - feedback
+    properties:
+      sentence:
+        type: string
+        minLength: 1
+        maxLength: 120
+      feedback:
+        type: string
+        enum:
+          - up
+          - down
+  CommunicationSentenceResponse:
+    type: object
+    required:
+      - candidates
+      - provider
+      - isOfflineFallback
+    properties:
+      candidates:
+        type: array
+        minItems: 1
+        maxItems: 5
+        items:
+          type: string
+      provider:
+        type: string
+      isOfflineFallback:
+        type: boolean
+  CommunicationResegmentRequest:
+    type: object
+    required:
+      - text
+    properties:
+      text:
+        type: string
+        minLength: 1
+        maxLength: 120
+      unmatchedTokens:
+        type: array
+        maxItems: 12
+        items:
+          type: string
+          maxLength: 24
+      pictogramVocabulary:
+        type: array
+        maxItems: 200
+        items:
+          type: string
+          maxLength: 24
+  CommunicationResegmentResponse:
+    type: object
+    required:
+      - tokens
+      - provider
+    properties:
+      tokens:
+        type: array
+        maxItems: 12
+        items:
+          type: string
+      provider:
+        type: string
+  CommunicationDialectNormalizationRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - text
+      - dialect
+    properties:
+      text:
+        type: string
+        minLength: 1
+        maxLength: 120
+      dialect:
+        type: string
+        enum:
+          - cantonese
+      pictogramVocabulary:
+        type: array
+        maxItems: 200
+        uniqueItems: true
+        items:
+          type: string
+          minLength: 1
+          maxLength: 24
+  CommunicationDialectNormalizationResponse:
+    type: object
+    additionalProperties: false
+    required:
+      - sourceText
+      - normalizedText
+      - dialect
+      - provider
+      - sourceStored
+    properties:
+      sourceText:
+        type: string
+        minLength: 1
+        maxLength: 120
+      normalizedText:
+        type: string
+        minLength: 1
+        maxLength: 120
+      dialect:
+        type: string
+        enum:
+          - cantonese
+      provider:
+        type: string
+      sourceStored:
+        type: boolean
+  CommunicationDialectAsrResponse:
+    type: object
+    additionalProperties: false
+    required:
+      - text
+      - dialect
+      - engine
+      - provider
+      - audioDurationMs
+      - audioStored
+      - providerProcessing
+    properties:
+      text:
+        type: string
+        minLength: 1
+        maxLength: 120
+      dialect:
+        type: string
+        enum:
+          - cantonese
+      engine:
+        type: string
+        enum:
+          - 16k_yue
+          - bigmodel
+      provider:
+        type: string
+        enum:
+          - tencentcloud-asr
+          - volcengine-bigasr
+      audioDurationMs:
+        type: integer
+        minimum: 0
+        maximum: 60000
+      audioStored:
+        type: boolean
+      providerProcessing:
+        type: boolean
+  CommunicationOcrResponse:
+    type: object
+    required:
+      - text
+      - provider
+      - sourceStored
+    properties:
+      text:
+        type: string
+        maxLength: 120
+      provider:
+        type: string
+      sourceStored:
+        type: boolean
+  CommunicationPictogramMetadataResponse:
+    type: object
+    required:
+      - label
+      - synonyms
+      - category
+      - provider
+      - sourceStored
+    properties:
+      label:
+        type: string
+        minLength: 1
+        maxLength: 40
+      synonyms:
+        type: array
+        maxItems: 8
+        uniqueItems: true
+        items:
+          type: string
+          minLength: 1
+          maxLength: 24
+      category:
+        type: string
+        maxLength: 40
+      provider:
+        type: string
+      sourceStored:
+        type: boolean
+  CommunicationPictogramGenerationRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - label
+    properties:
+      label:
+        type: string
+        minLength: 1
+        maxLength: 24
+  CommunicationPictogramGenerationResponse:
+    type: object
+    additionalProperties: false
+    required:
+      - imageBase64
+      - mimeType
+      - provider
+      - model
+      - generationId
+      - useScope
+      - sourceStored
+      - publicLicenseDeclared
+      - providerTermsApply
+    properties:
+      imageBase64:
+        type: string
+        minLength: 1
+        maxLength: 2796208
+      mimeType:
+        type: string
+        enum:
+          - image/png
+      provider:
+        type: string
+      model:
+        type: string
+      generationId:
+        type: string
+        minLength: 1
+        maxLength: 80
+      useScope:
+        type: string
+        enum:
+          - device-private
+      sourceStored:
+        type: boolean
+      publicLicenseDeclared:
+        type: boolean
+      providerTermsApply:
+        type: boolean
+  CommunicationBackgroundRemovalResponse:
+    type: object
+    additionalProperties: false
+    required:
+      - imageBase64
+      - mimeType
+      - width
+      - height
+      - provider
+      - sourceStored
+      - originalRetained
+    properties:
+      imageBase64:
+        type: string
+        minLength: 1
+        maxLength: 5592408
+      mimeType:
+        type: string
+        enum:
+          - image/png
+      width:
+        type: integer
+        minimum: 1
+        maximum: 8192
+      height:
+        type: integer
+        minimum: 1
+        maximum: 8192
+      provider:
+        type: string
+      sourceStored:
+        type: boolean
+      originalRetained:
+        type: boolean
+  CommunicationAiHealth:
+    type: object
+    required:
+      - configured
+      - provider
+      - model
+      - imageAiConfigured
+      - imageAiProvider
+      - imageAiModel
+      - dialectAsrConfigured
+      - dialectAsrProvider
+      - dialectAsrEngine
+      - backgroundRemovalConfigured
+      - backgroundRemovalProvider
+      - speechConfigured
+      - speechProvider
+      - speechModel
+      - speechVoice
+      - speechVoices
+      - enhancementRateLimitEnabled
+      - enhancementPointsPerMinute
+      - enhancementMonthlyPoints
+      - aiTokenQuotaEnabled
+      - aiMonthlyTokenQuota
+      - aiTextTokenReservation
+      - aiImageTokenReservation
+    properties:
+      configured:
+        type: boolean
+      provider:
+        type: string
+      model:
+        type: string
+      baseUrl:
+        type: string
+      imageAiConfigured:
+        type: boolean
+      imageAiProvider:
+        type: string
+      imageAiModel:
+        type: string
+      dialectAsrConfigured:
+        type: boolean
+      dialectAsrProvider:
+        type: string
+      dialectAsrEngine:
+        type: string
+      backgroundRemovalConfigured:
+        type: boolean
+      backgroundRemovalProvider:
+        type: string
+      speechConfigured:
+        type: boolean
+      speechProvider:
+        type: string
+      speechModel:
+        type: string
+      speechVoice:
+        type: string
+      speechVoices:
+        type: array
+        maxItems: 20
+        items:
+          type: string
+      enhancementRateLimitEnabled:
+        type: boolean
+        description: Whether authenticated enhancement operations use server-side cost protection.
+      enhancementPointsPerMinute:
+        type: integer
+        minimum: 1
+        maximum: 10000
+      enhancementMonthlyPoints:
+        type: integer
+        minimum: 1
+        maximum: 10000000
+      aiTokenQuotaEnabled:
+        type: boolean
+        description: Whether model-backed communication requests reserve and settle a per-user monthly token allowance.
+      aiMonthlyTokenQuota:
+        type: integer
+        minimum: 1
+        maximum: 1000000000
+      aiTextTokenReservation:
+        type: integer
+        minimum: 1
+        maximum: 1000000000
+      aiImageTokenReservation:
+        type: integer
+        minimum: 1
+        maximum: 1000000000
+  CommunicationAiUsage:
+    type: object
+    additionalProperties: false
+    required:
+      - month
+      - requestCount
+      - reportedRequestCount
+      - unreportedRequestCount
+      - promptTokens
+      - completionTokens
+      - totalTokens
+      - providerReported
+      - tokenQuota
+      - breakdown
+    properties:
+      month:
+        type: string
+        pattern: "^[0-9]{4}-[0-9]{2}$"
+      requestCount:
+        type: integer
+        minimum: 0
+      reportedRequestCount:
+        type: integer
+        minimum: 0
+      unreportedRequestCount:
+        type: integer
+        minimum: 0
+      promptTokens:
+        type: integer
+        minimum: 0
+      completionTokens:
+        type: integer
+        minimum: 0
+      totalTokens:
+        type: integer
+        minimum: 0
+      providerReported:
+        type: boolean
+      tokenQuota:
+        $ref: "#/definitions/CommunicationAiTokenQuota"
+      breakdown:
+        type: array
+        maxItems: 100
+        items:
+          $ref: "#/definitions/CommunicationAiUsageBreakdown"
+  CommunicationAiTokenQuota:
+    type: object
+    additionalProperties: false
+    required:
+      - enabled
+      - month
+      - limitTokens
+      - consumedTokens
+      - remainingTokens
+      - resetAt
+    properties:
+      enabled:
+        type: boolean
+      month:
+        type: string
+        pattern: "^[0-9]{4}-[0-9]{2}$"
+      limitTokens:
+        type: integer
+        minimum: 1
+      consumedTokens:
+        type: integer
+        minimum: 0
+      remainingTokens:
+        type: integer
+        minimum: 0
+      resetAt:
+        type: string
+        format: date-time
+  CommunicationAiUsageBreakdown:
+    type: object
+    additionalProperties: false
+    required:
+      - provider
+      - model
+      - operation
+      - requestCount
+      - reportedRequestCount
+      - unreportedRequestCount
+      - promptTokens
+      - completionTokens
+      - totalTokens
+    properties:
+      provider:
+        type: string
+      model:
+        type: string
+      operation:
+        type: string
+      requestCount:
+        type: integer
+        minimum: 0
+      reportedRequestCount:
+        type: integer
+        minimum: 0
+      unreportedRequestCount:
+        type: integer
+        minimum: 0
+      promptTokens:
+        type: integer
+        minimum: 0
+      completionTokens:
+        type: integer
+        minimum: 0
+      totalTokens:
+        type: integer
+        minimum: 0
   PhraseToEdit:
       type: object
       required:
       - phrase
       properties:
         phrase:
-          type: string
+          type: "string"
   EditedPhrase:
       type: object
       required:
       - phrase
       properties:
         phrase:
-          type: string        
+          type: "string"

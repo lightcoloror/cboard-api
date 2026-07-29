@@ -22,10 +22,13 @@
   ],
   "main": "app.js",
   "dependencies": {
+    "@willwade/aac-processors": "0.2.20",
+    "adm-zip": "^0.5.16",
     "applicationinsights": "^2.7.3",
     "axios": "^1.6.4",
     "azure-storage": "^2.10.6",
     "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^12.5.0",
     "body-parser": "1.20.3",
     "connect-mongo": "^3.2.0",
     "cors": "^2.8.5",
@@ -52,9 +55,13 @@
     "passport-google-token": "^0.1.2",
     "pem": "^1.14.8",
     "rand-token": "0.4.0",
+    "rate-limiter-flexible": "11.2.0",
+    "sharp": "0.35.3",
     "should": "^13.2.3",
     "swagger-express-mw": "^0.7.0",
     "swagger-tools": "^0.10.4",
+    "tencentcloud-sdk-nodejs-asr": "4.1.266",
+    "tencentcloud-sdk-nodejs-sms": "4.1.240",
     "translate-api": "^0.3.18",
     "uuid": "^3.4.0",
     "validator": "^13.11.0",
@@ -75,7 +82,24 @@
   "scripts": {
     "dev": "nodemon app.js",
     "start": "node app.js",
-    "test": "NODE_ENV=test mocha ./test/controllers --exit",
+    "seed:local-runtime-user": "node ./scripts/seedLocalRuntimeUser.js",
+    "test": "node ./scripts/runControllerTests.js",
+    "test:unit": "node ./scripts/runControllerTests.js --unit",
+    "test:passport-utils": "mocha ./test/passport/strategyUtils.test.js --exit",
+    "verify:background-removal": "node ./scripts/verifyBackgroundRemovalProvider.js",
+    "verify:communication-background-removal-http-mongo": "mocha ./test/integration/communicationBackgroundRemovalHttp.mongo.integration.js --exit",
+    "verify:communication-support-settings": "node ./scripts/verifyCommunicationSupportSettings.js",
+    "verify:communication-receiver-sync": "node ./scripts/verifyCommunicationReceiverSync.js",
+    "verify:communication-readiness": "node ./scripts/verifyCommunicationReadiness.js",
+    "verify:communication-ai-token-quota-mongo": "mocha ./test/integration/communicationAiTokenQuota.mongo.integration.js --exit",
+    "verify:communication-ai-http-quota-mongo": "mocha ./test/integration/communicationAiHttpQuota.mongo.integration.js --exit",
+    "verify:communication-visual-ai-http-mongo": "mocha ./test/integration/communicationVisualAiHttp.mongo.integration.js --exit",
+    "verify:phone-verification-http-mongo": "mocha ./test/integration/phoneVerificationHttp.mongo.integration.js --exit",
+    "verify:communication-volcengine-tts-http-mongo": "mocha ./test/integration/communicationVolcengineTtsHttp.mongo.integration.js --exit",
+    "verify:communication-volcengine-asr-http-mongo": "mocha ./test/integration/communicationVolcengineAsrHttp.mongo.integration.js --exit",
+    "verify:communication-tencentcloud-asr-http-mongo": "mocha ./test/integration/communicationTencentcloudAsrHttp.mongo.integration.js --exit",
+    "verify:production-deploy-template": "node ./scripts/checkProductionDeployment.js --example",
+    "verify:production-deploy": "node ./scripts/checkProductionDeployment.js",
     "precommit": "lint-staged"
   },
   "lint-staged": {
@@ -85,6 +109,7 @@
     ]
   },
   "engines": {
-    "node": ">=6.0"
-  }
+    "node": ">=22.0.0 <23"
+  },
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
 }

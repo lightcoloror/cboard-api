@@ -24,6 +24,12 @@ const FacebookToken = require('./api/passport/facebookToken');
 const Apple = require('./api/passport/apple');
 const morgan = require('morgan');
 const config = require('./config');
+const {
+  createCommunicationEnhancementRateLimitMiddleware
+} = require('./api/helpers/communicationEnhancementRateLimit');
+const {
+  createCommunicationAiTokenQuotaMiddleware
+} = require('./api/helpers/communicationAiTokenQuota');
 
 const app = express();
 
@@ -55,7 +61,15 @@ swaggerTools.initializeMiddleware(swaggerConfig, async function (middleware) {
         process.env.CBOARD_IOS_APP_URL,
         process.env.CBUILDER_APP_URL
       ],
-      exposedHeaders: ['Request-Context']
+      exposedHeaders: [
+        'Request-Context',
+        'RateLimit-Limit',
+        'RateLimit-Remaining',
+        'Retry-After',
+        'X-Monthly-Quota-Limit',
+        'X-Monthly-Quota-Remaining',
+        'X-RateLimit-Scope'
+      ]
     })
   );
 
@@ -79,7 +93,7 @@ swaggerTools.initializeMiddleware(swaggerConfig, async function (middleware) {
           errorMessage = `Could not found user #${req.auth.id}`;
           const user = await User.getById(req.auth.id);
 
-          if (user) {
+          if (user && auth.isTokenCurrentForUser(req.auth, user)) {
             // For previous users that doesn't have any role selected.
             if (!user.role) {
               user.role = 'user';
@@ -103,6 +117,20 @@ swaggerTools.initializeMiddleware(swaggerConfig, async function (middleware) {
 
         cb();
       }
+    })
+  );
+  app.use(
+    createCommunicationEnhancementRateLimitMiddleware({
+      storeClient: db,
+      env: process.env,
+      environment: config.env
+    })
+  );
+  app.use(
+    createCommunicationAiTokenQuotaMiddleware({
+      storeClient: db,
+      env: process.env,
+      environment: config.env
     })
   );
   //use sessions for tracking logins

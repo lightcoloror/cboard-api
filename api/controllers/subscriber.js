@@ -1,5 +1,5 @@
 
-const { gapiAuth } = require('../helpers/auth');
+const { gapiAuth, getAuthDataFromReq } = require('../helpers/auth');
 const { google } = require('googleapis');
 const playConsole = google.androidpublisher('v3');
 const ObjectId = require('mongoose').Types.ObjectId;
@@ -7,9 +7,18 @@ const mongoose = require('mongoose');
 
 
 const Subscriber = require('../models/Subscribers');
-const { getAuthDataFromReq } = require('../helpers/auth');
+const Subscription = require('../models/Subscription');
 const PayPal = require('../helpers/paypal');
 const paypal = new PayPal({});
+const {
+  buildAndroidPurchaseTransaction,
+  buildVerifiedPaypalTransaction,
+  isSubscriberActive,
+  normalizeSelectedProduct,
+  resolveCatalogProduct,
+  sanitizeSubscriber,
+  sanitizeTransaction
+} = require('../helpers/subscriptionSecurity');
 
 const {
   verifyAppStorePurchase,
@@ -24,6 +33,36 @@ module.exports = {
   createTransaction,
   cancelPlan
 };
+
+const getRequestAuth = req => {
+  try {
+    return getAuthDataFromReq(req);
+  } catch (error) {
+    const requestedBy = req.user?.id || req.user?._id?.toString() || null;
+    return {
+      requestedBy,
+      isAdmin: Boolean(requestedBy && req.user?.isAdmin)
+    };
+  }
+};
+
+const canAccessSubscriber = (req, subscriber) => {
+  const { requestedBy, isAdmin } = getRequestAuth(req);
+  return {
+    requestedBy,
+    isAdmin,
+    allowed: Boolean(
+      isAdmin ||
+      (requestedBy && String(subscriber.userId) === String(requestedBy))
+    )
+  };
+};
+
+const sendTransactionError = (res, message) => res.status(200).json({
+  ok: false,
+  data: { code: 6778001 },
+  error: { message }
+});
 
 const checkIfAppStoreTransactionIsValid = async (
   subscriberId,
@@ -61,31 +100,69 @@ const checkIfAppStoreTransactionIsValid = async (
 async function cancelPlan(req, res) {
   const subscriptionId = req.swagger.params.id.value;
   try {
+    const subscriber = await Subscriber.findOne({
+      'transaction.subscriptionId': subscriptionId
+    });
+    if (!subscriber) {
+      return res.status(404).json({
+        message: 'PayPal subscription was not found.'
+      });
+    }
+    const access = canAccessSubscriber(req, subscriber);
+    if (!access.allowed) {
+      return res.status(403).json({
+        message: 'The subscription belongs to another account.'
+      });
+    }
+    if (subscriber.transaction?.platform !== 'paypal') {
+      return res.status(409).json({
+        message: 'Only a PayPal subscription can be cancelled here.'
+      });
+    }
     await paypal.cancelPlan(subscriptionId);
+    subscriber.status = 'canceled';
+    subscriber.transaction.subscriptionState = 'canceled';
+    await subscriber.save();
     return res.status(204).json();
   } catch (err) {
     console.error('error', err);
     return res.status(409).json({
-      message: 'Error canceling PayPal subscription plan.',
-      error: err.message,
+      message: 'Error canceling PayPal subscription plan.'
     });
   }
 
 }
 
-function createSubscriber(req, res) {
-  const newSubscriber = req.body;
-  const subscriber = new Subscriber(newSubscriber);
-  subscriber.save(function (err, subscriber) {
-    if (err) {
-      console.error('error', err);
-      return res.status(409).json({
-        message: 'Error saving subscriber',
-        error: err.message,
-      });
-    }
-    return res.status(200).json(subscriber.toJSON());
-  });
+async function createSubscriber(req, res) {
+  const body = req.body || {};
+  const { requestedBy, isAdmin } = getRequestAuth(req);
+  if (!requestedBy) {
+    return res.status(401).json({ message: 'Authentication is required.' });
+  }
+  if (!isAdmin && body.userId && String(body.userId) !== String(requestedBy)) {
+    return res.status(403).json({
+      message: 'A subscriber can only be created for the authenticated account.'
+    });
+  }
+  try {
+    const subscriber = new Subscriber({
+      userId: isAdmin && body.userId ? String(body.userId) : String(requestedBy),
+      country: String(body.country || 'Not localized').trim().slice(0, 80),
+      status: isAdmin && body.status
+        ? String(body.status).trim().toLowerCase().slice(0, 40)
+        : 'not_subscribed',
+      ...(body.product
+        ? { product: normalizeSelectedProduct(body.product) }
+        : {})
+    });
+    const saved = await subscriber.save();
+    return res.status(200).json(sanitizeSubscriber(saved));
+  } catch (err) {
+    console.error('error', err);
+    return res.status(409).json({
+      message: 'Error saving subscriber'
+    });
+  }
 }
 
 async function getSubscriber(req, res) {
@@ -136,7 +213,10 @@ async function getSubscriber(req, res) {
       subscriber.transaction?.nativePurchase?.purchaseToken) {
       try {
         const newSubscriber = await subscriber.save();
-        return res.status(200).json({success: true, ...newSubscriber.toJSON()});
+        return res.status(200).json({
+          success: true,
+          ...sanitizeSubscriber(newSubscriber)
+        });
       }
       catch (err) {
         handleError(err);
@@ -153,10 +233,20 @@ async function getSubscriber(req, res) {
       try {
         // get subscription from paypal API
         remoteData = await paypal.getSubscriptionDetails(subscriber.transaction.subscriptionId);
+        if (remoteData.custom_id &&
+          String(remoteData.custom_id) !== String(subscriber.userId)) {
+          throw new Error('PayPal subscription owner mismatch');
+        }
+        if (subscriber.product?.paypalId &&
+          remoteData.plan_id !== subscriber.product.paypalId) {
+          throw new Error('PayPal subscription plan mismatch');
+        }
         status = remoteData.status;
         if (status.toLowerCase() === 'cancelled') status = 'canceled';
         expiryDate = remoteData.billing_info?.next_billing_time;
-        nativePurchase = remoteData;
+        nativePurchase = sanitizeTransaction({
+          nativePurchase: remoteData
+        }).nativePurchase;
       } catch (err) {
         console.log(err.message);
       }
@@ -167,7 +257,10 @@ async function getSubscriber(req, res) {
         if (remoteData)
           try {
             const newSubscriber = await subscriber.save();
-            return res.status(200).json({success: true, ...newSubscriber.toJSON()});
+            return res.status(200).json({
+              success: true,
+              ...sanitizeSubscriber(newSubscriber)
+            });
           }
           catch (err) {
             handleError(err);
@@ -213,14 +306,20 @@ async function getSubscriber(req, res) {
       }
       try {
         const newSubscriber = await subscriber.save();
-        return res.status(200).json({success: true, ...newSubscriber.toJSON()});
+        return res.status(200).json({
+          success: true,
+          ...sanitizeSubscriber(newSubscriber)
+        });
       } catch (err) {
         handleError(err);
         return;
       }
     }
 
-    return res.status(200).json({success: true, ...subscriber.toJSON()});
+    return res.status(200).json({
+      success: true,
+      ...sanitizeSubscriber(subscriber)
+    });
 
     function handleError(err) {
       const errorValidatingTransaction = err.errors?.transaction;
@@ -260,78 +359,72 @@ async function getSubscriber(req, res) {
   });
 }
 
-function updateSubscriber(req, res) {
+async function updateSubscriber(req, res) {
   const subscriberId = req.swagger.params.id.value;
-
-  const { requestedBy, isAdmin: isRequestedByAdmin } = getAuthDataFromReq(req);
-
-  Subscriber.findOne({ _id: subscriberId }, async function (err, subscriber) {
-    if (err) {
-      return res.status(500).json({
-        message: 'Error updating subscriber. ',
-        error: err.message,
-      });
-    }
+  if (!ObjectId.isValid(subscriberId)) {
+    return res.status(400).json({ message: 'Invalid subscriber id.' });
+  }
+  try {
+    const subscriber = await Subscriber.findOne({ _id: subscriberId });
     if (!subscriber) {
       return res.status(404).json({
         message: 'Subscriber does not exist. Subscriber Id: ' + subscriberId,
       });
     }
-    if (!isRequestedByAdmin &&
-      (!requestedBy || subscriber.userId != requestedBy)) {
-      return res.status(401).json({
-        message: 'Error updating subscriber',
-        error:
-          'unhautorized request, subscriber object is only accesible with subscribered user authToken',
+    const access = canAccessSubscriber(req, subscriber);
+    if (!access.allowed) {
+      return res.status(403).json({
+        message: 'The subscriber belongs to another account.'
       });
     }
-    for (let key in req.body) {
-      const keyCreatedAt = subscriber[key]?.createdAt;
-      subscriber[key] = keyCreatedAt
-        ? { ...req.body[key], createdAt: keyCreatedAt }
-        : req.body[key];
-    }
-    if (subscriber.transaction?.nativePurchase?.productId &&
-      subscriber.transaction.nativePurchase.productId !== subscriber.product.subscriptionId) {
-      // this means that user chooses to buy a different subscription than he bought in the past 
-      subscriber.transaction.nativePurchase.productId = subscriber.product.subscriptionId;
-    }
-    await subscriber.save(function (err, subscriber) {
-      if (err) {
-        const errorValidatingTransaction = err.errors?.transaction;
-        const errorValidatingProduct = err.product;
-        if (errorValidatingTransaction) {
-          console.log(err);
-          return res.status(409).json({
-            message: 'Error saving subscriber.',
-            error:
-              errorValidatingTransaction.message ??
-              errorValidatingTransaction.properties?.message,
-          });
-        }
-        if (errorValidatingProduct) {
-          return res.status(401).json({
-            message: 'Error saving subscriber.',
-            error: errorValidatingProduct.message,
-          });
-        }
-        return res.status(500).json({
-          message: 'Error saving subscriber.',
-          error: err.message,
+
+    const body = req.body || {};
+    const userWritableKeys = new Set(['product']);
+    if (!access.isAdmin) {
+      const protectedKeys = Object.keys(body)
+        .filter(key => !userWritableKeys.has(key));
+      if (protectedKeys.length) {
+        return res.status(400).json({
+          message: 'Only the selected subscription product can be changed.'
         });
       }
-      if (!subscriber) {
-        return res.status(404).json({
-          message: 'Unable to find subscriber. subscriber id: ' + subscriberId,
+      if (isSubscriberActive(subscriber)) {
+        return res.status(409).json({
+          message: 'An active subscription product cannot be changed.'
         });
       }
-      return res.status(200).json(subscriber);
+    }
+
+    if (body.product) {
+      subscriber.product = normalizeSelectedProduct(body.product);
+    }
+    if (access.isAdmin) {
+      if (body.country !== undefined) {
+        subscriber.country = String(body.country).trim().slice(0, 80);
+      }
+      if (body.status !== undefined) {
+        subscriber.status = String(body.status).trim().toLowerCase().slice(0, 40);
+      }
+    }
+
+    const saved = await subscriber.save();
+    return res.status(200).json(sanitizeSubscriber(saved));
+  } catch (err) {
+    console.error('Error updating subscriber', err);
+    return res.status(409).json({
+      message: 'Error saving subscriber.'
     });
-  });
+  }
 }
 
 function deleteSubscriber(req, res) {
   const subscriberId = req.swagger.params.id.value;
+  const { isAdmin } = getRequestAuth(req);
+  if (!isAdmin) {
+    return res.status(403).json({
+      message: 'Only an administrator can delete a subscriber.'
+    });
+  }
 
   if (!ObjectId.isValid(subscriberId)) {
     return res.status(400).json({
@@ -350,223 +443,176 @@ function deleteSubscriber(req, res) {
         },
       });
     }
-    return res.status(200).json(subscriber);
+    return res.status(200).json(sanitizeSubscriber(subscriber));
   });
 }
 
 async function createTransaction(req, res) {
   const subscriberId = req.swagger.params.id.value;
-  const platform = req.body.platform;
-  const parseTransactionReceipt = (transaction) => {
-    const receipt = transaction?.nativePurchase?.receipt;
-
-    if (receipt && typeof receipt === 'string') {
-      return {
-        ...transaction,
-        nativePurchase: {
-          ...transaction.nativePurchase,
-          receipt: JSON.parse(receipt),
-        },
-      };
-    }
-    return transaction;
-  };
-  const parseSubscriptionDetails = (transaction, subscriptionDetails) => {
-    return {
-      ...transaction,
-      nativePurchase: subscriptionDetails,
-      expiryDate: subscriptionDetails.billing_info.next_billing_time,
-      purchaseDate: subscriptionDetails.start_time
-    };
-  };
-
-  let transaction = req.body;
-  if (platform === 'android-playstore') {
-    transaction = parseTransactionReceipt(transaction);
-  } else if (platform === 'paypal') {
-    try {
-      // get subscription from paypal API
-      const remoteData = await paypal.getSubscriptionDetails(req.body.subscriptionId);
-      transaction = parseSubscriptionDetails(transaction, remoteData);
-    } catch (err) {
-      return res.status(200).json({
-        ok: false,
-        data: {
-          code: 6778001, //INVALID_PAYLOAD
-        },
-        error: {
-          message: 'PayPal subscription details could not be get',
-        },
-      });
-    }
-  }
-  if (
-    transaction.type === 'ios-appstore' ||
-    transaction.platform === 'ios-appstore'
-  ) {
-    transaction.platform = 'ios-appstore';
-    transaction.transactionId = transaction.id;
-
-    try {
-      const decodedtransaction = await verifyAppStorePurchase({
-        transactionId: transaction.transactionId,
-        subscriberId
-      });
-
-      await checkIfAppStoreTransactionIsValid(
-        subscriberId,
-        decodedtransaction.originalTransactionId
-      );
-
-      transaction = {
-        ...transaction,
-        ...decodedtransaction
-      };
-    } catch (err) {
-      return res.status(200).json({
-        ok: false,
-        data: {
-          code: 6778001 //INVALID_PAYLOAD
-        },
-        error: {
-          message: err.message
-        }
-      });
-    }
-  }
-
+  const body = req.body || {};
   if (!ObjectId.isValid(subscriberId)) {
-    return res.status(200).json({
-      ok: false,
-      data: {
-        code: 6778001 //INVALID_PAYLOAD
-      },
-      error: {
-        message: 'Invalid ID for subscriber. Subscriber Id: ' + subscriberId
-      }
-    });
+    return sendTransactionError(res, 'Invalid subscriber id.');
   }
 
-  if (!transaction)
-    return res.status(200).json({
-      ok: false,
-      data: {
-        code: 6778001 //INVALID_PAYLOAD
-      },
-      error: {
-        message: 'transaction object is not provided'
-      }
-    });
-
-  if (transaction.platform !== 'ios-appstore')
-    try {
-      const activeSubscriber = await Subscriber.findOne({
-        'transaction.transactionId': transaction.transactionId
+  try {
+    const subscriber = await Subscriber.findOne({ _id: subscriberId });
+    if (!subscriber) {
+      return sendTransactionError(res, 'Subscriber was not found.');
+    }
+    const access = canAccessSubscriber(req, subscriber);
+    if (!access.allowed) {
+      return res.status(403).json({
+        message: 'The subscriber belongs to another account.'
       });
-      if (
-        activeSubscriber &&
-        activeSubscriber._id.toString() !== subscriberId
-      ) {
-        throw new Error('Transaction ID already exists');
+    }
+    if (!subscriber.product) {
+      return sendTransactionError(
+        res,
+        'Select an available subscription product before validating a purchase.'
+      );
+    }
+
+    const catalogProduct = await resolveCatalogProduct({
+      Subscription,
+      selectedProduct: subscriber.product,
+      country: subscriber.country
+    });
+    const platform = String(body.platform || body.type || '')
+      .trim()
+      .toLowerCase();
+    let transaction;
+
+    if (platform === 'paypal') {
+      const requestedSubscriptionId = String(body.subscriptionId || '')
+        .trim()
+        .slice(0, 128);
+      if (!requestedSubscriptionId) {
+        return sendTransactionError(res, 'PayPal subscription id is required.');
       }
-    } catch (err) {
-      console.log(err);
-      return res.status(200).json({
-        ok: false,
-        data: {
-          code: 6778001 //INVALID_PAYLOAD
-        },
-        error: {
-          message: 'Transaction ID already exists'
+      let remoteData;
+      try {
+        remoteData = await paypal.getSubscriptionDetails(
+          requestedSubscriptionId
+        );
+      } catch (error) {
+        return sendTransactionError(
+          res,
+          'PayPal subscription could not be verified.'
+        );
+      }
+      if (String(remoteData?.id || '') !== requestedSubscriptionId) {
+        return sendTransactionError(
+          res,
+          'PayPal returned a different subscription id.'
+        );
+      }
+      transaction = buildVerifiedPaypalTransaction({
+        remoteData,
+        subscriber: {
+          userId: subscriber.userId,
+          product: catalogProduct
         }
       });
+    } else if (platform === 'android-playstore') {
+      try {
+        transaction = buildAndroidPurchaseTransaction({
+          body,
+          catalogProduct
+        });
+      } catch (error) {
+        return sendTransactionError(
+          res,
+          'Android purchase is invalid or does not match the selected product.'
+        );
+      }
+    } else if (platform === 'ios-appstore') {
+      const transactionId = String(body.id || body.transactionId || '')
+        .trim()
+        .slice(0, 256);
+      if (!transactionId) {
+        return sendTransactionError(res, 'App Store transaction id is required.');
+      }
+      let decoded;
+      try {
+        decoded = await verifyAppStorePurchase({ transactionId, subscriberId });
+        await checkIfAppStoreTransactionIsValid(
+          subscriberId,
+          decoded.originalTransactionId
+        );
+      } catch (error) {
+        return sendTransactionError(
+          res,
+          'App Store purchase could not be verified.'
+        );
+      }
+      if (decoded.productId !== catalogProduct.subscriptionId) {
+        return sendTransactionError(
+          res,
+          'App Store purchase does not match the selected product.'
+        );
+      }
+      transaction = {
+        platform: 'ios-appstore',
+        transactionId,
+        productId: decoded.productId,
+        originalTransactionId: decoded.originalTransactionId,
+        status: decoded.status,
+        autoRenewStatus: decoded.autoRenewStatus,
+        expiryDate: decoded.expiryDate,
+        subscriptionState: decoded.subscriptionState
+      };
+    } else {
+      return sendTransactionError(
+        res,
+        'Only Android Play Store, App Store or PayPal purchases are allowed.'
+      );
     }
 
-  if (
-    transaction.platform !== 'android-playstore' &&
-    transaction.platform !== 'paypal' &&
-    transaction.platform !== 'ios-appstore'
-  )
+    if (!transaction.transactionId) {
+      return sendTransactionError(res, 'Transaction id is required.');
+    }
+    const duplicate = await Subscriber.findOne({
+      'transaction.transactionId': transaction.transactionId
+    });
+    if (duplicate && String(duplicate._id) !== String(subscriberId)) {
+      return sendTransactionError(res, 'Transaction ID already exists.');
+    }
+
+    subscriber.product = catalogProduct;
+    subscriber.transaction = transaction;
+    if (platform === 'paypal' || platform === 'ios-appstore') {
+      subscriber.status = transaction.subscriptionState;
+    }
+    const saved = await subscriber.save();
+    const safeTransaction = sanitizeTransaction(saved.transaction);
+    const productId =
+      safeTransaction?.nativePurchase?.productId ||
+      safeTransaction?.productId ||
+      catalogProduct.subscriptionId;
     return res.status(200).json({
-      ok: false,
+      ok: true,
       data: {
-        code: 6778001 //INVALID_PAYLOAD
-      },
-      error: {
-        message:
-          'only android-playstore, ios-appstore or PayPal purchases are allowed'
+        id: productId,
+        latest_receipt: true,
+        transaction: {
+          data: { transaction: safeTransaction, success: true },
+          type: safeTransaction.platform
+        },
+        collection: [{
+          expiryDate: safeTransaction.expiryDate,
+          isExpired:
+            safeTransaction.isExpired ||
+            safeTransaction.subscriptionState === 'expired',
+          isBillingRetryPeriod: safeTransaction.isBillingRetryPeriod,
+          subscriptionState: safeTransaction.subscriptionState
+        }]
       }
     });
-
-  let updatedObject = {
-    transaction
-  };
-  if (transaction.platform === 'ios-appstore')
-    updatedObject = {
-      status: transaction.subscriptionState,
-      transaction
-    };
-
-  Subscriber.findOneAndUpdate(
-    { _id: subscriberId },
-    updatedObject,
-    {
-      new: true,
-      runValidators: true,
-      useFindAndModify: false
-    },
-    function(err, subscriber) {
-      if (err) {
-        return res.status(200).json({
-          ok: false,
-          data: {
-            code: 6778001 //INVALID_PAYLOAD
-          },
-          error: {
-            message: err.message
-          }
-        });
-      }
-      const transaction = subscriber.transaction;
-      if (transaction.platform === 'ios-appstore') {
-        return res.status(200).json({
-          ok: true,
-          data: {
-            id: transaction.productId,
-            latest_receipt: true,
-            transaction: {
-              data: { transaction, success: true },
-              type: transaction.platform
-            },
-            collection: [
-              {
-                expiryDate: transaction.expiryDate,
-                isExpired: transaction.subscriptionState === 'expired',
-                subscriptionState: transaction.subscriptionState
-              }
-            ]
-          }
-        });
-      }
-      return res.status(200).json({
-        ok: true,
-        data: {
-          id: transaction.nativePurchase.productId,
-          latest_receipt: true,
-          transaction: {
-            data: { transaction, success: true },
-            type: transaction.platform,
-          },
-          collection: [
-            {
-              expiryDate: transaction.expiryDate,
-              isExpired: transaction.isExpired,
-              isBillingRetryPeriod: transaction.isBillingRetryPeriod,
-              subscriptionState: transaction.subscriptionState
-            },
-          ],
-        },
-      });
-    }
-  );
+  } catch (error) {
+    console.error('Error validating subscription transaction', error);
+    return sendTransactionError(
+      res,
+      'The subscription transaction could not be validated.'
+    );
+  }
 }

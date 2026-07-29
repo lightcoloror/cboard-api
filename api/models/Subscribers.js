@@ -17,6 +17,10 @@ const PRODUCT_SCHEMA_DEFINITION = {
     type: String,
     trim: true,
   },
+  paypalId: {
+    type: String,
+    trim: true,
+  },
   title: {
     type: String,
     required: true,
@@ -30,6 +34,10 @@ const PRODUCT_SCHEMA_DEFINITION = {
   price: {
     type: Schema.Types.Mixed,
     required: true,
+    trim: true
+  },
+  tag: {
+    type: String,
     trim: true
   }
 };

@@ -5,9 +5,18 @@ const { paginatedResponse } = require('../helpers/response');
 const { getORQuery } = require('../helpers/query');
 const Board = require('../models/Board');
 const { getCbuilderBoardbyId } = require('../helpers/cbuilder');
-const { processBase64Images, hasBase64Images } = require('../helpers/imageProcessor');
+const {
+  processBase64Images,
+  hasBase64Images
+} = require('../helpers/imageProcessor');
+const {
+  PublicBoardLibraryError,
+  buildPublicBoardBundle,
+  sanitizePublicBoard
+} = require('../helpers/publicBoardLibrary');
+const { loadPublicBoardTileImage } = require('../helpers/publicBoardImage');
 
-const {nev} = require('../mail');
+const { nev } = require('../mail');
 
 const BLOB_CONTAINER_NAME = process.env.BLOB_CONTAINER_NAME || 'cblob';
 // Upper bound on ids per /board/byids request. Guards against runaway clients
@@ -24,15 +33,21 @@ module.exports = {
   getBoardsSync: getBoardsSync,
   getBoardsByIds: getBoardsByIds,
   getPublicBoards: getPublicBoards,
+  getPublicBoardBundle: getPublicBoardBundle,
+  getPublicBoardTileImage: getPublicBoardTileImage,
   reportPublicBoard: reportPublicBoard,
   getCbuilderBoard: getCbuilderBoard
 };
 
-// TODO: Use the caller's email instead of getting it from the body.
 function createBoard(req, res) {
-  const board = new Board(req.body);
+  const boardData = { ...req.body };
+  if (!req.user.isAdmin) {
+    boardData.email = req.user.email;
+  }
+
+  const board = new Board(boardData);
   board.lastEdited = moment().format();
-  board.save(function (err, board) {
+  board.save(function(err, board) {
     if (err) {
       return res.status(409).json({
         message: 'Error saving board',
@@ -77,7 +92,6 @@ async function getBoardsEmail(req, res) {
 
   return res.status(200).json(response);
 }
-
 
 async function getBoardsSync(req, res) {
   const email = req.swagger.params.email.value;
@@ -133,9 +147,11 @@ async function getBoardsByIds(req, res) {
       query.email = req.user.email;
     }
 
-    const boards = await Board.find(query).lean().exec();
+    const boards = await Board.find(query)
+      .lean()
+      .exec();
 
-    // Normalize _id -> id and drop the Mongoose version key to match the toJSON() output 
+    // Normalize _id -> id and drop the Mongoose version key to match the toJSON() output
     const data = boards.map(({ _id, __v, ...rest }) => ({ ...rest, id: _id }));
 
     return res.status(200).json({ total: data.length, data });
@@ -157,13 +173,84 @@ async function getPublicBoards(req, res) {
     { query: { ...query, isPublic: true } },
     req.query
   );
+  response.data = response.data.map(sanitizePublicBoard).filter(Boolean);
 
   return res.status(200).json(response);
 }
 
+async function getPublicBoardBundle(req, res) {
+  const id = req.swagger.params.id.value;
+  if (!ObjectId.isValid(id)) {
+    return res.status(404).json({
+      message: 'Public board does not exist'
+    });
+  }
+
+  try {
+    const bundle = await buildPublicBoardBundle(Board, id);
+    res.set('Cache-Control', 'public, max-age=60');
+    return res.status(200).json(bundle);
+  } catch (error) {
+    if (error instanceof PublicBoardLibraryError) {
+      return res.status(error.statusCode).json({
+        error: {
+          code: error.code,
+          message: error.message
+        }
+      });
+    }
+    return res.status(500).json({
+      error: {
+        code: 'PUBLIC_BOARD_BUNDLE_FAILED',
+        message: 'Unable to create public board bundle'
+      }
+    });
+  }
+}
+
+async function getPublicBoardTileImage(req, res) {
+  const id = req.swagger.params.id.value;
+  const tileId = req.swagger.params.tileId.value;
+  if (!ObjectId.isValid(id)) {
+    return res.status(404).json({
+      message: 'Public board does not exist'
+    });
+  }
+
+  try {
+    const image = await loadPublicBoardTileImage(Board, id, tileId);
+    res.set({
+      'Cache-Control': 'public, max-age=86400',
+      'Content-Type': image.contentType,
+      'X-Content-Type-Options': 'nosniff'
+    });
+    return res.status(200).send(image.buffer);
+  } catch (error) {
+    if (error instanceof PublicBoardLibraryError) {
+      return res.status(error.statusCode).json({
+        error: {
+          code: error.code,
+          message: error.message
+        }
+      });
+    }
+    return res.status(500).json({
+      error: {
+        code: 'PUBLIC_BOARD_IMAGE_FAILED',
+        message: 'Unable to load public board image'
+      }
+    });
+  }
+}
+
 async function deleteBoard(req, res) {
   const id = req.swagger.params.id.value;
-  Board.findByIdAndRemove(id, function (err, boards) {
+  const query = { _id: id };
+  if (!req.user.isAdmin) {
+    query.email = req.user.email;
+  }
+
+  Board.findOneAndRemove(query, function(err, boards) {
     if (err) {
       return res.status(404).json({
         message: 'Board not found. Board Id: ' + id,
@@ -188,7 +275,7 @@ function getBoard(req, res) {
       message: 'Invalid ID for a Board. Board Id: ' + id
     });
   }
-  Board.findOne({ _id: id }, function (err, boards) {
+  Board.findOne({ _id: id }, function(err, boards) {
     if (err) {
       return res.status(500).json({
         message: 'Error getting board. ',
@@ -209,16 +296,26 @@ async function updateBoard(req, res) {
   let isLocalUpdateNeeded = false;
 
   try {
-    const board = await Board.findOne({ _id: id });
-    
+    const query = { _id: id };
+    if (!req.user.isAdmin) {
+      query.email = req.user.email;
+    }
+
+    const board = await Board.findOne(query);
+
     if (!board) {
       return res.status(404).json({
         message: 'Unable to find board. board Id: ' + id
       });
     }
-    
+
     const updateData = { ...req.body };
     delete updateData.__v;
+    delete updateData._id;
+    delete updateData.id;
+    if (!req.user.isAdmin) {
+      delete updateData.email;
+    }
 
     if (
       updateData.tiles &&
@@ -241,12 +338,12 @@ async function updateBoard(req, res) {
         });
       }
     }
-    
+
     for (let key in updateData) {
       board[key] = updateData[key];
     }
     board.lastEdited = moment().format();
-    
+
     try {
       const savedBoard = await board.save();
       if (!savedBoard) {
@@ -254,10 +351,10 @@ async function updateBoard(req, res) {
           message: 'Unable to find board. board id: ' + id
         });
       }
-      
+
       const response = savedBoard.toJSON();
       response.isLocalUpdateNeeded = isLocalUpdateNeeded;
-      
+
       return res.status(200).json(response);
     } catch (err) {
       return res.status(500).json({
@@ -265,7 +362,6 @@ async function updateBoard(req, res) {
         error: err.message
       });
     }
-    
   } catch (err) {
     return res.status(500).json({
       message: 'Error updating board. ',
@@ -274,14 +370,14 @@ async function updateBoard(req, res) {
   }
 }
 
-function reportPublicBoard(req,res){
-  nev.sendReportEmail(req.body,function(err, info) {
+function reportPublicBoard(req, res) {
+  nev.sendReportEmail(req.body, function(err, info) {
     if (err) {
       return res.status(500).json({
         message: 'ERROR: sending report email FAILED ' + info
       });
     }
-    return res.status(200).json({message: 'Email sent successfuly'});
+    return res.status(200).json({ message: 'Email sent successfuly' });
   });
 }
 

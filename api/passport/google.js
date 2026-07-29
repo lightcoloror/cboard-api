@@ -2,6 +2,10 @@ const passport = require('passport');
 const { OAuth2Strategy: GoogleStrategy } = require('passport-google-oauth');
 const config = require('../../config');
 const UserController = require('../controllers/user');
+const {
+  hasRequiredStrategyConfig,
+  warnStrategyDisabled
+} = require('./strategyUtils');
 
 const GoogleStrategyConfig = {
   clientID: config.google.APP_ID,
@@ -10,11 +14,25 @@ const GoogleStrategyConfig = {
   passReqToCallback: true
 };
 
-passport.use(
-  new GoogleStrategy(GoogleStrategyConfig, UserController.googleLogin)
-);
+const isGoogleStrategyEnabled = hasRequiredStrategyConfig([
+  GoogleStrategyConfig.clientID,
+  GoogleStrategyConfig.clientSecret,
+  GoogleStrategyConfig.callbackURL
+]);
+
+if (isGoogleStrategyEnabled) {
+  passport.use(
+    new GoogleStrategy(GoogleStrategyConfig, UserController.googleLogin)
+  );
+} else {
+  warnStrategyDisabled('google');
+}
 
 const configureGoogleStrategy = app => {
+  if (!isGoogleStrategyEnabled) {
+    return;
+  }
+
   app.get(
     '/login/google',
     passport.authenticate('google', {

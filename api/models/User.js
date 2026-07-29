@@ -3,6 +3,11 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const constants = require('../constants');
+const {
+  isValidMainlandChinaPhone,
+  maskMainlandChinaPhone,
+  normalizeMainlandChinaPhone
+} = require('../helpers/userPhone');
 const Schema = mongoose.Schema;
 const Communicator = require('./Communicator');
 
@@ -18,6 +23,20 @@ const USER_SCHEMA_DEFINITION = {
     unique: true,
     required: true,
     trim: true
+  },
+  phone: {
+    type: String,
+    trim: true,
+    index: {
+      name: 'phone_1',
+      unique: true,
+      sparse: true
+    },
+    set: value => normalizeMainlandChinaPhone(value) || undefined,
+    validate: {
+      validator: value => !value || isValidMainlandChinaPhone(value),
+      message: 'Phone must be an 11-digit mainland China number'
+    }
   },
   role: {
     type: String,
@@ -40,6 +59,11 @@ const USER_SCHEMA_DEFINITION = {
   password: {
     type: String,
     default: ''
+  },
+  authVersion: {
+    type: Number,
+    default: 0,
+    min: 0
   },
   lastlogin: {
     type: Date,
@@ -108,15 +132,18 @@ const USER_SCHEMA_OPTIONS = {
       ret.id = ret._id;
       delete ret._id;
       delete ret.password;
+      delete ret.authVersion;
+      ret.phoneMasked = maskMainlandChinaPhone(ret.phone);
+      delete ret.phone;
       if (ret.authToken) {
         delete ret.authToken;
       }
-      if(ret.location && ret.location.ip){
+      if (ret.location && ret.location.ip) {
         delete ret.location.ip;
       }
     }
   },
-  timestamps: true,
+  timestamps: true
 };
 
 const userSchema = new Schema(USER_SCHEMA_DEFINITION, USER_SCHEMA_OPTIONS);
@@ -189,7 +216,10 @@ userSchema.pre('save', function(next) {
 
   const { facebook, google, apple, password } = this;
   const isValidUser =
-    validatePresenceOf(password) || facebook.token || google.token || apple.token;
+    validatePresenceOf(password) ||
+    facebook.token ||
+    google.token ||
+    apple.token;
 
   if (!isValidUser && !this.skipValidation()) {
     next(new Error('Invalid password'));
@@ -265,7 +295,14 @@ userSchema.statics = {
       user = await this.findById(id).exec();
     } catch (e) {}
 
-    return user ? user.toJSON() : null;
+    if (!user) return null;
+
+    const authUser = user.toJSON();
+    Object.defineProperty(authUser, 'authVersion', {
+      value: user.authVersion,
+      enumerable: false
+    });
+    return authUser;
   },
 
   // Creates an user from a Facebook Profile (+ accessToken)

@@ -1,0 +1,157 @@
+name: cboard-api-production
+
+services:
+  mongo:
+    image: mongo:7.0.37-jammy
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:?Set MONGO_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?Set MONGO_PASSWORD}
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet
+          --username "$${MONGO_INITDB_ROOT_USERNAME}"
+          --password "$${MONGO_INITDB_ROOT_PASSWORD}"
+          --authenticationDatabase admin
+          --eval "quit(db.adminCommand({ ping: 1 }).ok ? 0 : 2)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - backend
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      NODE_ENV: production
+      PORT: 10010
+      MONGO_URL: ${MONGO_URL:?Set MONGO_URL}
+      API_SESSION_SECRET: ${API_SESSION_SECRET:?Set API_SESSION_SECRET}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      JWT_ISSUER: ${JWT_ISSUER:-cboard-api}
+      CBOARD_APP_URL: ${CBOARD_APP_URL:-}
+      CBOARD_IOS_APP_URL: ${CBOARD_IOS_APP_URL:-}
+      CBUILDER_APP_URL: ${CBUILDER_APP_URL:-}
+      AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
+      PRIVATE_LIBRARY_CONTAINER_NAME: ${PRIVATE_LIBRARY_CONTAINER_NAME:-cboard-private}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      OPENSYMBOLS_SECRET: ${OPENSYMBOLS_SECRET:-}
+      GLOBALSYMBOLS_API_KEY: ${GLOBALSYMBOLS_API_KEY:-}
+      PICTOGRAM_IMAGE_PROXY_SECRET: ${PICTOGRAM_IMAGE_PROXY_SECRET:-}
+      PUBLIC_BOARD_IMAGE_HOSTS: ${PUBLIC_BOARD_IMAGE_HOSTS:-}
+      PHONE_VERIFICATION_REQUIRED: ${PHONE_VERIFICATION_REQUIRED:-true}
+      PHONE_VERIFICATION_PROVIDER: ${PHONE_VERIFICATION_PROVIDER:-}
+      PHONE_VERIFICATION_HASH_SECRET: ${PHONE_VERIFICATION_HASH_SECRET:-}
+      PHONE_VERIFICATION_TENCENTCLOUD_SECRET_ID: ${PHONE_VERIFICATION_TENCENTCLOUD_SECRET_ID:-}
+      PHONE_VERIFICATION_TENCENTCLOUD_SECRET_KEY: ${PHONE_VERIFICATION_TENCENTCLOUD_SECRET_KEY:-}
+      PHONE_VERIFICATION_TENCENTCLOUD_SMS_SDK_APP_ID: ${PHONE_VERIFICATION_TENCENTCLOUD_SMS_SDK_APP_ID:-}
+      PHONE_VERIFICATION_TENCENTCLOUD_SMS_SIGN_NAME: ${PHONE_VERIFICATION_TENCENTCLOUD_SMS_SIGN_NAME:-}
+      PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_ID: ${PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_ID:-}
+      PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_PARAMETERS: ${PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_PARAMETERS:-code,minutes}
+      PHONE_VERIFICATION_TENCENTCLOUD_SMS_REGION: ${PHONE_VERIFICATION_TENCENTCLOUD_SMS_REGION:-}
+      PHONE_VERIFICATION_TENCENTCLOUD_SMS_TIMEOUT_SECONDS: ${PHONE_VERIFICATION_TENCENTCLOUD_SMS_TIMEOUT_SECONDS:-10}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-15000}
+      AI_TTS_PROVIDER: ${AI_TTS_PROVIDER:-}
+      AI_TTS_API_KEY: ${AI_TTS_API_KEY:-}
+      AI_TTS_BASE_URL: ${AI_TTS_BASE_URL:-}
+      AI_TTS_MODEL: ${AI_TTS_MODEL:-gpt-4o-mini-tts}
+      AI_TTS_VOICE: ${AI_TTS_VOICE:-alloy}
+      AI_TTS_VOICES: ${AI_TTS_VOICES:-alloy}
+      AI_TTS_TIMEOUT_MS: ${AI_TTS_TIMEOUT_MS:-25000}
+      VOLCENGINE_TTS_API_KEY: ${VOLCENGINE_TTS_API_KEY:-}
+      VOLCENGINE_TTS_BASE_URL: ${VOLCENGINE_TTS_BASE_URL:-https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse}
+      VOLCENGINE_TTS_RESOURCE_ID: ${VOLCENGINE_TTS_RESOURCE_ID:-seed-tts-2.0}
+      VOLCENGINE_TTS_VOICE: ${VOLCENGINE_TTS_VOICE:-zh_female_vv_uranus_bigtts}
+      VOLCENGINE_TTS_VOICES: ${VOLCENGINE_TTS_VOICES:-zh_female_vv_uranus_bigtts}
+      VOLCENGINE_TTS_TIMEOUT_MS: ${VOLCENGINE_TTS_TIMEOUT_MS:-25000}
+      COMMUNICATION_DIALECT_ASR_PROVIDER: ${COMMUNICATION_DIALECT_ASR_PROVIDER:-}
+      COMMUNICATION_DIALECT_ASR_TIMEOUT_SECONDS: ${COMMUNICATION_DIALECT_ASR_TIMEOUT_SECONDS:-30}
+      COMMUNICATION_TENCENTCLOUD_ASR_REGION: ${COMMUNICATION_TENCENTCLOUD_ASR_REGION:-}
+      COMMUNICATION_TENCENTCLOUD_ASR_SECRET_ID: ${COMMUNICATION_TENCENTCLOUD_ASR_SECRET_ID:-}
+      COMMUNICATION_TENCENTCLOUD_ASR_SECRET_KEY: ${COMMUNICATION_TENCENTCLOUD_ASR_SECRET_KEY:-}
+      VOLCENGINE_ASR_API_KEY: ${VOLCENGINE_ASR_API_KEY:-}
+      VOLCENGINE_ASR_APP_KEY: ${VOLCENGINE_ASR_APP_KEY:-}
+      VOLCENGINE_ASR_ACCESS_KEY: ${VOLCENGINE_ASR_ACCESS_KEY:-}
+      VOLCENGINE_ASR_BASE_URL: ${VOLCENGINE_ASR_BASE_URL:-https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash}
+      VOLCENGINE_ASR_RESOURCE_ID: ${VOLCENGINE_ASR_RESOURCE_ID:-volc.bigasr.auc_turbo}
+      BACKGROUND_REMOVAL_PROVIDER: ${BACKGROUND_REMOVAL_PROVIDER:-}
+      BACKGROUND_REMOVAL_API_URL: ${BACKGROUND_REMOVAL_API_URL:-}
+      BACKGROUND_REMOVAL_API_KEY: ${BACKGROUND_REMOVAL_API_KEY:-}
+      BACKGROUND_REMOVAL_TIMEOUT_MS: ${BACKGROUND_REMOVAL_TIMEOUT_MS:-15000}
+      COMMUNICATION_ENHANCEMENT_RATE_LIMIT_ENABLED: ${COMMUNICATION_ENHANCEMENT_RATE_LIMIT_ENABLED:-true}
+      COMMUNICATION_ENHANCEMENT_POINTS_PER_MINUTE: ${COMMUNICATION_ENHANCEMENT_POINTS_PER_MINUTE:-30}
+      COMMUNICATION_ENHANCEMENT_MONTHLY_POINTS: ${COMMUNICATION_ENHANCEMENT_MONTHLY_POINTS:-1000}
+      COMMUNICATION_AI_TOKEN_QUOTA_ENABLED: ${COMMUNICATION_AI_TOKEN_QUOTA_ENABLED:-true}
+      COMMUNICATION_AI_MONTHLY_TOKEN_QUOTA: ${COMMUNICATION_AI_MONTHLY_TOKEN_QUOTA:-1000000}
+      COMMUNICATION_AI_TEXT_TOKEN_RESERVATION: ${COMMUNICATION_AI_TEXT_TOKEN_RESERVATION:-4096}
+      COMMUNICATION_AI_IMAGE_TOKEN_RESERVATION: ${COMMUNICATION_AI_IMAGE_TOKEN_RESERVATION:-32768}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          require('http').get('http://127.0.0.1:10010/health',
+          response => process.exit(response.statusCode === 200 ? 0 : 1))
+          .on('error', () => process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - backend
+      - edge
+
+  caddy:
+    image: caddy:2.11.4
+    restart: unless-stopped
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?Set API_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - "${CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro"
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
+
+volumes:
+  mongo_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  backend:
+    internal: true
+  edge:
