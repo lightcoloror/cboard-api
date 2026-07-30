@@ -75,11 +75,29 @@ describe('Production deployment checker', function() {
     expect(errors).to.deep.equal([]);
   });
 
-  it('rejects production configuration without Azure storage', function() {
+  it('accepts the minimal production profile without purchased optional services', function() {
+    const errors = runChecker({
+      AZURE_STORAGE_CONNECTION_STRING: '',
+      PRIVATE_LIBRARY_CONTAINER_NAME: '',
+      PHONE_VERIFICATION_REQUIRED: 'false',
+      PHONE_VERIFICATION_PROVIDER: '',
+      PHONE_VERIFICATION_HASH_SECRET: '',
+      PHONE_VERIFICATION_TENCENTCLOUD_SECRET_ID: '',
+      PHONE_VERIFICATION_TENCENTCLOUD_SECRET_KEY: '',
+      PHONE_VERIFICATION_TENCENTCLOUD_SMS_SDK_APP_ID: '',
+      PHONE_VERIFICATION_TENCENTCLOUD_SMS_SIGN_NAME: '',
+      PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_ID: '',
+      PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_PARAMETERS: ''
+    });
+
+    expect(errors).to.deep.equal([]);
+  });
+
+  it('rejects a partially configured Azure private library', function() {
     const errors = runChecker({ AZURE_STORAGE_CONNECTION_STRING: '' });
 
     expect(errors).to.include(
-      'Missing required environment key: AZURE_STORAGE_CONNECTION_STRING'
+      'Azure private library requires both AZURE_STORAGE_CONNECTION_STRING and PRIVATE_LIBRARY_CONTAINER_NAME.'
     );
   });
 
@@ -126,9 +144,11 @@ describe('Production deployment checker', function() {
     );
   });
 
-  it('requires a complete fail-closed phone verification provider', function() {
+  it('requires complete provider settings only when phone verification is enabled', function() {
     const disabledErrors = runChecker({
-      PHONE_VERIFICATION_REQUIRED: 'false'
+      PHONE_VERIFICATION_REQUIRED: 'false',
+      PHONE_VERIFICATION_PROVIDER: '',
+      PHONE_VERIFICATION_HASH_SECRET: ''
     });
     const missingProviderErrors = runChecker({
       PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_ID: ''
@@ -137,14 +157,22 @@ describe('Production deployment checker', function() {
       PHONE_VERIFICATION_HASH_SECRET: 'session-secret-1234567890-abcdef'
     });
 
-    expect(disabledErrors).to.include(
-      'PHONE_VERIFICATION_REQUIRED must be true in production.'
-    );
+    expect(disabledErrors).to.deep.equal([]);
     expect(missingProviderErrors).to.include(
-      'Missing required environment key: PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_ID'
+      'Missing required phone verification key: PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_ID'
     );
     expect(reusedSecretErrors).to.include(
       'PHONE_VERIFICATION_HASH_SECRET must be independent from session and JWT secrets.'
+    );
+  });
+
+  it('rejects placeholder credentials when an optional service is enabled', function() {
+    const errors = runChecker({
+      PHONE_VERIFICATION_TENCENTCLOUD_SECRET_ID: 'replace-with-secret-id'
+    });
+
+    expect(errors).to.include(
+      'PHONE_VERIFICATION_TENCENTCLOUD_SECRET_ID still contains a placeholder value.'
     );
   });
 

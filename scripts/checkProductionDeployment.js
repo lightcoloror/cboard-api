@@ -46,7 +46,11 @@ function validateProductionDeployment({
     '.dockerignore',
     'deploy/docker-compose.production.yml',
     'deploy/Caddyfile',
-    'deploy/Caddyfile.local'
+    'deploy/Caddyfile.local',
+    'deploy/scripts/deploy.sh',
+    'deploy/scripts/health-check.sh',
+    'deploy/scripts/backup-mongo.sh',
+    'deploy/scripts/restore-mongo.sh'
   ];
 
   requiredFiles.forEach(relativePath => {
@@ -72,17 +76,7 @@ function validateProductionDeployment({
     'MONGO_URL',
     'API_SESSION_SECRET',
     'JWT_SECRET',
-    'AZURE_STORAGE_CONNECTION_STRING',
-    'PRIVATE_LIBRARY_CONTAINER_NAME',
     'PHONE_VERIFICATION_REQUIRED',
-    'PHONE_VERIFICATION_PROVIDER',
-    'PHONE_VERIFICATION_HASH_SECRET',
-    'PHONE_VERIFICATION_TENCENTCLOUD_SECRET_ID',
-    'PHONE_VERIFICATION_TENCENTCLOUD_SECRET_KEY',
-    'PHONE_VERIFICATION_TENCENTCLOUD_SMS_SDK_APP_ID',
-    'PHONE_VERIFICATION_TENCENTCLOUD_SMS_SIGN_NAME',
-    'PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_ID',
-    'PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_PARAMETERS',
     'COMMUNICATION_ENHANCEMENT_RATE_LIMIT_ENABLED',
     'COMMUNICATION_ENHANCEMENT_POINTS_PER_MINUTE',
     'COMMUNICATION_ENHANCEMENT_MONTHLY_POINTS',
@@ -122,8 +116,17 @@ function validateProductionDeployment({
     errors.push('MONGO_PASSWORD must be at least 24 characters and URL-safe.');
   }
 
+  const azureConfigured = Boolean(env.AZURE_STORAGE_CONNECTION_STRING);
+  const privateContainerConfigured = Boolean(
+    env.PRIVATE_LIBRARY_CONTAINER_NAME
+  );
+  if (azureConfigured !== privateContainerConfigured) {
+    errors.push(
+      'Azure private library requires both AZURE_STORAGE_CONNECTION_STRING and PRIVATE_LIBRARY_CONTAINER_NAME.'
+    );
+  }
   if (
-    env.PRIVATE_LIBRARY_CONTAINER_NAME &&
+    privateContainerConfigured &&
     !/^(?!.*--)[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/.test(
       env.PRIVATE_LIBRARY_CONTAINER_NAME
     )
@@ -144,41 +147,58 @@ function validateProductionDeployment({
     );
   }
 
-  if (env.PHONE_VERIFICATION_REQUIRED !== 'true') {
-    errors.push('PHONE_VERIFICATION_REQUIRED must be true in production.');
+  if (!['true', 'false'].includes(env.PHONE_VERIFICATION_REQUIRED)) {
+    errors.push('PHONE_VERIFICATION_REQUIRED must be true or false.');
   }
-  if (env.PHONE_VERIFICATION_PROVIDER !== 'tencentcloud') {
-    errors.push(
-      'PHONE_VERIFICATION_PROVIDER must be tencentcloud in production.'
-    );
-  }
-  if (
-    env.PHONE_VERIFICATION_HASH_SECRET &&
-    env.PHONE_VERIFICATION_HASH_SECRET.length < 32
-  ) {
-    errors.push(
-      'PHONE_VERIFICATION_HASH_SECRET must contain at least 32 characters.'
-    );
-  }
-  if (
-    env.PHONE_VERIFICATION_HASH_SECRET &&
-    [env.API_SESSION_SECRET, env.JWT_SECRET].includes(
-      env.PHONE_VERIFICATION_HASH_SECRET
-    )
-  ) {
-    errors.push(
-      'PHONE_VERIFICATION_HASH_SECRET must be independent from session and JWT secrets.'
-    );
-  }
-  if (
-    env.PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_PARAMETERS &&
-    !/^(?:code|minutes)(?:,(?:code|minutes))?$/.test(
-      env.PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_PARAMETERS
-    )
-  ) {
-    errors.push(
-      'PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_PARAMETERS must contain only code and optional minutes.'
-    );
+  if (env.PHONE_VERIFICATION_REQUIRED === 'true') {
+    const requiredPhoneKeys = [
+      'PHONE_VERIFICATION_PROVIDER',
+      'PHONE_VERIFICATION_HASH_SECRET',
+      'PHONE_VERIFICATION_TENCENTCLOUD_SECRET_ID',
+      'PHONE_VERIFICATION_TENCENTCLOUD_SECRET_KEY',
+      'PHONE_VERIFICATION_TENCENTCLOUD_SMS_SDK_APP_ID',
+      'PHONE_VERIFICATION_TENCENTCLOUD_SMS_SIGN_NAME',
+      'PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_ID',
+      'PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_PARAMETERS'
+    ];
+    requiredPhoneKeys.forEach(key => {
+      if (!env[key]) {
+        errors.push(`Missing required phone verification key: ${key}`);
+      }
+    });
+    if (env.PHONE_VERIFICATION_PROVIDER !== 'tencentcloud') {
+      errors.push(
+        'PHONE_VERIFICATION_PROVIDER must be tencentcloud when phone verification is enabled.'
+      );
+    }
+    if (
+      env.PHONE_VERIFICATION_HASH_SECRET &&
+      env.PHONE_VERIFICATION_HASH_SECRET.length < 32
+    ) {
+      errors.push(
+        'PHONE_VERIFICATION_HASH_SECRET must contain at least 32 characters.'
+      );
+    }
+    if (
+      env.PHONE_VERIFICATION_HASH_SECRET &&
+      [env.API_SESSION_SECRET, env.JWT_SECRET].includes(
+        env.PHONE_VERIFICATION_HASH_SECRET
+      )
+    ) {
+      errors.push(
+        'PHONE_VERIFICATION_HASH_SECRET must be independent from session and JWT secrets.'
+      );
+    }
+    if (
+      env.PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_PARAMETERS &&
+      !/^(?:code|minutes)(?:,(?:code|minutes))?$/.test(
+        env.PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_PARAMETERS
+      )
+    ) {
+      errors.push(
+        'PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_PARAMETERS must contain only code and optional minutes.'
+      );
+    }
   }
 
   const dialectAsrProvider = String(
@@ -286,7 +306,19 @@ function validateProductionDeployment({
   }
   if (!exampleMode) {
     const placeholder = /replace|change[-_ ]?me|example\.com|your[-_]/i;
-    requiredKeys.forEach(key => {
+    const configuredKeys = [
+      ...requiredKeys,
+      'AZURE_STORAGE_CONNECTION_STRING',
+      'PRIVATE_LIBRARY_CONTAINER_NAME',
+      'PHONE_VERIFICATION_PROVIDER',
+      'PHONE_VERIFICATION_HASH_SECRET',
+      'PHONE_VERIFICATION_TENCENTCLOUD_SECRET_ID',
+      'PHONE_VERIFICATION_TENCENTCLOUD_SECRET_KEY',
+      'PHONE_VERIFICATION_TENCENTCLOUD_SMS_SDK_APP_ID',
+      'PHONE_VERIFICATION_TENCENTCLOUD_SMS_SIGN_NAME',
+      'PHONE_VERIFICATION_TENCENTCLOUD_SMS_TEMPLATE_ID'
+    ];
+    configuredKeys.forEach(key => {
       if (env[key] && placeholder.test(env[key])) {
         errors.push(`${key} still contains a placeholder value.`);
       }
@@ -361,6 +393,38 @@ function validateProductionDeployment({
   ) {
     errors.push(
       'The API container must receive phone verification provider settings.'
+    );
+  }
+
+  const deployScript = readProjectFile('deploy/scripts/deploy.sh');
+  if (
+    !deployScript.includes('checkProductionDeployment.js') ||
+    !deployScript.includes('health-check.sh')
+  ) {
+    errors.push(
+      'The deployment script must validate configuration and run the HTTPS health check.'
+    );
+  }
+
+  const backupScript = readProjectFile('deploy/scripts/backup-mongo.sh');
+  if (
+    !backupScript.includes('mongodump') ||
+    !backupScript.includes('umask 077') ||
+    !backupScript.includes('BACKUP_RETENTION_DAYS')
+  ) {
+    errors.push(
+      'The MongoDB backup script must create private compressed backups with retention.'
+    );
+  }
+
+  const restoreScript = readProjectFile('deploy/scripts/restore-mongo.sh');
+  if (
+    !restoreScript.includes('CONFIRM_RESTORE=RESTORE') ||
+    !restoreScript.includes('mongorestore') ||
+    !restoreScript.includes('--drop')
+  ) {
+    errors.push(
+      'The MongoDB restore script must require explicit confirmation before a complete restore.'
     );
   }
 
