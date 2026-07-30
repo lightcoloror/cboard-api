@@ -100,6 +100,8 @@
     "verify:communication-tencentcloud-asr-http-mongo": "mocha ./test/integration/communicationTencentcloudAsrHttp.mongo.integration.js --exit",
     "verify:production-deploy-template": "node ./scripts/checkProductionDeployment.js --example",
     "verify:production-deploy": "node ./scripts/checkProductionDeployment.js",
+    "prepare:production-env": "node ./scripts/createProductionEnvironment.js",
+    "check:local-release": "npm run test:unit && npm run verify:production-deploy-template",
     "precommit": "lint-staged"
   },
   "lint-staged": {
