@@ -7,12 +7,16 @@ const { createCareSync } = require('../../../cboard/src/common/communicationSupp
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const newId = () => crypto.randomBytes(16).toString('hex');
 function fixture() {
-  const families = {}, profiles = {}, blobs = {};
+  const families = {}, profiles = {}, blobs = {}, accounts = {};
   const keys = { test: crypto.randomBytes(32).toString('hex') };
   const encryption = createCareCrypto(keys, 'test');
   const store = {
+    getAccount: async id => clone(accounts[id]),
+    createAccount: async d => { if (accounts[d._id]) return false; accounts[d._id] = clone(d); return true; },
+    casAccount: async (id, rev, update) => { if (accounts[id].rev !== rev) return false; accounts[id] = { ...accounts[id], ...clone(update) }; return true; },
     createFamily: async d => { families[d._id] = clone(d); },
     getFamily: async id => clone(families[id]),
+    casFamily: async (id, rev, update) => { if ((families[id].rev || 0) !== rev) return false; families[id] = { ...families[id], ...clone(update) }; return true; },
     listFamilies: async u => clone(Object.values(families).filter(f => f.owner === u)),
     createCommunicator: async () => {},
     createProfile: async d => { profiles[d._id] = clone(d); },
@@ -40,6 +44,60 @@ async function invite(f, p, member, grant = ['read', 'library.edit', 'preference
   await f.service.accept(member, v.token); return v;
 }
 describe('patient collaboration security and offline recovery', () => {
+  it('protects private favorite media until explicitly shared and retains attachment recovery pins', async () => {
+    const f = fixture(); const { profile } = await setup(f); await invite(f, profile.id, 'reader', ['read']);
+    const data = Buffer.from('89504e470d0a1a0a112233', 'hex');
+    const asset = { mediaId: 'private-photo', visibility: 'private', type: 'image/png', data: data.toString('base64'), sha256: crypto.createHash('sha256').update(data).digest('hex') };
+    await f.service.upload('reader', profile.id, asset);
+    await assert.rejects(f.service.download('familyA', profile.id, asset.mediaId), e => e.code === 'MEDIA_ACCESS_DENIED');
+    await f.service.favorite('reader', profile.id, { operationId: newId(), resourceId: 'original', action: 'put', baseVersion: 0, value: { sentence: '合成私人收藏', mediaId: asset.mediaId } });
+    await assert.rejects(f.service.deleteMedia('familyA', profile.id, asset.mediaId), e => e.code === 'MEDIA_IN_USE');
+    await f.service.command('reader', profile.id, { operationId: newId(), action: 'shareFavorite', resourceId: 'shared', sourceId: 'original', sourceVersion: 1 });
+    assert.equal((await f.service.download('familyA', profile.id, asset.mediaId)).data, asset.data);
+  });
+  it('keeps subscription renewal independent of administrator transfer and allows revocation after expiry', async () => {
+    const f = fixture(); const { family, profile } = await setup(f); await invite(f, profile.id, 'member');
+    const subscriptions = require('../../api/helpers/careSubscription').createCareSubscription({ store: f.store, encryption: f.encryption });
+    await subscriptions.activate({ familyId: family.id, payerId: 'familyA', receiptId: 'first', startsAt: 1, expiresAt: 10 });
+    await f.service.transferAdmin('familyA', profile.id, { member: 'member', operationId: newId() });
+    await f.service.command('member', profile.id, command());
+    await subscriptions.activate({ familyId: family.id, payerId: 'familyA', receiptId: 'renew', startsAt: 11, expiresAt: 20 });
+    assert.equal(f.families[family.id].owner, 'member');
+    await f.service.transferAdmin('member', profile.id, { member: 'familyA', operationId: newId() });
+    assert(!(await f.service.snapshot('member', profile.id)).permissions.includes('members.manage'));
+    const gated = createCareService({ store: f.store, encryption: f.encryption, media: f.media, enforceEntitlements: true, now: () => 100 });
+    await assert.rejects(gated.command('familyA', profile.id, command('new')), e => e.code === 'SUBSCRIPTION_EXPIRED');
+    await gated.command('familyA', profile.id, { action: 'grant', member: 'member', permissions: [], operationId: newId() });
+    await assert.rejects(gated.snapshot('member', profile.id), e => e.code === 'PROFILE_ACCESS_DENIED');
+  });
+  it('keeps personal originals private and scopes optional original updates to a family share', async () => {
+    const f = fixture(); const { profile } = await setup(f);
+    await invite(f, profile.id, 'therapist');
+    const original = { operationId: newId(), action: 'put', resourceId: 'phrase', baseVersion: 0, value: { sentence: '合成收藏' } };
+    await f.service.favorite('therapist', profile.id, original);
+    assert.equal((await f.service.snapshot('familyA', profile.id)).resources.length, 0);
+    assert.equal((await f.service.favorites('familyA', profile.id)).items.length, 0);
+    const share = await f.service.command('therapist', profile.id, { action: 'shareFavorite', operationId: newId(), sourceId: 'phrase', sourceVersion: 1, resourceId: 'shared' });
+    assert.equal(share.resource.value.sentence, '合成收藏');
+    await f.service.command('familyA', profile.id, { action: 'put', kind: 'favorite', operationId: newId(), resourceId: 'shared', baseVersion: 1, value: { sentence: '家庭修改' } });
+    assert.equal((await f.service.favorites('therapist', profile.id)).items[0].value.sentence, '合成收藏');
+    const sourceUpdate = { ...original, operationId: newId(), baseVersion: 1, sharedId: 'shared', sharedVersion: 2, value: { sentence: '一起修改' } };
+    await f.service.favoriteOriginal('familyA', profile.id, sourceUpdate);
+    assert.equal((await f.service.favorites('therapist', profile.id)).items[0].value.sentence, '一起修改');
+    await assert.rejects(f.service.favoriteOriginal('therapist', profile.id, sourceUpdate), e => e.code === 'OWNER_REQUIRED');
+    const other = await setup(f, 'familyB');
+    await assert.rejects(f.service.favoriteOriginal('familyB', other.profile.id, sourceUpdate), e => e.code === 'FAVORITE_SOURCE_NOT_FOUND');
+  });
+  it('persists account selection without granting access and separates role from permission', async () => {
+    const f = fixture(); const { profile } = await setup(f);
+    await invite(f, profile.id, 'reader', ['read']);
+    await f.service.context('reader', { profileId: profile.id });
+    await f.service.command('reader', profile.id, { action: 'relationship', operationId: newId(), value: { role: 'patient' } });
+    assert.equal((await f.service.profiles('reader'))[0].relationship.defaultMode, 'expression');
+    await assert.rejects(f.service.command('reader', profile.id, command()), e => e.status === 403);
+    await f.service.command('familyA', profile.id, { action: 'grant', operationId: newId(), member: 'reader', permissions: [] });
+    assert.equal((await f.service.context('reader')).selectedProfileId, null);
+  });
   it('encrypts data with authenticated context and restores using the separately held key', async () => {
     const f = fixture(); const { profile } = await setup(f);
     await f.service.command('familyA', profile.id, command());

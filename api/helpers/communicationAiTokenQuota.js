@@ -377,6 +377,7 @@ function createCommunicationAiTokenQuotaMiddleware(options = {}) {
     });
 
   const middleware = async function communicationAiTokenQuota(req, res, next) {
+    if (req.careUsage) return next();
     req.communicationAiTokenQuotaService = service;
     const reservationTokens = getRequestTokenReservation(req, config);
     if (!config.enabled || !reservationTokens) return next();

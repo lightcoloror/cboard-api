@@ -381,6 +381,168 @@ paths:
           description: Version conflict or concurrent change; retain local edit
         '503':
           description: Storage or feature unavailable
+  /care/profiles/{profileId}/favorites:
+    x-swagger-router-controller: care
+    get:
+      operationId: listFavorites
+      security:
+        - Bearer: []
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          type: string
+      responses:
+        '200':
+          description: Personal favorites scoped to the authenticated account and patient
+        '403':
+          description: Access denied or subscription expired
+        '409':
+          description: Version conflict with explicit target result
+    post:
+      operationId: writeFavorite
+      security:
+        - Bearer: []
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          type: string
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      responses:
+        '200':
+          description: Personal favorites scoped to the authenticated account and patient
+        '403':
+          description: Access denied or subscription expired
+        '409':
+          description: Version conflict with explicit target result
+  /care/profiles/{profileId}/favorite-original:
+    x-swagger-router-controller: care
+    post:
+      operationId: writeFavoriteOriginal
+      security:
+        - Bearer: []
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          type: string
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      responses:
+        '200':
+          description: Explicit family administrator update of the linked member original
+        '403':
+          description: Access denied or subscription expired
+        '409':
+          description: Version conflict with explicit target result
+  /care/funding:
+    x-swagger-router-controller: careFunding
+    get:
+      operationId: listFunding
+      security:
+        - Bearer: []
+      parameters:
+        - name: profileId
+          in: query
+          required: true
+          type: string
+      responses:
+        '200':
+          description: Authorized funding sources with balances and reset timestamps
+  /care/funding/{fundingId}/delegation:
+    x-swagger-router-controller: careFunding
+    post:
+      operationId: delegateFunding
+      security:
+        - Bearer: []
+      parameters:
+        - name: fundingId
+          in: path
+          required: true
+          type: string
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      responses:
+        '200':
+          description: Explicit scoped delegation with weekly cap or revocation
+        '403':
+          description: Funding administrator required
+  /care/profiles/{profileId}/administrator:
+    x-swagger-router-controller: care
+    post:
+      operationId: transferAdministrator
+      security:
+        - Bearer: []
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          type: string
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      responses:
+        '200':
+          description: Family administrator transferred to an existing member; payer unchanged
+        '403':
+          description: Current family administrator required
+  /care/context:
+    x-swagger-router-controller: care
+    get:
+      operationId: getContext
+      security:
+        - Bearer: []
+      responses:
+        '200':
+          description: Selected accessible profile, or null; contains no authorization credentials
+    put:
+      operationId: setContext
+      security:
+        - Bearer: []
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+            required: [profileId]
+            properties:
+              profileId:
+                type: string
+      responses:
+        '200':
+          description: Validated selection saved for this account
+        '403':
+          description: Profile access denied
+  /care/profiles/{profileId}/entitlements:
+    x-swagger-router-controller: care
+    get:
+      operationId: getEntitlements
+      security:
+        - Bearer: []
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          type: string
+      responses:
+        '200':
+          description: Server verified cloud rights and download deadline; identity login remains available
+        '403':
+          description: Profile access denied
   /care/profiles:
     x-swagger-router-controller: care
     get:

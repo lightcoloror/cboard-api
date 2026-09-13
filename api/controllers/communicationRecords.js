@@ -393,6 +393,9 @@ function buildPersistentRecord(record) {
 }
 
 async function syncConfirmedReceiverRecords(req, res) {
+  if (process.env.CARE_NEXT_ENABLED === 'true') {
+    return res.status(410).json({ code: 'HISTORY_LOCAL_ONLY', message: 'Communication history stays on this device. Sync favorites through the patient service.' });
+  }
   if (!req.user) {
     return res.status(400).json({
       message: 'Are you logged in? Is bearer token present?'

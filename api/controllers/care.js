@@ -14,6 +14,13 @@ function handler(fn) {
 }
 const profile = req => req.swagger.params.profileId.value;
 exports.listFamilies = handler((s, u) => s.families(u));
+exports.getContext = handler((s, u) => s.context(u));
+exports.setContext = handler((s, u, r) => s.context(u, r.body));
+exports.getEntitlements = handler((s, u, r) => s.entitlements(u, profile(r)));
+exports.transferAdministrator = handler((s, u, r) => s.transferAdmin(u, profile(r), r.body));
+exports.listFavorites = handler((s, u, r) => s.favorites(u, profile(r)));
+exports.writeFavorite = handler((s, u, r) => s.favorite(u, profile(r), r.body));
+exports.writeFavoriteOriginal = handler((s, u, r) => s.favoriteOriginal(u, profile(r), r.body));
 exports.migrationPreview = handler((s, u, r) => require('../helpers/careMigrationPreview').previewCareMigration(
   require('mongoose').connection, { id: u, email: r.user.email }));
 exports.createFamily = handler((s, u, r) => s.createFamily(u, r.body));

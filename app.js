@@ -128,6 +128,7 @@ swaggerTools.initializeMiddleware(swaggerConfig, async function (middleware) {
       environment: config.env
     })
   );
+  app.use(require('./api/helpers/careAiMetering').createCareAiMetering());
   app.use(
     createCommunicationAiTokenQuotaMiddleware({
       storeClient: db,

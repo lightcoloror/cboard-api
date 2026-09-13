@@ -23,6 +23,9 @@ async function updateSettings(req, res) {
   }
 
   const { body } = req;
+  if (process.env.CARE_NEXT_ENABLED === 'true' && body && (body.communicationSupport || body.tuyujia)) {
+    return res.status(409).json({ code: 'USE_PATIENT_SYNC', message: 'Use the scoped patient sync endpoints for communication content.' });
+  }
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return res.status(400).json({
       message: 'Settings must be an object'

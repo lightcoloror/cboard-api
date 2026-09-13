@@ -228,6 +228,7 @@ function getCommunicationAiHealth(req, res) {
 }
 
 async function getCommunicationAiUsage(req, res) {
+  if (process.env.CARE_NEXT_ENABLED === 'true') return res.status(409).json({ code: 'USE_FUNDING_USAGE', message: 'Select a profile and query its explicit funding account.' });
   if (!req || !req.user || !req.user.id) {
     return res.status(401).json({
       error: { message: 'Authentication is required' }
@@ -275,9 +276,11 @@ async function generateCommunicationSentences(req, res) {
   }
 
   try {
+    if (req.careUsage) req.careUsage.markProviderStarted();
     return res
       .status(200)
-      .json(await communicationAi.generateSentenceCandidates(req.body));
+      .json(await communicationAi.generateSentenceCandidates(process.env.CARE_NEXT_ENABLED === 'true'
+        ? { ...req.body, context: { scene: req.body && req.body.context && req.body.context.scene } } : req.body));
   } catch (error) {
     return sendCommunicationAiError(res, error);
   }
@@ -293,6 +296,7 @@ async function generateCommunicationPictogram(req, res) {
   }
 
   try {
+    if (req.careUsage) req.careUsage.markProviderStarted();
     const result = await provider.generate(req.body, {
       userId: req && req.user && req.user.id
     });
@@ -319,6 +323,7 @@ async function resegmentCommunicationText(req, res) {
   }
 
   try {
+    if (req.careUsage) req.careUsage.markProviderStarted();
     return res.status(200).json(await communicationAi.resegmentText(req.body));
   } catch (error) {
     return sendCommunicationAiError(res, error);
@@ -335,6 +340,7 @@ async function normalizeCommunicationDialectText(req, res) {
   }
 
   try {
+    if (req.careUsage) req.careUsage.markProviderStarted();
     return res
       .status(200)
       .json(await communicationAi.normalizeDialectText(req.body));
@@ -354,6 +360,7 @@ async function recognizeCommunicationDialectAudio(req, res) {
 
   try {
     const audio = req && req.files && req.files.audio && req.files.audio[0];
+    if (req.careUsage) req.careUsage.markProviderStarted();
     const result = await provider.recognize(audio);
     setCommunicationPrivateResponseHeaders(res);
     return res.status(200).json(result);
@@ -373,6 +380,7 @@ async function recognizeCommunicationImageText(req, res) {
 
   try {
     const image = req && req.files && req.files.image && req.files.image[0];
+    if (req.careUsage) req.careUsage.markProviderStarted();
     const result = await communicationAi.recognizeImageText(image);
     setCommunicationPrivateResponseHeaders(res);
     return res.status(200).json(result);
@@ -392,6 +400,7 @@ async function suggestCommunicationPictogramMetadata(req, res) {
 
   try {
     const image = req && req.files && req.files.image && req.files.image[0];
+    if (req.careUsage) req.careUsage.markProviderStarted();
     const result = await communicationAi.suggestPictogramMetadata(image);
     setCommunicationPrivateResponseHeaders(res);
     return res.status(200).json(result);
@@ -411,6 +420,7 @@ async function removeCommunicationImageBackground(req, res) {
 
   try {
     const image = req && req.files && req.files.image && req.files.image[0];
+    if (req.careUsage) req.careUsage.markProviderStarted();
     const result = await provider.removeBackground(image);
     setCommunicationPrivateResponseHeaders(res);
     return res.status(200).json(result);
@@ -429,6 +439,7 @@ async function synthesizeCommunicationSpeech(req, res) {
   }
 
   try {
+    if (req.careUsage) req.careUsage.markProviderStarted();
     const result = await provider.synthesize(req.body);
     res.set('Content-Type', result.contentType);
     setCommunicationPrivateResponseHeaders(res);
@@ -453,6 +464,7 @@ async function editPhrase(req, res) {
   }
 
   try {
+    if (req.careUsage) req.careUsage.markProviderStarted();
     const response = await provider.client.chat.completions.create({
       model: provider.model,
       messages: [

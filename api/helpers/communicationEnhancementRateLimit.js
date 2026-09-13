@@ -224,6 +224,9 @@ function createCommunicationEnhancementRateLimitMiddleware(options = {}) {
       });
     }
 
+    // The per-minute limiter protects service availability. Commercial usage
+    // for the new workflow is charged exclusively by the durable weekly ledger.
+    if ((options.env || process.env).CARE_NEXT_ENABLED === 'true') return next();
     let monthlyResult;
     try {
       monthlyResult = await limiters.monthly.consume(

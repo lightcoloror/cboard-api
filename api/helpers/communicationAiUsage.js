@@ -284,6 +284,7 @@ async function settleAndRecordCommunicationAiUsage({
   event,
   recordUsageImpl = input => defaultService.recordUsage(input)
 }) {
+  if (req && req.careUsage) await req.careUsage.observe(normalizeCommunicationAiUsage(event.usage));
   const quotaService =
     req && req.communicationAiTokenQuotaService;
   const reservation =

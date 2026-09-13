@@ -45,6 +45,16 @@ function createRequest(operationId, userId = 'user-1') {
 }
 
 describe('Communication enhancement rate limit', function() {
+  it('does not apply the old monthly cap when weekly funding is enabled', async function() {
+    const calls = [];
+    const middleware = createCommunicationEnhancementRateLimitMiddleware({
+      env: { CARE_NEXT_ENABLED: 'true' }, config: { enabled: true, pointsPerMinute: 20, monthlyPoints: 1 },
+      limiters: { minute: { consume: async () => { calls.push('minute'); return {}; } }, monthly: { consume: async () => { throw new Error('Old monthly billing must not execute'); } } }
+    });
+    const harness = createResponseHarness();
+    await middleware(createRequest('generateCommunicationSentences'), harness.response, () => calls.push('next'));
+    expect(calls).to.deep.equal(['minute', 'next']);
+  });
   it('enables safe defaults in production and stays off in development', function() {
     expect(
       resolveCommunicationEnhancementRateLimitConfig({}, 'production')
