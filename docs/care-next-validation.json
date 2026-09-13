@@ -1,0 +1,36 @@
+{
+  "recordedAt": "2026-09-13T12:14:08Z",
+  "author": "Codex (GPT-6 Astra)",
+  "status": "code_and_isolated_validation_passed_device_acceptance_pending",
+  "apiUnit": { "passed": 411, "runId": "codex-test-38436-067a0aa3cb51461b84a7b99362287608" },
+  "webCore": { "suites": 81, "passed": 632, "runId": "codex-test-38412-9a90c477810a4d39b0deb0def14ea8c2" },
+  "webComponents": { "suites": 5, "passed": 65, "runId": "codex-test-47928-4d9170c2738e4e1192fee115f071ca46" },
+  "webHomeFinal": { "passed": 3, "runId": "codex-test-21424-57a12fab29a94142aa6a02b7be7d1230" },
+  "webBuild": { "status": "passed_with_existing_vendor_warnings", "runId": "codex-test-54544-0eb358dc8e6546db83159038d041d46a" },
+  "weappUnit": { "passed": 400, "skipped": 4, "filesPassed": 91, "filesSkipped": 1, "runId": "codex-test-62472-fc27fc6f3e5343028f9358730b6cf164" },
+  "weappTypecheck": { "status": "passed", "runId": "codex-test-26232-17aa0956d7274904986a9c1a2991d7ba" },
+  "weappLint": { "status": "passed", "runId": "codex-test-53164-4b3e7af5807940789affc6c0770f3120" },
+  "weappBuild": { "status": "passed", "runId": "codex-test-24844-5743e777ff8e4e8dbbf551a32f94c19d" },
+  "weappOutput": { "status": "passed", "runId": "codex-test-54724-33500614aca34c808bb28513a4b6be83" },
+  "isolatedHttpMongo": {
+    "status": "passed",
+    "runId": "codex-test-62396-e8611714602348e8bf13ee12eb2779e3",
+    "scenarioRunId": "313a51f5698d472bbc81bf8c4c2c46f0",
+    "encryptedFileMedia": true,
+    "databaseAndMediaRestore": true,
+    "authorizationRejection": true,
+    "syntheticAiMetering": true,
+    "externalAiProviderExecuted": false,
+    "syntheticOnly": true,
+    "productionDatabaseTouched": false
+  },
+  "acceptanceLimits": {
+    "developerToolScenarios": "not_run_nw_runtime_incompatible",
+    "physicalDeviceNetworkScenarios": "not_run",
+    "realPayment": "not_in_scope",
+    "publicRelease": "not_performed",
+    "realPatientMigration": "not_performed",
+    "testsAreNotIndependentTotals": true,
+    "buildsIncludeExistingWorkspaceChanges": true
+  }
+}
