@@ -282,7 +282,9 @@ async function passportLogin(
       }
 
     const { _id: userId, email } = user;
+    const sid = await require('../helpers/deviceSessions').create(userId, type);
     const tokenString = auth.issueToken({
+      sid,
       id: userId,
       email,
       authVersion: user.authVersion
@@ -578,7 +580,9 @@ async function completeUserLogin(req, res, user) {
   const userId = user._id;
   req.session.userId = userId;
 
+  const sid = await require('../helpers/deviceSessions').create(userId, req.get('User-Agent'));
   const tokenString = auth.issueToken({
+    sid,
     email: user.email,
     id: userId,
     authVersion: user.authVersion
@@ -683,22 +687,15 @@ async function updateUserLocation(ip, user) {
   }
 }
 
-function logoutUser(req, res) {
-  if (req.session) {
-    // delete session object
-    req.session.destroy(err => {
-      if (err) {
-        return res.status(500).json({
-          message: 'Error removing session .',
-          error: err.message
-        });
-      }
-    });
+async function logoutUser(req, res) {
+  try {
+    await require('../helpers/deviceSessions').revoke(req.user.id, req.auth.sid);
+    if (req.session) await new Promise((resolve, reject) =>
+      req.session.destroy(error => error ? reject(error) : resolve()));
+    return res.status(200).json({ message: 'User successfully logout' });
+  } catch (_) {
+    return res.status(503).json({ code: 'SESSION_REVOKE_FAILED' });
   }
-
-  return res.status(200).json({
-    message: 'User successfully logout'
-  });
 }
 
 async function getMe(req, res) {

@@ -54,15 +54,17 @@ const verifyToken = (req, token) => {
   return isValid;
 };
 
-const issueToken = ({ email, id, authVersion }) => {
+const issueToken = ({ email, id, authVersion, sid }) => {
   return jwt.sign(
     {
       email,
       id,
+      ...(sid ? { sid } : {}),
       authVersion: normalizeAuthVersion(authVersion),
       issuer
     },
-    jwtSecret
+    jwtSecret,
+    { expiresIn: 30 * 24 * 60 * 60 }
   );
 };
 
@@ -72,7 +74,7 @@ const isTokenCurrentForUser = (tokenData, user) =>
 
 const getAuthDataFromReq = req => {
   const reqToken = req.get('Authorization');
-  const tokenString = reqToken.split(' ')[1];
+  const tokenString = (reqToken || '').split(' ')[1];
   const decodedToken = getTokenData(tokenString);
   const requestedBy = decodedToken?.id;
   if (!reqToken || !decodedToken)

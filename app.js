@@ -32,6 +32,9 @@ const {
 } = require('./api/helpers/communicationAiTokenQuota');
 
 const app = express();
+const authenticateBearer = require('./api/helpers/authenticateBearer').createBearerAuthenticator({
+  auth, users: User, sessions: require('./api/helpers/deviceSessions')
+});
 
 if (config.appInsightConnectionString && config.env === 'production') {
   appInsights
@@ -87,13 +90,9 @@ swaggerTools.initializeMiddleware(swaggerConfig, async function (middleware) {
       Bearer: async (req, authOrSecDef, token, cb) => {
         let isRequestValid = false;
         let errorMessage = 'Not valid token';
-        const tokenIsValid = auth.verifyToken(req, token);
-
-        if (tokenIsValid) {
-          errorMessage = `Could not found user #${req.auth.id}`;
-          const user = await User.getById(req.auth.id);
-
-          if (user && auth.isTokenCurrentForUser(req.auth, user)) {
+        try {
+        if (await authenticateBearer(req, token)) {
+          const user = req.user;
             // For previous users that doesn't have any role selected.
             if (!user.role) {
               user.role = 'user';
@@ -104,13 +103,16 @@ swaggerTools.initializeMiddleware(swaggerConfig, async function (middleware) {
 
             errorMessage = 'Not authorized';
             isRequestValid = auth.authorizeRequest(req, user);
-          }
         }
 
+        } catch (_) {
+          const unavailable = new Error('Authentication storage unavailable');
+          unavailable.statusCode = 503;
+          return cb(unavailable);
+        }
         if (!isRequestValid) {
           const authorizationError = new Error(errorMessage);
-          authorizationError.statusCode = 403;
-          req.res.status(403).json({ message: errorMessage });
+          authorizationError.statusCode = req.user ? 403 : 401;
           cb(authorizationError);
           return
         }

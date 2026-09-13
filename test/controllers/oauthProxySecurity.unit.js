@@ -47,6 +47,7 @@ describe('OAuth proxy internal authentication', function() {
       INTERNAL_API_KEY: 'internal-secret'
     });
     mockery.registerMock('../models/User', User);
+    mockery.registerMock('../helpers/deviceSessions', { create: async () => 'b'.repeat(48) });
     mockery.registerMock('../models/ResetPassword', {});
     mockery.registerMock('../models/Settings', {
       async getOrCreate() {

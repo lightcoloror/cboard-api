@@ -274,6 +274,361 @@ parameters:
     schema:
       $ref: "#/definitions/Translate"     
 paths:
+  /care/migration-preview:
+    x-swagger-router-controller: care
+    get:
+      operationId: migrationPreview
+      security:
+        - Bearer: []
+      responses:
+        '200':
+          description: Read-only mapping; target profiles must be selected explicitly
+        '401':
+          description: Sign in again
+        '503':
+          description: Feature or storage unavailable
+  /user/sessions:
+    x-swagger-router-controller: deviceSessions
+    get:
+      operationId: listDeviceSessions
+      security:
+        - Bearer: []
+      parameters:
+        - name: since
+          in: query
+          type: integer
+          required: false
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
+    post:
+      operationId: revokeDeviceSessions
+      security:
+        - Bearer: []
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
+  /care/families:
+    x-swagger-router-controller: care
+    get:
+      operationId: listFamilies
+      security:
+        - Bearer: []
+      parameters:
+        - name: since
+          in: query
+          type: integer
+          required: false
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
+    post:
+      operationId: createFamily
+      security:
+        - Bearer: []
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
+  /care/profiles:
+    x-swagger-router-controller: care
+    get:
+      operationId: listProfiles
+      security:
+        - Bearer: []
+      parameters:
+        - name: since
+          in: query
+          type: integer
+          required: false
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
+    post:
+      operationId: createProfile
+      security:
+        - Bearer: []
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
+  /care/invitations/accept:
+    x-swagger-router-controller: care
+    post:
+      operationId: acceptInvitation
+      security:
+        - Bearer: []
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
+  /care/profiles/{profileId}:
+    x-swagger-router-controller: care
+    get:
+      operationId: getProfile
+      security:
+        - Bearer: []
+      parameters:
+        - name: profileId
+          in: path
+          type: string
+          required: true
+        - name: since
+          in: query
+          type: integer
+          required: false
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
+  /care/profiles/{profileId}/commands:
+    x-swagger-router-controller: care
+    post:
+      operationId: command
+      security:
+        - Bearer: []
+      parameters:
+        - name: profileId
+          in: path
+          type: string
+          required: true
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
+  /care/profiles/{profileId}/audit:
+    x-swagger-router-controller: care
+    get:
+      operationId: getAudit
+      security:
+        - Bearer: []
+      parameters:
+        - name: profileId
+          in: path
+          type: string
+          required: true
+        - name: since
+          in: query
+          type: integer
+          required: false
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
+  /care/profiles/{profileId}/media:
+    x-swagger-router-controller: care
+    post:
+      operationId: uploadMedia
+      security:
+        - Bearer: []
+      parameters:
+        - name: profileId
+          in: path
+          type: string
+          required: true
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
+  /care/profiles/{profileId}/media/{mediaId}:
+    x-swagger-router-controller: care
+    get:
+      operationId: getMedia
+      security:
+        - Bearer: []
+      parameters:
+        - name: profileId
+          in: path
+          type: string
+          required: true
+        - name: mediaId
+          in: path
+          type: string
+          required: true
+        - name: since
+          in: query
+          type: integer
+          required: false
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
+    delete:
+      operationId: deleteMedia
+      security:
+        - Bearer: []
+      parameters:
+        - name: profileId
+          in: path
+          type: string
+          required: true
+        - name: mediaId
+          in: path
+          type: string
+          required: true
+        - name: since
+          in: query
+          type: integer
+          required: false
+      responses:
+        '200':
+          description: Authorized result
+        '400':
+          description: Invalid input
+        '401':
+          description: Sign in again
+        '403':
+          description: Access revoked or denied
+        '409':
+          description: Version conflict or concurrent change; retain local edit
+        '503':
+          description: Storage or feature unavailable
   /swagger:
     x-swagger-pipe: swagger_raw
   /health:
@@ -1625,11 +1980,11 @@ paths:
         - user
       parameters:
         - name: info
-          description: User properties
+          description: Optional empty body; the authenticated device session is revoked
           in: body
-          required: true
+          required: false
           schema:
-            $ref: "#/definitions/UserLogin"
+            type: object
       responses:
         "200":
           description: Success

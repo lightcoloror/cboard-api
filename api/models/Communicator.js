@@ -7,6 +7,8 @@ const moment = require('moment');
 const Schema = mongoose.Schema;
 
 const COMMUNICATOR_SCHEMA_DEFINITION = {
+  careProfileId: { type: String, immutable: true, select: false },
+  careFamilyId: { type: String, immutable: true, select: false },
   name: {
     type: String,
     unique: false,
@@ -71,6 +73,15 @@ const communicatorSchema = new Schema(
   COMMUNICATOR_SCHEMA_DEFINITION,
   COMMUNICATOR_SCHEMA_OPTIONS
 );
+
+// Shared content is served exclusively by /care; legacy email-owned routes
+// cannot discover, edit or delete the shared profile marker.
+['find', 'findOne', 'findOneAndUpdate', 'findOneAndDelete', 'updateOne',
+ 'updateMany', 'deleteOne', 'deleteMany', 'countDocuments'].forEach(operation => {
+  communicatorSchema.pre(operation, function() {
+    this.where({ careProfileId: { $exists: false } });
+  });
+});
 
 communicatorSchema.index(
   { email: 1, clientCreationKey: 1 },

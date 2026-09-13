@@ -53,6 +53,7 @@ describe('user phone login controller', function() {
       useCleanCache: true
     });
     mockery.registerMock('../models/User', User);
+    mockery.registerMock('../helpers/deviceSessions', { create: async () => 'a'.repeat(48) });
     mockery.registerMock('../models/ResetPassword', {});
     mockery.registerMock('../models/Settings', {
       async getOrCreate() {
@@ -112,6 +113,7 @@ describe('user phone login controller', function() {
 
   function request(phone = '13800138000', token = 'a'.repeat(64)) {
     return {
+      get: () => 'test-device',
       body: { phone, phoneVerificationToken: token },
       session: {},
       ip: '127.0.0.1'
