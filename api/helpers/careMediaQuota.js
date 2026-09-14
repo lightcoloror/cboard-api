@@ -45,6 +45,14 @@ function releasedKey({ profileId, mediaId, sha256 }) {
     .digest('hex');
 }
 
+function objectName() {
+  return `${crypto.randomBytes(24).toString('hex')}.bin`;
+}
+
+function validObjectName(value) {
+  return /^[a-f0-9]{48}\.bin$/.test(value || '');
+}
+
 function calculateExistingUsage(profiles, encryption) {
   let usedBytes = 0;
   let usedFiles = 0;
@@ -97,7 +105,8 @@ function validQuotaState(quota) {
       !quota.reservations || typeof quota.reservations !== 'object' || !quota.released || typeof quota.released !== 'object') return false;
   return Object.values(quota.reservations).every(value => value && typeof value === 'object' &&
     ['reserved', 'committed', 'released'].includes(value.status) && validMediaSize(value.size) &&
-    typeof value.profileId === 'string' && typeof value.mediaId === 'string' && /^[a-f0-9]{64}$/.test(value.sha256 || ''));
+    typeof value.profileId === 'string' && typeof value.mediaId === 'string' && /^[a-f0-9]{64}$/.test(value.sha256 || '') &&
+    (!value.objectName || validObjectName(value.objectName)));
 }
 
 function createCareMediaQuota({ store, encryption, config, now = Date.now }) {
@@ -158,7 +167,7 @@ function createCareMediaQuota({ store, encryption, config, now = Date.now }) {
     fail(409, 'RETRY_CONCURRENT_CHANGE');
   }
 
-  async function reserve({ familyId, profileId, mediaId, sha256, size }) {
+  async function reserve({ familyId, profileId, mediaId, sha256, size, actor, owner, type }) {
     requireAvailable();
     if (!validMediaSize(size) || !profileId || !mediaId || !/^[a-f0-9]{64}$/.test(sha256 || '')) {
       fail(400, 'INVALID_MEDIA');
@@ -175,15 +184,17 @@ function createCareMediaQuota({ store, encryption, config, now = Date.now }) {
         // Never let a second process write a second blob for the same media
         // registration. A process crash remains pending/reconciliation, never
         // an inferred upload success.
-        return { key, pending: existing.status === 'reserved', committed: existing.status === 'committed' };
+        if ((existing.actor && existing.actor !== actor) || (Object.prototype.hasOwnProperty.call(existing, 'owner') && existing.owner !== owner) ||
+            (existing.type && existing.type !== type)) fail(409, 'MEDIA_ID_REUSED');
+        return { key, pending: existing.status === 'reserved', committed: existing.status === 'committed', reservation: clone(existing) };
       }
       if (quota.usedBytes + quota.reservedBytes + size > quota.limitBytes || quota.usedFiles + quota.reservedFiles + 1 > quota.maxFiles) {
         fail(413, 'FAMILY_MEDIA_QUOTA_EXCEEDED');
       }
-      quota.reservations[key] = { profileId, mediaId, sha256, size, at: now(), status: 'reserved' };
+      quota.reservations[key] = { profileId, mediaId, sha256, size, actor, owner, type, objectName: objectName(), at: now(), status: 'reserved' };
       quota.reservedBytes += size;
       quota.reservedFiles += 1;
-      if (await saveFamily(family, state)) return { key, pending: false };
+      if (await saveFamily(family, state)) return { key, pending: false, reservation: clone(quota.reservations[key]) };
     }
     fail(409, 'RETRY_CONCURRENT_CHANGE');
   }

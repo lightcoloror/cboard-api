@@ -254,7 +254,7 @@ describe('patient collaboration security and offline recovery', () => {
     await atReserve;
     await service.upload('familyA', profile.id, asset);
     release();
-    await assert.rejects(late, error => error.code === 'MEDIA_UPLOAD_RECONCILIATION_REQUIRED');
+    await assert.rejects(late, error => error.code === 'MEDIA_ID_REUSED');
   });
   it('keeps an uncertain write reservation and initializes before releasing a legacy deletion', async () => {
     const f = fixture(); const { profile, family } = await setup(f);
@@ -267,14 +267,55 @@ describe('patient collaboration security and offline recovery', () => {
     await guarded.deleteMedia('familyA', profile.id, asset.mediaId);
     let state = f.encryption.open(f.families[family.id].sealed, `family:${family.id}`).mediaQuota;
     assert.equal(state.usedBytes, 0);
+    let removeCalls = 0; let cancelCalls = 0;
     const uncertain = createCareService({ store: f.store, encryption: f.encryption, media: {
-      async write() { throw new Error('synthetic lost provider response'); }, read: f.media.read, remove: f.media.remove
-    }, mediaQuota: quota });
+      async write() { throw new Error('synthetic lost provider response'); }, read: f.media.read,
+      async remove() { removeCalls += 1; }
+    }, mediaQuota: { ...quota, async cancel(input) { cancelCalls += 1; return quota.cancel(input); } } });
     const other = { ...asset, mediaId: 'uncertain-photo' };
     await assert.rejects(uncertain.upload('familyA', profile.id, other), error => error.code === 'MEDIA_UPLOAD_RECONCILIATION_REQUIRED');
     state = f.encryption.open(f.families[family.id].sealed, `family:${family.id}`).mediaQuota;
     assert.equal(state.reservedBytes, bytes.length);
     assert.equal(state.usedBytes, 0);
+    assert.equal(removeCalls, 0);
+    assert.equal(cancelCalls, 0);
+  });
+  it('recovers named file reservations after crashes without releasing or replacing a blob', async () => {
+    const f = fixture(); const { profile, family } = await setup(f); await invite(f, profile.id, 'member', ['read']);
+    const quota = createCareMediaQuota({ store: f.store, encryption: f.encryption,
+      config: resolveCareMediaQuotaConfig({ CARE_FAMILY_MEDIA_QUOTA_BYTES: '64', CARE_FAMILY_MEDIA_QUOTA_MAX_FILES: '4' }) });
+    const objects = {}; let namedWrites = 0;
+    const media = {
+      async writeNamed(name, value) { if (!objects[name]) { objects[name] = Buffer.from(value); namedWrites += 1; return { name, created: true }; } return { name, created: false }; },
+      async read(name) { if (!objects[name]) { const error = new Error('missing'); error.code = 'ENOENT'; throw error; } return objects[name]; },
+      async remove(name) { delete objects[name]; }
+    };
+    const service = createCareService({ store: f.store, encryption: f.encryption, media, mediaQuota: quota });
+    const bytes = Buffer.from('89504e470d0a1a0a00000000', 'hex');
+    const makeAsset = (mediaId, visibility) => ({ mediaId, ...(visibility ? { visibility } : {}), data: bytes.toString('base64'), type: 'image/png', sha256: crypto.createHash('sha256').update(bytes).digest('hex') });
+    const first = makeAsset('recover-after-reserve');
+    const reserved = await quota.reserve({ familyId: family.id, profileId: profile.id, mediaId: first.mediaId, sha256: first.sha256, size: bytes.length, actor: 'familyA', owner: null, type: first.type });
+    await service.upload('familyA', profile.id, first);
+    assert.equal(namedWrites, 1);
+    assert.equal((await service.download('familyA', profile.id, first.mediaId)).data, first.data);
+
+    const second = makeAsset('recover-after-write');
+    const written = await quota.reserve({ familyId: family.id, profileId: profile.id, mediaId: second.mediaId, sha256: second.sha256, size: bytes.length, actor: 'familyA', owner: null, type: second.type });
+    objects[written.reservation.objectName] = Buffer.from(JSON.stringify(f.encryption.seal({ data: second.data }, `media:${profile.id}:${second.mediaId}`)));
+    await service.upload('familyA', profile.id, second);
+    assert.equal(namedWrites, 1);
+
+    const revoked = makeAsset('revoked-recovery');
+    const revokedReservation = await quota.reserve({ familyId: family.id, profileId: profile.id, mediaId: revoked.mediaId, sha256: revoked.sha256, size: bytes.length, actor: 'member', owner: null, type: revoked.type });
+    await f.service.command('familyA', profile.id, { action: 'grant', operationId: newId(), member: 'member', permissions: [] });
+    await assert.rejects(service.upload('member', profile.id, revoked), error => error.code === 'PROFILE_ACCESS_DENIED');
+    assert.equal(objects[revokedReservation.reservation.objectName], undefined);
+
+    const mismatch = makeAsset('metadata-mismatch', 'private');
+    await quota.reserve({ familyId: family.id, profileId: profile.id, mediaId: mismatch.mediaId, sha256: mismatch.sha256, size: bytes.length, actor: 'familyA', owner: null, type: mismatch.type });
+    await assert.rejects(service.upload('familyA', profile.id, mismatch), error => error.code === 'MEDIA_ID_REUSED');
+    const quotaState = f.encryption.open(f.families[family.id].sealed, `family:${family.id}`).mediaQuota;
+    assert.equal(quotaState.reservedBytes, bytes.length * 2);
   });
   it('retains pending media and queued references when media registration returns 409 or 503', async () => {
     const f = fixture(); const { profile, family } = await setup(f); await invite(f, profile.id, 'therapist');

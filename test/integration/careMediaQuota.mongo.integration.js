@@ -90,6 +90,74 @@ async function main() {
     assert.equal((await fs.readdir(mediaRoot)).length, beforeRetry);
     assert.equal((await fileService.download('owner-two', concurrentProfile.id, 'same')).data, asset('same').data);
 
+    // Named-file recovery uses a separate family so the old random-write
+    // wrapper above retains its original five-scenario semantics.
+    const namedQuota = createCareMediaQuota({ store, encryption,
+      config: resolveCareMediaQuotaConfig({ CARE_FAMILY_MEDIA_QUOTA_BYTES: '100', CARE_FAMILY_MEDIA_QUOTA_MAX_FILES: '4' }) });
+    const namedSetup = createCareService({ store, encryption, media: fileMedia, mediaQuota: namedQuota });
+    const namedFamily = await namedSetup.createFamily('named-owner', { name: '合成恢复家庭' });
+    const namedProfile = await namedSetup.createProfile('named-owner', { familyId: namedFamily.id, name: '合成恢复档案' });
+    const canonicalCount = async () => (await fs.readdir(mediaRoot)).filter(name => /^[a-f0-9]{48}\.bin$/.test(name)).length;
+    let rejectProfileCas = true;
+    const interruptedStore = { ...store, casProfile: async (...args) => rejectProfileCas ? false : store.casProfile(...args) };
+    const interruptedService = createCareService({ store: interruptedStore, encryption, media: fileMedia, mediaQuota: namedQuota });
+    const afterPublish = asset('recover-after-publish');
+    const beforePublish = await canonicalCount();
+    await assert.rejects(interruptedService.upload('named-owner', namedProfile.id, afterPublish), error => error.code === 'MEDIA_UPLOAD_RECONCILIATION_REQUIRED');
+    assert.equal(await canonicalCount(), beforePublish + 1);
+    rejectProfileCas = false;
+    const rebuiltService = createCareService({ store, encryption, media: fileMedia, mediaQuota: namedQuota });
+    await rebuiltService.upload('named-owner', namedProfile.id, afterPublish);
+    assert.equal(await canonicalCount(), beforePublish + 1);
+    assert.equal((await rebuiltService.download('named-owner', namedProfile.id, afterPublish.mediaId)).data, afterPublish.data);
+
+    const afterReserve = asset('recover-after-reserve');
+    const pending = await namedQuota.reserve({ familyId: namedFamily.id, profileId: namedProfile.id, mediaId: afterReserve.mediaId,
+      sha256: afterReserve.sha256, size: png.length, actor: 'named-owner', owner: null, type: afterReserve.type });
+    assert.equal((await fs.readdir(mediaRoot)).includes(pending.reservation.objectName), false);
+    const beforeReserveRecovery = await canonicalCount();
+    await rebuiltService.upload('named-owner', namedProfile.id, afterReserve);
+    assert.equal(await canonicalCount(), beforeReserveRecovery + 1);
+    assert.equal((await rebuiltService.download('named-owner', namedProfile.id, afterReserve.mediaId)).data, afterReserve.data);
+
+    let failCommitOnce = true;
+    const commitInterrupted = createCareService({ store, encryption, media: fileMedia, mediaQuota: { ...namedQuota,
+      async commit(input) { if (failCommitOnce) { failCommitOnce = false; const error = new Error('synthetic commit interruption'); error.code = 'COMMIT_INTERRUPTED'; throw error; } return namedQuota.commit(input); } } });
+    const afterRegistration = asset('recover-after-registration');
+    const beforeCommitRecovery = await canonicalCount();
+    await assert.rejects(commitInterrupted.upload('named-owner', namedProfile.id, afterRegistration), error => error.code === 'COMMIT_INTERRUPTED');
+    assert.equal(await canonicalCount(), beforeCommitRecovery + 1);
+    assert.equal((await rebuiltService.upload('named-owner', namedProfile.id, afterRegistration)).reused, true);
+    assert.equal(await canonicalCount(), beforeCommitRecovery + 1);
+    assert.equal((await rebuiltService.download('named-owner', namedProfile.id, afterRegistration.mediaId)).data, afterRegistration.data);
+
+    // An old writer can be paused after reserve while a recovery writer
+    // registers and deletes the same identity. The deletion marker must stop
+    // the old writer from recreating an uncharged canonical object.
+    let releaseOldWriter; let oldWriterStarted;
+    const oldWriterGate = new Promise(resolve => { releaseOldWriter = resolve; });
+    const oldWriterReady = new Promise(resolve => { oldWriterStarted = resolve; });
+    const oldWriterMedia = { ...fileMedia, async writeNamed(name, value) { oldWriterStarted(); await oldWriterGate; return fileMedia.writeNamed(name, value); } };
+    const oldWriterService = createCareService({ store, encryption, media: oldWriterMedia, mediaQuota: namedQuota });
+    const deletedDuringRecovery = asset('deleted-during-recovery');
+    const oldWriter = oldWriterService.upload('named-owner', namedProfile.id, deletedDuringRecovery);
+    await oldWriterReady;
+    await rebuiltService.upload('named-owner', namedProfile.id, deletedDuringRecovery);
+    await rebuiltService.deleteMedia('named-owner', namedProfile.id, deletedDuringRecovery.mediaId);
+    await assert.rejects(rebuiltService.download('named-owner', namedProfile.id, deletedDuringRecovery.mediaId), error => error.code === 'MEDIA_NOT_FOUND');
+    releaseOldWriter();
+    await assert.rejects(oldWriter, error => error.code === 'MEDIA_UPLOAD_RECONCILIATION_REQUIRED');
+    await assert.rejects(rebuiltService.upload('named-owner', namedProfile.id, deletedDuringRecovery), error => error.code === 'MEDIA_ID_REUSED');
+    const deletedState = encryption.open((await store.getProfile(namedProfile.id)).sealed, `profile:${namedProfile.id}`);
+    const deletedBlob = deletedState.media[deletedDuringRecovery.mediaId].blob;
+    await assert.rejects(fs.access(path.join(mediaRoot, deletedBlob)), error => error.code === 'ENOENT');
+    await fs.access(path.join(mediaRoot, `${deletedBlob}.deleted`));
+    const deletedReservation = await namedQuota.reserve({ familyId: namedFamily.id, profileId: namedProfile.id, mediaId: 'deleted-during-recovery',
+      sha256: deletedDuringRecovery.sha256, size: png.length, actor: 'named-owner', owner: null, type: deletedDuringRecovery.type }).catch(error => error);
+    assert.equal(deletedReservation.code, 'MEDIA_ID_REUSED');
+    state = encryption.open((await Family.findById(namedFamily.id).lean().exec()).sealed, `family:${namedFamily.id}`).mediaQuota;
+    assert.equal(state.usedBytes, png.length * 3); assert.equal(state.reservedBytes, 0);
+
     // Existing media is scanned only when a family has no quota state; this
     // proves conservative counting, not a tool that repairs legacy storage.
     await Family.create({ _id: 'legacy-family', owner: 'legacy-owner', rev: 0,
@@ -99,8 +167,8 @@ async function main() {
     const legacy = await fileQuota.ensureInitialized('legacy-family');
     assert.equal(legacy.quota.usedBytes, 7); assert.equal(legacy.quota.usedFiles, 1);
     console.log(JSON.stringify({ result: 'passed', careMediaQuotaMongo: true, realMongoCas: true, realFileMedia: true,
-      scenarios: ['family-byte-limit', 'family-file-limit', 'concurrent-pending-and-completed-retry', 'delete-failure-retry', 'legacy-conservative-initialization'],
-      reconciliationRecoveryImplemented: false, syntheticOnly: true, productionDatabaseTouched: false }));
+      scenarios: ['family-byte-limit', 'family-file-limit', 'concurrent-pending-and-completed-retry', 'delete-failure-retry', 'legacy-conservative-initialization', 'named-reserve-publish-registration-recovery', 'deleted-writer-fenced'],
+      namedFileRetryRecovery: true, generalReconciliationTool: false, syntheticOnly: true, productionDatabaseTouched: false }));
   } finally {
     if (mongoose.connection.name !== databaseName) throw new Error('Cleanup database guard failed');
     await mongoose.connection.dropDatabase(); await mongoose.disconnect();

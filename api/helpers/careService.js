@@ -340,11 +340,14 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
         }
         return { id: body.mediaId, reused: true };
       }
-      const quotaRequest = { familyId: uploadDoc.familyId, profileId, mediaId: body.mediaId, sha256: body.sha256, size: buffer.length };
+      const quotaRequest = { familyId: uploadDoc.familyId, profileId, mediaId: body.mediaId, sha256: body.sha256, size: buffer.length,
+        actor: user, owner: body.visibility === 'private' ? user : null, type: body.type };
       let reservation = null;
       if (mediaQuota) {
         reservation = await mediaQuota.reserve(quotaRequest);
-        if (reservation.pending) fail(409, 'MEDIA_UPLOAD_PENDING_RECONCILIATION');
+        if (reservation.pending && (!reservation.reservation || !reservation.reservation.objectName || typeof media.writeNamed !== 'function')) {
+          fail(409, 'MEDIA_UPLOAD_PENDING_RECONCILIATION');
+        }
         if (reservation.committed) {
           // A late identical request read the profile before the first writer
           // committed. The retained receipt means it must reload and finalize,
@@ -359,10 +362,35 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
         }
       }
       const context = `media:${profileId}:${body.mediaId}`;
-      let blob = null;
+      const namedObjectName = reservation && reservation.reservation && reservation.reservation.objectName;
+      const namedReservation = Boolean(namedObjectName && typeof media.writeNamed === 'function');
+      // A quota receipt has an object name even for adapters that cannot
+      // publish to it. Do not treat that name as a written blob: a failed
+      // random-object write must retain its reservation and never delete an
+      // unrelated/nonexistent deterministic file.
+      let blob = namedReservation ? namedObjectName : null;
       let profileRegistered = false;
+      const verifyStored = stored => {
+        let envelope; let data;
+        try {
+          envelope = JSON.parse(stored.toString('utf8'));
+          data = encryption.open(envelope, context).data;
+        } catch (_) { fail(503, 'MEDIA_UPLOAD_RECONCILIATION_REQUIRED'); }
+        if (data !== body.data || hash(Buffer.from(data, 'base64')) !== body.sha256) fail(503, 'MEDIA_UPLOAD_RECONCILIATION_REQUIRED');
+      };
       try {
-        blob = await media.write(Buffer.from(JSON.stringify(encryption.seal({ data: body.data }, context))));
+        const sealed = Buffer.from(JSON.stringify(encryption.seal({ data: body.data }, context)));
+        if (blob && typeof media.writeNamed === 'function') {
+          try {
+            await verifyStored(await media.read(blob));
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+            await media.writeNamed(blob, sealed);
+            await verifyStored(await media.read(blob));
+          }
+        } else {
+          blob = await media.write(sealed);
+        }
         const result = await mutate(profileId, user, uploadPermission, (state, doc) => {
           state.media = state.media || {};
           const old = state.media[body.mediaId];
@@ -375,11 +403,11 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
           return { value: { id: body.mediaId } };
         });
         profileRegistered = true;
-        if (result.reused) await media.remove(blob);
+        if (result.reused && !namedReservation) await media.remove(blob);
         if (mediaQuota && mediaQuota.available) await mediaQuota.commit({ familyId: uploadDoc.familyId, key: reservation.key });
         return result;
       } catch (error) {
-        if (!profileRegistered && blob) {
+        if (!profileRegistered && blob && !namedReservation) {
           try {
             await media.remove(blob);
             if (mediaQuota && mediaQuota.available) await mediaQuota.cancel({ familyId: uploadDoc.familyId, key: reservation.key });
