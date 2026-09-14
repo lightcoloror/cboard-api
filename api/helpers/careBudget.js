@@ -53,11 +53,22 @@ function createCareBudget({ store, encryption, now = Date.now }) {
     // Called only by trusted provisioning, never from a client supplied plan.
     async provision(id, value) {
       if (!valid(id) || !valid(value.owner) || !['family', 'institution'].includes(value.kind) || !Number.isSafeInteger(value.weeklyLimit) || value.weeklyLimit < 0 || !Number.isSafeInteger(value.startsAt) || !(value.expiresAt > value.startsAt)) fail(400, 'INVALID_FUNDING_CONFIG');
+      if (value.trialClaimId !== undefined && !valid(value.trialClaimId)) fail(400, 'INVALID_FUNDING_CONFIG');
       const state = { kind: value.kind, owner: value.owner, familyId: value.familyId || null,
         startsAt: value.startsAt, expiresAt: value.expiresAt, weeklyLimit: value.weeklyLimit,
-        grants: { [value.owner]: { limit: null, profileIds: null, revoked: false } }, weekUsed: {}, delegateUsed: {}, packs: [], receipts: {} };
+        grants: { [value.owner]: { limit: null, profileIds: null, revoked: false } }, weekUsed: {}, delegateUsed: {}, packs: [], receipts: {},
+        trialClaimId: value.trialClaimId || null, trialPending: Boolean(value.trialClaimId) };
       if (!await store.create({ _id: id, rev: 0, kind: state.kind, familyId: state.familyId, owner: state.owner, members: [state.owner], sealed: encryption.seal(state, `funding:${id}`) })) fail(409, 'FUNDING_EXISTS');
       return { id };
+    },
+    async activateTrial(id, claimId) {
+      if (!valid(claimId)) fail(400, 'INVALID_TRIAL_CLAIM');
+      return mutate(id, state => {
+        if (state.trialClaimId !== claimId) fail(409, 'TRIAL_FUNDING_CONFLICT');
+        if (!state.trialPending) return { noWrite: true, value: { ok: true } };
+        state.trialPending = false;
+        return { value: { ok: true } };
+      });
     },
     async renew(id, expiresAt) {
       return mutate(id, state => { if (!(expiresAt > state.expiresAt)) fail(400, 'INVALID_RENEWAL'); state.expiresAt = expiresAt; return { value: { ok: true } }; });
@@ -87,7 +98,8 @@ function createCareBudget({ store, encryption, now = Date.now }) {
     async snapshot(id, actor, profileId) {
       const { state } = await load(id); const g = grant(state, actor, profileId); const w = week(state);
       return { id, kind: state.kind, canManage: state.owner === actor, resetAt: w.resetAt, weeklyLimit: state.weeklyLimit,
-        weeklyUsed: state.weekUsed[w.key] || 0, available: buckets(state).reduce((n, b) => n + b.remaining, 0),
+        weeklyUsed: state.weekUsed[w.key] || 0, trialPending: Boolean(state.trialPending),
+        available: state.trialPending ? 0 : buckets(state).reduce((n, b) => n + b.remaining, 0),
         delegatedLimit: g.limit, delegatedUsed: state.delegateUsed[`${actor}:${w.key}`] || 0,
         pendingRequests: Object.values(state.receipts).filter(r => r.status === 'reserved' && r.profileId === profileId && (actor === state.owner || r.actor === actor)).map(r => ({ requestId: r.requestId, actor: r.actor, reserved: r.reserved, createdAt: r.createdAt })),
         packs: state.packs.map(({ id, type, amount, used, startsAt, expiresAt }) => ({ id, type, amount, used, startsAt, expiresAt })) };
@@ -95,6 +107,7 @@ function createCareBudget({ store, encryption, now = Date.now }) {
     async reserve(id, { actor, profileId, requestId, units, fingerprint }) {
       if (!valid(requestId) || !positive(units) || !/^[a-f0-9]{64}$/.test(fingerprint || '')) fail(400, 'INVALID_USAGE_REQUEST');
       return mutate(id, state => {
+        if (state.trialPending) fail(403, 'TRIAL_PENDING_ACTIVATION');
         const g = grant(state, actor, profileId);
         const key = `${actor}:${requestId}`; const old = state.receipts[key];
         if (old) {

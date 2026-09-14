@@ -4,14 +4,19 @@ const { fail } = require('./carePolicy');
 // activation or payer claims from a client. Renewals preserve the administrator.
 function createCareSubscription({ store, encryption }) {
   return {
-    async activate({ familyId, payerId, administratorId, receiptId, startsAt, expiresAt }) {
+    async activate({ familyId, payerId, administratorId, receiptId, startsAt, expiresAt, expectedOwner, expectedExclusiveReceiptId }) {
       if (![payerId, receiptId].every(v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(v)) ||
           !Number.isSafeInteger(startsAt) || !Number.isSafeInteger(expiresAt) || expiresAt <= startsAt) fail(400, 'INVALID_SUBSCRIPTION');
       for (let attempt = 0; attempt < 8; attempt++) {
         const family = await store.getFamily(familyId);
         if (!family) fail(404, 'FAMILY_NOT_FOUND');
+        if (expectedOwner !== undefined && family.owner !== expectedOwner) fail(409, 'SUBSCRIPTION_OWNER_CHANGED');
         const state = encryption.open(family.sealed, `family:${familyId}`);
         state.subscriptionReceipts = state.subscriptionReceipts || {};
+        // Trial recovery may proceed only for its own durable activation receipt.
+        // This is evaluated inside the CAS loop so an unrelated subscription
+        // cannot land between an earlier eligibility read and activation.
+        if (expectedExclusiveReceiptId !== undefined && state.subscription && !state.subscriptionReceipts[expectedExclusiveReceiptId]) fail(409, 'SUBSCRIPTION_EXISTS');
         const receipt = JSON.stringify({ payerId, administratorId: administratorId || payerId, startsAt, expiresAt });
         if (state.subscriptionReceipts[receiptId]) {
           if (state.subscriptionReceipts[receiptId] !== receipt) fail(409, 'SUBSCRIPTION_RECEIPT_REUSED');

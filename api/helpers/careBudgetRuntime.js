@@ -24,6 +24,10 @@ async function authorizeProfile(user, profileId, fundingId, requireActive = fals
   if (requireActive && !(await require('./careRuntime').createRuntime().entitlements(user, profileId)).ai) fail(403, 'SUBSCRIPTION_EXPIRED');
   const funding = await store.get(fundingId);
   if (!funding || (funding.kind === 'family' && funding.familyId !== profile.familyId)) fail(403, 'FUNDING_ACCESS_DENIED');
+  if (requireActive) {
+    const state = require('./careCrypto').fromEnvironment().open(funding.sealed, `funding:${fundingId}`);
+    if (state.trialPending) fail(403, 'TRIAL_PENDING_ACTIVATION');
+  }
   return profile;
 }
 module.exports = { Funding, store, createRuntime, authorizeProfile };
