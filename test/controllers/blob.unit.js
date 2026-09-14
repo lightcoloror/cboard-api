@@ -5,11 +5,13 @@ describe('Azure Blob helper configuration', function() {
   const modulePath = require.resolve('../../api/helpers/blob');
   let capturedContainerOptions;
   let capturedOptions;
+  let capturedBlobNames;
   let originalConnectionString;
 
   beforeEach(function() {
     capturedContainerOptions = null;
     capturedOptions = null;
+    capturedBlobNames = [];
     originalConnectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
     delete process.env.AZURE_STORAGE_CONNECTION_STRING;
     mockery.enable({
@@ -43,6 +45,7 @@ describe('Azure Blob helper configuration', function() {
             callback
           ) {
             capturedOptions = options;
+            capturedBlobNames.push(blobName);
             callback(null, { container: containerName, name: blobName });
           },
           getUrl(containerName, blobName) {
@@ -128,5 +131,43 @@ describe('Azure Blob helper configuration', function() {
       cacheControl: 'private, no-store'
     });
     expect(capturedContainerOptions).to.equal(null);
+  });
+
+  it('uses distinct random blob names for same-second concurrent uploads', async function() {
+    process.env.AZURE_STORAGE_CONNECTION_STRING = 'UseDevelopmentStorage=true';
+    const { createBlockBlobFromText } = require('../../api/helpers/blob');
+    const OriginalDate = global.Date;
+    const frozen = new OriginalDate('2026-09-14T09:00:00.000Z').getTime();
+    global.Date = class FrozenDate extends OriginalDate {
+      constructor(...args) {
+        super(args.length ? args[0] : frozen);
+      }
+      static now() {
+        return frozen;
+      }
+    };
+    try {
+      await Promise.all([
+        createBlockBlobFromText('private', 'care.bin', {
+          buffer: Buffer.from('one'),
+          mimetype: 'application/octet-stream'
+        }, 'care', { cacheControl: 'private, no-store' }),
+        createBlockBlobFromText('private', 'care.bin', {
+          buffer: Buffer.from('two'),
+          mimetype: 'application/octet-stream'
+        }, 'care', { cacheControl: 'private, no-store' })
+      ]);
+    } finally {
+      global.Date = OriginalDate;
+    }
+    expect(capturedBlobNames).to.have.length(2);
+    expect(new Set(capturedBlobNames).size).to.equal(2);
+    capturedBlobNames.forEach(name => {
+      expect(name).to.match(/^care_\d+_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}_care\.bin$/);
+    });
+    expect(capturedOptions.contentSettings).to.deep.equal({
+      contentType: 'application/octet-stream',
+      cacheControl: 'private, no-store'
+    });
   });
 });

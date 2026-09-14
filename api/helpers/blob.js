@@ -1,4 +1,4 @@
-const uuidv1 = require('uuid/v1');
+const uuidv4 = require('uuid/v4');
 const azure = require('azure-storage');
 
 let blobService = null;
@@ -79,10 +79,7 @@ async function createBlockBlobFromText(
   }
 
   const ts = Math.round(new Date().getTime() / 1000);
-  const uuidSuffix = uuidv1()
-    .split('-')
-    .pop();
-  const finalName = `${prefix}_${ts}_${uuidSuffix}_${fileName
+  const finalName = `${prefix}_${ts}_${uuidv4()}_${fileName
     .toLowerCase()
     .trim()}`;
 

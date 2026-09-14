@@ -20,6 +20,9 @@ const {
   phoneVerificationService
 } = require('../helpers/phoneVerificationRuntime');
 const {
+  getCareAccountDeletionBlocker
+} = require('../helpers/careAccountDeletion');
+const {
   compareResetToken,
   hashNewPassword,
   hashResetToken,
@@ -34,6 +37,27 @@ const {
   LOCALHOST_PORT_3000_URL,
   INTERNAL_API_KEY
 } = config;
+
+const MAIL_SERVICE_UNAVAILABLE_RESPONSE = Object.freeze({
+  message: 'Email service is unavailable.',
+  error: { code: 'MAIL_SERVICE_UNAVAILABLE' }
+});
+
+function hasConfiguredEmailTransport() {
+  const transport = config.emailTransport;
+  const auth = transport && transport.auth;
+  return Boolean(
+    transport &&
+      String(transport.host || '').trim() &&
+      auth &&
+      String(auth.user || '').trim() &&
+      String(auth.pass || '').trim()
+  );
+}
+
+function sendMailServiceUnavailable(res) {
+  return res.status(503).json(MAIL_SERVICE_UNAVAILABLE_RESPONSE);
+}
 
 function hasValidInternalApiKey(req) {
   if (!INTERNAL_API_KEY) return false;
@@ -121,6 +145,10 @@ async function getSubscriber(user) {
 }
 
 async function createUser(req, res) {
+  // NEV writes a temporary user before its verification-email callback. Do
+  // not enter that flow unless this process has real transport credentials.
+  if (!hasConfiguredEmailTransport()) return sendMailServiceUnavailable(res);
+
   const phoneVerificationToken = req.body.phoneVerificationToken;
   delete req.body.phoneVerificationToken;
   const phoneInput = parseOptionalMainlandChinaPhone(req.body.phone);
@@ -474,8 +502,16 @@ async function listUser(req, res) {
   return res.status(200).json(response);
 }
 
-function removeUser(req, res) {
+async function removeUser(req, res) {
   const id = req.swagger.params.id.value;
+  const careDeletionBlocker = await getCareAccountDeletionBlocker(id);
+  if (careDeletionBlocker) {
+    return res.status(careDeletionBlocker.status).json({
+      message: careDeletionBlocker.message,
+      error: careDeletionBlocker.error
+    });
+  }
+
   User.findByIdAndRemove(id, function(err, users) {
     if (err) {
       return res.status(404).json({
@@ -733,6 +769,10 @@ function sendPasswordResetFailure(res, status = 400) {
 }
 
 async function forgotPassword(req, res) {
+  // Unlike a configured transport's generic response, a globally unavailable
+  // transport must not claim that reset instructions are on their way.
+  if (!hasConfiguredEmailTransport()) return sendMailServiceUnavailable(res);
+
   const email = String((req.body && req.body.email) || '')
     .trim()
     .toLowerCase();

@@ -11,10 +11,12 @@ describe('Account deletion controller', function() {
   let controller;
   let requestedBy;
   let deletedFilters;
+  let careDeletionBlocker;
 
   beforeEach(function() {
     requestedBy = 'user-1';
     deletedFilters = {};
+    careDeletionBlocker = null;
 
     const models = {
       '../models/User': {
@@ -78,6 +80,12 @@ describe('Account deletion controller', function() {
     mockery.registerMock('../helpers/auth', {
       getAuthDataFromReq() {
         return { requestedBy, isAdmin: false };
+      }
+    });
+    mockery.registerMock('../helpers/careAccountDeletion', {
+      async getCareAccountDeletionBlocker(id) {
+        deletedFilters.careAccountDeletion = id;
+        return careDeletionBlocker;
       }
     });
     mockery.registerMock('./communicationPrivateLibrary', {
@@ -155,5 +163,49 @@ describe('Account deletion controller', function() {
 
     expect(res.statusCode).to.equal(401);
     expect(deletedFilters).to.deep.equal({});
+  });
+
+  it('requires family administration transfer before deleting an active family owner', async function() {
+    careDeletionBlocker = {
+      status: 409,
+      message: 'Transfer family administration before deleting this account',
+      error: {
+        code: 'FAMILY_TRANSFER_REQUIRED',
+        requiredAction: 'transfer_administrator',
+        families: [{ familyId: 'family-a' }]
+      }
+    };
+    const res = createResponse();
+
+    await controller.removeAccount(createRequest(), res);
+
+    expect(res.statusCode).to.equal(409);
+    expect(res.body).to.deep.equal({
+      message: 'Transfer family administration before deleting this account',
+      error: {
+        code: 'FAMILY_TRANSFER_REQUIRED',
+        requiredAction: 'transfer_administrator',
+        families: [{ familyId: 'family-a' }]
+      }
+    });
+    expect(deletedFilters).to.deep.equal({ careAccountDeletion: 'user-1' });
+  });
+
+  it('fails closed when family administration cannot be checked', async function() {
+    careDeletionBlocker = {
+      status: 503,
+      message: 'Unable to verify family administration before deleting account',
+      error: { code: 'CARE_FAMILY_CHECK_UNAVAILABLE' }
+    };
+    const res = createResponse();
+
+    await controller.removeAccount(createRequest(), res);
+
+    expect(res.statusCode).to.equal(503);
+    expect(res.body).to.deep.equal({
+      message: 'Unable to verify family administration before deleting account',
+      error: { code: 'CARE_FAMILY_CHECK_UNAVAILABLE' }
+    });
+    expect(deletedFilters).to.deep.equal({ careAccountDeletion: 'user-1' });
   });
 });

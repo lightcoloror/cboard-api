@@ -7,6 +7,9 @@ const CommunicationReceiverRecord = require('../models/CommunicationReceiverReco
 const CommunicationSavedPhrase = require('../models/CommunicationSavedPhrase');
 const CommunicationAiUsage = require('../models/CommunicationAiUsage');
 const {
+  getCareAccountDeletionBlocker
+} = require('../helpers/careAccountDeletion');
+const {
   deletePrivateLibraryForUser
 } = require('./communicationPrivateLibrary');
 const {
@@ -31,6 +34,16 @@ async function removeAccount(req, res) {
       error:
         'Unauthorized request, delete account is only accessible using admin or owner user authToken'
     });
+  }
+
+  const careDeletionBlocker = await getCareAccountDeletionBlocker(id);
+  if (careDeletionBlocker) {
+    return res
+      .status(careDeletionBlocker.status)
+      .json({
+        message: careDeletionBlocker.message,
+        error: careDeletionBlocker.error
+      });
   }
 
   const response = {};

@@ -18,6 +18,9 @@ describe('legacy email password reset controller security', function() {
   let consumedReset;
   let userUpdate;
   let sentEmail;
+  let emailTransportConfigured;
+  let resetMailError;
+  let userLookupCount;
 
   beforeEach(function() {
     emailUser = {
@@ -31,9 +34,13 @@ describe('legacy email password reset controller security', function() {
     consumedReset = null;
     userUpdate = null;
     sentEmail = null;
+    emailTransportConfigured = true;
+    resetMailError = null;
+    userLookupCount = 0;
 
     const User = {
       findOne(query) {
+        userLookupCount += 1;
         return {
           async exec() {
             return query.email === 'care@example.test' ? emailUser : null;
@@ -104,7 +111,7 @@ describe('legacy email password reset controller security', function() {
         options: {},
         sendResetPasswordEmail(email, domain, userId, token, callback) {
           sentEmail = { email, domain, userId, token };
-          callback(null);
+          callback(resetMailError);
         }
       }
     });
@@ -118,6 +125,20 @@ describe('legacy email password reset controller security', function() {
       },
       isLocalIp() {
         return true;
+      }
+    });
+    mockery.registerMock('../../config', {
+      CBOARD_PROD_URL: 'https://app.example.test',
+      CBOARD_QA_URL: 'https://qa.example.test',
+      LOCALHOST_PORT_3000_URL: 'http://localhost:3000',
+      emailTransport: {
+        host: 'smtp.example.test',
+        auth: {
+          user: 'apikey',
+          get pass() {
+            return emailTransportConfigured ? 'configured-test-secret' : '';
+          }
+        }
       }
     });
     controller = require('../../api/controllers/user');
@@ -178,6 +199,50 @@ describe('legacy email password reset controller security', function() {
         resetUpsert.update.$set.resetPasswordToken
       )
     ).to.equal(true);
+  });
+
+  it('does not pretend to send reset instructions when email is globally unconfigured', async function() {
+    emailTransportConfigured = false;
+    const res = response();
+
+    await controller.forgotPassword(
+      {
+        body: { email: 'care@example.test' },
+        headers: { origin: 'http://localhost:3000' }
+      },
+      res
+    );
+
+    expect(res.statusCode).to.equal(503);
+    expect(res.body).to.deep.equal({
+      message: 'Email service is unavailable.',
+      error: { code: 'MAIL_SERVICE_UNAVAILABLE' }
+    });
+    expect(userLookupCount).to.equal(0);
+    expect(resetUpsert).to.equal(null);
+    expect(sentEmail).to.equal(null);
+  });
+
+  it('keeps the configured transport response generic when delivery later fails', async function() {
+    resetMailError = new Error('smtp delivery failed');
+    const res = response();
+
+    await controller.forgotPassword(
+      {
+        body: { email: 'care@example.test' },
+        headers: { origin: 'http://localhost:3000' }
+      },
+      res
+    );
+
+    expect(res.statusCode).to.equal(200);
+    expect(res.body).to.deep.equal({
+      success: 1,
+      message:
+        'If the account exists, password reset instructions will be sent shortly.'
+    });
+    expect(resetUpsert).not.to.equal(null);
+    expect(sentEmail).not.to.equal(null);
   });
 
   it('checks expiry and token before atomically consuming and updating the password', async function() {

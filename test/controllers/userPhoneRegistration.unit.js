@@ -11,6 +11,9 @@ describe('user phone registration controller', function() {
   let sentVerification;
   let consumedPhoneVerification;
   let phoneVerificationError;
+  let createTempUserCalls;
+  let verificationMailError;
+  let emailTransportConfigured;
 
   beforeEach(function() {
     capturedUser = null;
@@ -19,6 +22,9 @@ describe('user phone registration controller', function() {
     sentVerification = null;
     consumedPhoneVerification = null;
     phoneVerificationError = null;
+    createTempUserCalls = 0;
+    verificationMailError = null;
+    emailTransportConfigured = true;
 
     function User(data) {
       capturedUser = { ...data };
@@ -49,6 +55,7 @@ describe('user phone registration controller', function() {
         URLFieldName: 'GENERATED_VERIFYING_URL'
       },
       createTempUser: function(user, callback) {
+        createTempUserCalls += 1;
         if (createTempUserError) {
           callback(createTempUserError, null, null);
           return;
@@ -60,7 +67,7 @@ describe('user phone registration controller', function() {
       },
       sendVerificationEmail: function(email, domain, url, callback) {
         sentVerification = { email, domain, url };
-        callback(null, {});
+        callback(verificationMailError, {});
       }
     };
 
@@ -90,6 +97,20 @@ describe('user phone registration controller', function() {
       },
       isLocalIp: function() {
         return true;
+      }
+    });
+    mockery.registerMock('../../config', {
+      CBOARD_PROD_URL: 'https://app.example.test',
+      CBOARD_QA_URL: 'https://qa.example.test',
+      LOCALHOST_PORT_3000_URL: 'http://localhost:3000',
+      emailTransport: {
+        host: 'smtp.example.test',
+        auth: {
+          user: 'apikey',
+          get pass() {
+            return emailTransportConfigured ? 'configured-test-secret' : '';
+          }
+        }
       }
     });
     controller = require('../../api/controllers/user');
@@ -141,6 +162,24 @@ describe('user phone registration controller', function() {
     expect(response.body.message).to.contain('11-digit');
     expect(capturedUser).to.equal(null);
     expect(phoneLookupCount).to.equal(0);
+  });
+
+  it('fails closed before phone checks or temporary-user writes when email is unconfigured', async function() {
+    emailTransportConfigured = false;
+    const response = createResponse();
+
+    await controller.createUser(createRequest('13800138000'), response);
+
+    expect(response.statusCode).to.equal(503);
+    expect(response.body).to.deep.equal({
+      message: 'Email service is unavailable.',
+      error: { code: 'MAIL_SERVICE_UNAVAILABLE' }
+    });
+    expect(createTempUserCalls).to.equal(0);
+    expect(capturedUser).to.equal(null);
+    expect(phoneLookupCount).to.equal(0);
+    expect(consumedPhoneVerification).to.equal(null);
+    expect(sentVerification).to.equal(null);
   });
 
   it('normalizes a valid phone and preserves the existing email activation flow', async function() {
@@ -236,5 +275,18 @@ describe('user phone registration controller', function() {
       message: 'Unable to create the account.'
     });
     expect(response.body.message).not.to.contain('mongo');
+  });
+
+  it('does not claim success when an available transport reports delivery failure', async function() {
+    verificationMailError = new Error('smtp delivery failed');
+    const response = createResponse();
+
+    await controller.createUser(createRequest('13800138000'), response);
+
+    expect(response.statusCode).to.equal(500);
+    expect(response.body.message).to.contain('sending verification email FAILED');
+    expect(response.body.success).to.equal(undefined);
+    expect(createTempUserCalls).to.equal(1);
+    expect(sentVerification).not.to.equal(null);
   });
 });
