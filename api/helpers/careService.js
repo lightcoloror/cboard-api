@@ -19,7 +19,7 @@ function text(value, max = 100) {
   if (typeof value !== 'string' || !value.trim() || value.length > max) fail(400, 'INVALID_TEXT');
   return value.trim();
 }
-function createCareService({ store, encryption, media, now = () => Date.now(), enforceEntitlements = false }) {
+function createCareService({ store, encryption, media, mediaQuota = null, now = () => Date.now(), enforceEntitlements = false }) {
   const favorites = require('./careFavorites').createCareFavorites({ store, encryption, now });
   async function familyPolicy(familyId) {
     const family = await store.getFamily(familyId);
@@ -322,7 +322,7 @@ function createCareService({ store, encryption, media, now = () => Date.now(), e
     },
     async upload(user, profileId, body) {
       const uploadPermission = body.visibility === 'private' ? 'read' : 'library.edit';
-      const { doc: uploadDoc } = await load(profileId, user, uploadPermission);
+      const { doc: uploadDoc, state: uploadState } = await load(profileId, user, uploadPermission);
       await checkEntitlement(uploadDoc.familyId, 'write');
       if (!validId(body.mediaId) || typeof body.data !== 'string' || !/^[a-f0-9]{64}$/.test(body.sha256 || '') ||
           !['image/png', 'image/jpeg', 'image/webp'].includes(body.type) || body.data.length > 6 * 1024 * 1024) fail(400, 'INVALID_MEDIA');
@@ -332,9 +332,37 @@ function createCareService({ store, encryption, media, now = () => Date.now(), e
         body.type === 'image/jpeg' ? buffer[0] === 255 && buffer[1] === 216 && buffer[2] === 255 :
         buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP';
       if (!magic) fail(400, 'INVALID_IMAGE');
+      const existing = uploadState.media && uploadState.media[body.mediaId];
+      if (existing) {
+        if (existing.deleted || existing.sha256 !== body.sha256 || (existing.owner && existing.owner !== user)) fail(409, 'MEDIA_ID_REUSED');
+        if (mediaQuota && mediaQuota.available && existing.quotaReservation) {
+          await mediaQuota.commit({ familyId: uploadDoc.familyId, key: existing.quotaReservation });
+        }
+        return { id: body.mediaId, reused: true };
+      }
+      const quotaRequest = { familyId: uploadDoc.familyId, profileId, mediaId: body.mediaId, sha256: body.sha256, size: buffer.length };
+      let reservation = null;
+      if (mediaQuota) {
+        reservation = await mediaQuota.reserve(quotaRequest);
+        if (reservation.pending) fail(409, 'MEDIA_UPLOAD_PENDING_RECONCILIATION');
+        if (reservation.committed) {
+          // A late identical request read the profile before the first writer
+          // committed. The retained receipt means it must reload and finalize,
+          // never write another object.
+          const latest = await load(profileId, user, uploadPermission);
+          const registered = latest.state.media && latest.state.media[body.mediaId];
+          if (!registered || registered.deleted || registered.sha256 !== body.sha256 ||
+              (registered.owner && registered.owner !== user)) {
+            fail(503, 'MEDIA_UPLOAD_RECONCILIATION_REQUIRED');
+          }
+          return { id: body.mediaId, reused: true };
+        }
+      }
       const context = `media:${profileId}:${body.mediaId}`;
-      const blob = await media.write(Buffer.from(JSON.stringify(encryption.seal({ data: body.data }, context))));
+      let blob = null;
+      let profileRegistered = false;
       try {
+        blob = await media.write(Buffer.from(JSON.stringify(encryption.seal({ data: body.data }, context))));
         const result = await mutate(profileId, user, uploadPermission, (state, doc) => {
           state.media = state.media || {};
           const old = state.media[body.mediaId];
@@ -342,13 +370,31 @@ function createCareService({ store, encryption, media, now = () => Date.now(), e
             if (old.deleted || old.sha256 !== body.sha256 || (old.owner && old.owner !== user)) fail(409, 'MEDIA_ID_REUSED');
             return { noWrite: true, value: { id: body.mediaId, reused: true } };
           }
-          state.media[body.mediaId] = { blob, owner: body.visibility === 'private' ? user : null, uploadedBy: user, type: body.type, sha256: body.sha256, size: buffer.length, deleted: false };
+          state.media[body.mediaId] = { blob, owner: body.visibility === 'private' ? user : null, uploadedBy: user, type: body.type, sha256: body.sha256, size: buffer.length, quotaReservation: reservation && reservation.key, deleted: false };
           audit(state, user, 'media.upload', body.mediaId, doc.rev + 1);
           return { value: { id: body.mediaId } };
         });
+        profileRegistered = true;
         if (result.reused) await media.remove(blob);
+        if (mediaQuota && mediaQuota.available) await mediaQuota.commit({ familyId: uploadDoc.familyId, key: reservation.key });
         return result;
-      } catch (error) { await media.remove(blob).catch(() => {}); throw error; }
+      } catch (error) {
+        if (!profileRegistered && blob) {
+          try {
+            await media.remove(blob);
+            if (mediaQuota && mediaQuota.available) await mediaQuota.cancel({ familyId: uploadDoc.familyId, key: reservation.key });
+          } catch (_) {}
+        } else if (!profileRegistered && mediaQuota && mediaQuota.available) {
+          // A rejected write may mean the provider stored an object but lost
+          // its response. Keep the reservation until reconciliation proves it
+          // was not stored; releasing it here could undercount an orphan blob.
+          const uncertain = new Error('MEDIA_UPLOAD_RECONCILIATION_REQUIRED');
+          uncertain.status = 503;
+          uncertain.code = 'MEDIA_UPLOAD_RECONCILIATION_REQUIRED';
+          throw uncertain;
+        }
+        throw error;
+      }
     },
     async download(user, profileId, mediaId) {
       const { doc, state } = await load(profileId, user); const entry = state.media && state.media[mediaId];
@@ -364,17 +410,37 @@ function createCareService({ store, encryption, media, now = () => Date.now(), e
       return { data, type: entry.type, sha256: entry.sha256 };
     },
     async deleteMedia(user, profileId, mediaId) {
+      const { doc: quotaDoc } = await load(profileId, user, 'library.edit');
+      // Initialize from the pre-release profile state. Initializing after the
+      // tombstone says storageReleased would exclude this entry then subtract
+      // it again.
+      if (mediaQuota && mediaQuota.available) await mediaQuota.ensureInitialized(quotaDoc.familyId);
       const removed = await mutate(profileId, user, 'library.edit', (state, doc) => {
         if (!validId(mediaId) || !state.media || !state.media[mediaId]) fail(404, 'MEDIA_NOT_FOUND');
-        if (state.media[mediaId].favoritePinned) fail(409, 'MEDIA_IN_USE');
-        if (Object.values(state.resources).some(r => !r.deleted && mediaReferences(r.value).has(mediaId))) fail(409, 'MEDIA_IN_USE');
-        state.media[mediaId].deleted = true;
-        audit(state, user, 'media.delete', mediaId, doc.rev + 1);
-        return { value: { blob: state.media[mediaId].blob } };
+        const entry = state.media[mediaId];
+        if (!entry.deleted) {
+          if (entry.favoritePinned) fail(409, 'MEDIA_IN_USE');
+          if (Object.values(state.resources).some(r => !r.deleted && mediaReferences(r.value).has(mediaId))) fail(409, 'MEDIA_IN_USE');
+          entry.deleted = true;
+          audit(state, user, 'media.delete', mediaId, doc.rev + 1);
+        }
+        return { value: { blob: entry.blob, sha256: entry.sha256, size: entry.size, storageReleased: entry.storageReleased === true } };
       });
       // Access is denied by the tombstone before deletion. A storage failure
       // can be retried without exposing the file again or resurrecting its ID.
       await media.remove(removed.blob);
+      if (!removed.storageReleased && mediaQuota && mediaQuota.available) {
+        await mediaQuota.release({ familyId: quotaDoc.familyId, profileId, mediaId, sha256: removed.sha256, size: removed.size });
+      }
+      if (!removed.storageReleased) {
+        await mutate(profileId, user, 'library.edit', (state, doc) => {
+          const entry = state.media && state.media[mediaId];
+          if (!entry || !entry.deleted) fail(409, 'MEDIA_DELETE_RETRY_REQUIRED');
+          if (entry.storageReleased) return { noWrite: true, value: true };
+          entry.storageReleased = true;
+          return { value: true };
+        });
+      }
       return { ok: true };
     }
   };

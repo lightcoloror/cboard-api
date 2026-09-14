@@ -3,6 +3,7 @@ const assert = require('assert').strict;
 const crypto = require('crypto');
 const { createCareService } = require('../../api/helpers/careService');
 const { createCareCrypto } = require('../../api/helpers/careCrypto');
+const { createCareMediaQuota, resolveCareMediaQuotaConfig } = require('../../api/helpers/careMediaQuota');
 const { createCareSync } = require('../../../cboard/src/common/communicationSupport/careSync');
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const newId = () => crypto.randomBytes(16).toString('hex');
@@ -22,6 +23,7 @@ function fixture() {
     createProfile: async d => { profiles[d._id] = clone(d); },
     getProfile: async id => clone(profiles[id]),
     listProfiles: async u => clone(Object.values(profiles).filter(p => p.members.includes(u))),
+    listProfilesByFamily: async familyId => clone(Object.values(profiles).filter(p => p.familyId === familyId)),
     casProfile: async (id, rev, update) => {
       if (profiles[id].rev !== rev) return false;
       profiles[id] = { ...profiles[id], ...clone(update) }; return true;
@@ -156,6 +158,149 @@ describe('patient collaboration security and offline recovery', () => {
     await f.service.deleteMedia('familyA', profile.id, 'photo');
     assert.equal(Object.keys(f.blobs).length, 0);
     await assert.rejects(f.service.download('familyA', profile.id, 'photo'), e => e.status === 404);
+  });
+  it('reserves family media capacity once, releases it only after deletion, and finalizes a lost commit without another write', async () => {
+    const f = fixture(); const { profile, family } = await setup(f);
+    const quota = createCareMediaQuota({ store: f.store, encryption: f.encryption,
+      config: resolveCareMediaQuotaConfig({ CARE_FAMILY_MEDIA_QUOTA_BYTES: '24', CARE_FAMILY_MEDIA_QUOTA_MAX_FILES: '2' }) });
+    let writes = 0; let failCommit = true;
+    const service = createCareService({ store: f.store, encryption: f.encryption, media: {
+      async write(data) { writes += 1; return f.media.write(data); }, read: f.media.read, remove: f.media.remove
+    }, mediaQuota: {
+      available: true,
+      ensureInitialized: quota.ensureInitialized,
+      reserve: quota.reserve,
+      cancel: quota.cancel,
+      release: quota.release,
+      async commit(value) { if (failCommit) { failCommit = false; throw Object.assign(new Error('synthetic commit failure'), { code: 'RETRY_CONCURRENT_CHANGE' }); } return quota.commit(value); }
+    } });
+    const bytes = Buffer.from('89504e470d0a1a0a00000000', 'hex');
+    const asset = { mediaId: 'quota-photo', data: bytes.toString('base64'), type: 'image/png', sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    await assert.rejects(service.upload('familyA', profile.id, asset), e => e.code === 'RETRY_CONCURRENT_CHANGE');
+    assert.equal(writes, 1);
+    assert.equal((await service.upload('familyA', profile.id, asset)).reused, true);
+    assert.equal(writes, 1);
+    await service.deleteMedia('familyA', profile.id, asset.mediaId);
+    const quotaState = f.encryption.open(f.families[family.id].sealed, `family:${family.id}`).mediaQuota;
+    assert.equal(quotaState.usedBytes, 0);
+  });
+  it('returns a retryable unfinished error to a concurrent uploader and keeps its media unreferencable', async () => {
+    const f = fixture(); const { profile, family } = await setup(f);
+    const quota = createCareMediaQuota({ store: f.store, encryption: f.encryption,
+      config: resolveCareMediaQuotaConfig({ CARE_FAMILY_MEDIA_QUOTA_BYTES: '24', CARE_FAMILY_MEDIA_QUOTA_MAX_FILES: '2' }) });
+    let writes = 0; let failRemove = false;
+    const service = createCareService({ store: f.store, encryption: f.encryption, media: {
+      async write(data) { writes += 1; await new Promise(resolve => setImmediate(resolve)); return f.media.write(data); },
+      read: f.media.read,
+      async remove(name) { if (failRemove) throw new Error('synthetic remove failure'); return f.media.remove(name); }
+    }, mediaQuota: quota });
+    const bytes = Buffer.from('89504e470d0a1a0a00000000', 'hex');
+    const asset = { mediaId: 'parallel-photo', data: bytes.toString('base64'), type: 'image/png', sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    const results = await Promise.allSettled([service.upload('familyA', profile.id, asset), service.upload('familyA', profile.id, asset)]);
+    assert.equal(writes, 1);
+    assert.equal(results.filter(result => result.status === 'rejected' && result.reason.code === 'MEDIA_UPLOAD_PENDING_RECONCILIATION').length, 1);
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+    assert.equal((await service.snapshot('familyA', profile.id)).resources.length, 0);
+    failRemove = true;
+    await assert.rejects(service.deleteMedia('familyA', profile.id, asset.mediaId));
+    let quotaState = f.encryption.open(f.families[family.id].sealed, `family:${family.id}`).mediaQuota;
+    assert.equal(quotaState.usedBytes, bytes.length);
+    failRemove = false;
+    await service.deleteMedia('familyA', profile.id, asset.mediaId);
+    quotaState = f.encryption.open(f.families[family.id].sealed, `family:${family.id}`).mediaQuota;
+    assert.equal(quotaState.usedBytes, 0);
+  });
+  it('uses the committed receipt when a request read no media before another writer finalized', async () => {
+    const f = fixture(); const { profile } = await setup(f);
+    const quota = createCareMediaQuota({ store: f.store, encryption: f.encryption,
+      config: resolveCareMediaQuotaConfig({ CARE_FAMILY_MEDIA_QUOTA_BYTES: '24', CARE_FAMILY_MEDIA_QUOTA_MAX_FILES: '2' }) });
+    let writes = 0; let holdSecond = true; let releaseSecond; let secondAtReserve;
+    const waiting = new Promise(resolve => { releaseSecond = resolve; });
+    const secondReached = new Promise(resolve => { secondAtReserve = resolve; });
+    const service = createCareService({ store: f.store, encryption: f.encryption, media: {
+      async write(data) { writes += 1; return f.media.write(data); }, read: f.media.read, remove: f.media.remove
+    }, mediaQuota: {
+      available: true, ensureInitialized: quota.ensureInitialized, commit: quota.commit, cancel: quota.cancel, release: quota.release,
+      async reserve(request) {
+        if (holdSecond) { holdSecond = false; secondAtReserve(); await waiting; }
+        return quota.reserve(request);
+      }
+    } });
+    const bytes = Buffer.from('89504e470d0a1a0a00000000', 'hex');
+    const asset = { mediaId: 'late-photo', data: bytes.toString('base64'), type: 'image/png', sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    const late = service.upload('familyA', profile.id, asset);
+    await secondReached;
+    const first = await service.upload('familyA', profile.id, asset);
+    releaseSecond();
+    const second = await late;
+    assert.equal(writes, 1);
+    assert.equal(first.id, asset.mediaId);
+    assert.equal(second.reused, true);
+  });
+  it('does not let a late reader treat another member private media as its own', async () => {
+    const f = fixture(); const { profile } = await setup(f); await invite(f, profile.id, 'reader', ['read']);
+    const quota = createCareMediaQuota({ store: f.store, encryption: f.encryption,
+      config: resolveCareMediaQuotaConfig({ CARE_FAMILY_MEDIA_QUOTA_BYTES: '24', CARE_FAMILY_MEDIA_QUOTA_MAX_FILES: '2' }) });
+    let hold = true; let release; let reached;
+    const waiting = new Promise(resolve => { release = resolve; });
+    const atReserve = new Promise(resolve => { reached = resolve; });
+    const service = createCareService({ store: f.store, encryption: f.encryption, media: f.media, mediaQuota: {
+      available: true, ensureInitialized: quota.ensureInitialized, commit: quota.commit, cancel: quota.cancel, release: quota.release,
+      async reserve(request) { if (hold) { hold = false; reached(); await waiting; } return quota.reserve(request); }
+    } });
+    const bytes = Buffer.from('89504e470d0a1a0a00000000', 'hex');
+    const asset = { mediaId: 'private-late-photo', visibility: 'private', data: bytes.toString('base64'), type: 'image/png', sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    const late = service.upload('reader', profile.id, asset);
+    await atReserve;
+    await service.upload('familyA', profile.id, asset);
+    release();
+    await assert.rejects(late, error => error.code === 'MEDIA_UPLOAD_RECONCILIATION_REQUIRED');
+  });
+  it('keeps an uncertain write reservation and initializes before releasing a legacy deletion', async () => {
+    const f = fixture(); const { profile, family } = await setup(f);
+    const quota = createCareMediaQuota({ store: f.store, encryption: f.encryption,
+      config: resolveCareMediaQuotaConfig({ CARE_FAMILY_MEDIA_QUOTA_BYTES: '24', CARE_FAMILY_MEDIA_QUOTA_MAX_FILES: '2' }) });
+    const bytes = Buffer.from('89504e470d0a1a0a00000000', 'hex');
+    const asset = { mediaId: 'legacy-photo', data: bytes.toString('base64'), type: 'image/png', sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    await f.service.upload('familyA', profile.id, asset);
+    const guarded = createCareService({ store: f.store, encryption: f.encryption, media: f.media, mediaQuota: quota });
+    await guarded.deleteMedia('familyA', profile.id, asset.mediaId);
+    let state = f.encryption.open(f.families[family.id].sealed, `family:${family.id}`).mediaQuota;
+    assert.equal(state.usedBytes, 0);
+    const uncertain = createCareService({ store: f.store, encryption: f.encryption, media: {
+      async write() { throw new Error('synthetic lost provider response'); }, read: f.media.read, remove: f.media.remove
+    }, mediaQuota: quota });
+    const other = { ...asset, mediaId: 'uncertain-photo' };
+    await assert.rejects(uncertain.upload('familyA', profile.id, other), error => error.code === 'MEDIA_UPLOAD_RECONCILIATION_REQUIRED');
+    state = f.encryption.open(f.families[family.id].sealed, `family:${family.id}`).mediaQuota;
+    assert.equal(state.reservedBytes, bytes.length);
+    assert.equal(state.usedBytes, 0);
+  });
+  it('retains pending media and queued references when media registration returns 409 or 503', async () => {
+    const f = fixture(); const { profile, family } = await setup(f); await invite(f, profile.id, 'therapist');
+    const bytes = Buffer.from('89504e470d0a1a0a00000000', 'hex');
+    for (const status of [409, 503]) {
+      const disk = {}; const calls = []; const mediaId = `retry-media-${status}`;
+      const request = async (path, method, body) => {
+        calls.push({ path, method });
+        if (method === 'GET') return f.service.snapshot('therapist', profile.id);
+        if (path.endsWith('/media')) {
+          const error = new Error('synthetic media retry');
+          error.status = status; error.data = { code: status === 409 ? 'MEDIA_UPLOAD_PENDING_RECONCILIATION' : 'MEDIA_UPLOAD_RECONCILIATION_REQUIRED' };
+          throw error;
+        }
+        throw new Error('a media failure must stop before commands POST');
+      };
+      const client = createCareSync({ accountId: 'therapist', familyId: family.id, profileId: profile.id,
+        storage: { get: async key => disk[key], set: async (key, value) => { disk[key] = value; } }, request, newId, currentAccount: () => 'therapist' });
+      await client.init(); await client.sync();
+      await client.addMedia({ mediaId, type: 'image/png', data: bytes.toString('base64'), sha256: crypto.createHash('sha256').update(bytes).digest('hex') });
+      await client.edit('tile', `retry-tile-${status}`, { mediaId });
+      await assert.rejects(client.sync(), error => error.status === status);
+      assert.equal(client.archive().media[mediaId].pending, true);
+      assert.equal(client.archive().queue.length, 1);
+      assert.equal(calls.filter(call => call.path.endsWith('/commands') && call.method === 'POST').length, 0);
+    }
   });
   it('persists offline edits across restart, recovers a lost response, resolves conflicts and locks revoked clients', async () => {
     const f = fixture(); const { profile, family } = await setup(f); await invite(f, profile.id, 'therapist');
