@@ -160,6 +160,27 @@ module.exports = function(mongoose) {
 
   var transporter;
 
+  // Creating a nodemailer transport is local, while verify() opens a network
+  // connection. The application may intentionally load an empty transport
+  // configuration before mail service credentials have been provisioned.
+  var hasConfiguredTransport = function(transportOptions) {
+    var transport = transportOptions || {};
+    var auth = transport.auth || {};
+    return Boolean(
+      (String(transport.host || '').trim() ||
+        String(transport.service || '').trim()) &&
+        String(auth.user || '').trim() &&
+        String(auth.pass || '').trim()
+    );
+  };
+
+  var isTempUserExpired = function(tempUser, now) {
+    var createdAt = tempUser && tempUser.createdAt;
+    var createdAtMilliseconds = new Date(createdAt).getTime();
+    if (!Number.isFinite(createdAtMilliseconds)) return true;
+    return createdAtMilliseconds + options.expirationTime * 1000 <= now.getTime();
+  };
+
   /**
    * Modify the default configuration.
    *
@@ -172,19 +193,21 @@ module.exports = function(mongoose) {
         options[key] = optionsToConfigure[key];
       }
     }
-    console.log(
-      options.transportOptions.service + ' is configured as email transport.'
-    );
+    console.log('Email transport configuration loaded.');
     transporter = nodemailer.createTransport(options.transportOptions);
 
-    // verify connection configuration
-    transporter.verify(function(error, success) {
-      if (error) {
-        console.log(error);
-      } else {
-        console.log('Email Server is ready to take our messages');
-      }
-    });
+    // Do not connect during import/configure unless a complete transport is
+    // present. Controller-level capability gates remain the authority for
+    // accepting mail-dependent public requests.
+    if (hasConfiguredTransport(options.transportOptions)) {
+      transporter.verify(function(error) {
+        if (error) {
+          console.log('Email transport verification failed.');
+        } else {
+          console.log('Email Server is ready to take our messages');
+        }
+      });
+    }
 
     var err;
 
@@ -472,8 +495,9 @@ module.exports = function(mongoose) {
         return callback(err, null);
       }
 
-      // temp user is found (i.e. user accessed URL before their data expired)
-      if (tempUserData) {
+      // Mongo's TTL monitor is asynchronous. An expired document can remain
+      // briefly, so enforce the configured expiry before activation.
+      if (tempUserData && !isTempUserExpired(tempUserData, new Date())) {
         var userData = JSON.parse(JSON.stringify(tempUserData)), // copy data
           User = options.persistentUserModel,
           user;
@@ -517,8 +541,9 @@ module.exports = function(mongoose) {
         return callback(err, null);
       }
 
-      // user found (i.e. user re-requested verification email before expiration)
-      if (tempUser) {
+      // Mongo's TTL monitor is asynchronous. Do not rotate or deliver a link
+      // for an expired temporary user that has not yet been physically removed.
+      if (tempUser && !isTempUserExpired(tempUser, new Date())) {
         // generate new user token
         tempUser[options.URLFieldName] = randtoken.generate(options.URLLength);
         tempUser.save(function(err) {

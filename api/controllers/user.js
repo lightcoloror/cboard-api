@@ -23,6 +23,10 @@ const {
   getCareAccountDeletionBlocker
 } = require('../helpers/careAccountDeletion');
 const {
+  consumeEmailVerificationResendLimits,
+  emailVerificationResendRateLimit
+} = require('../helpers/emailVerificationResendRateLimit');
+const {
   compareResetToken,
   hashNewPassword,
   hashResetToken,
@@ -90,6 +94,7 @@ module.exports = {
   appleLogin,
   googleIdTokenLogin,
   forgotPassword: forgotPassword,
+  resendVerificationEmail: resendVerificationEmail,
   storePassword: storePassword,
   resetPasswordWithPhone: resetPasswordWithPhone,
   proxyOauth: proxyOauth
@@ -752,6 +757,81 @@ const PASSWORD_RESET_REQUEST_RESPONSE = Object.freeze({
   message:
     'If the account exists, password reset instructions will be sent shortly.'
 });
+
+const VERIFICATION_RESEND_REQUEST_RESPONSE = Object.freeze({
+  success: 1,
+  message:
+    'Request accepted. If a pending account exists, check your email or try again later.'
+});
+
+function trustedVerificationDomain(origin) {
+  return [CBOARD_PROD_URL, CBOARD_QA_URL, LOCALHOST_PORT_3000_URL].includes(
+    origin
+  )
+    ? origin
+    : CBOARD_PROD_URL;
+}
+
+function normalizedEmail(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase();
+}
+
+function sendResendRateLimitError(res, error) {
+  if (error.status === 429) {
+    res.set('Retry-After', String(error.retryAfter));
+    return res.status(429).json({
+      error: {
+        code: error.code,
+        message: 'Too many verification requests.'
+      }
+    });
+  }
+  return res.status(503).json({
+    error: {
+      code: 'EMAIL_VERIFICATION_RATE_LIMIT_UNAVAILABLE',
+      message: 'Verification requests are temporarily unavailable.'
+    }
+  });
+}
+
+async function resendVerificationEmail(req, res) {
+  // This gate precedes the limiter and NEV lookup so an unconfigured service
+  // creates no limiter records or temporary-account side effects.
+  if (!hasConfiguredEmailTransport()) return sendMailServiceUnavailable(res);
+
+  const email = normalizedEmail(req.body && req.body.email);
+  try {
+    await consumeEmailVerificationResendLimits({
+      limiters: emailVerificationResendRateLimit.limiters,
+      email,
+      ip: req.ip
+    });
+  } catch (error) {
+    return sendResendRateLimitError(res, error);
+  }
+
+  // NEV looks up only its temporary-user collection. It rotates the pending
+  // URL but preserves createdAt, whose TTL controls the original expiry.
+  // Confirmed accounts have no temporary record and are intentionally a no-op.
+  try {
+    await new Promise(resolve => {
+      nev.resendVerificationEmail(
+        email,
+        trustedVerificationDomain(req.headers && req.headers.origin),
+        error => {
+          if (error) console.error('Unable to resend verification email.');
+          resolve();
+        }
+      );
+    });
+  } catch (_) {
+    console.error('Unable to resend verification email.');
+  }
+
+  return res.status(202).json(VERIFICATION_RESEND_REQUEST_RESPONSE);
+}
 
 function trustedPasswordResetDomain(origin) {
   return [CBOARD_PROD_URL, CBOARD_QA_URL, LOCALHOST_PORT_3000_URL].includes(

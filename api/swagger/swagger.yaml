@@ -2638,6 +2638,27 @@ paths:
           description: Error
           schema:
             $ref: "#/definitions/ErrorResponse"
+  /user/resend-verification:
+    x-swagger-router-controller: user
+    post:
+      operationId: resendVerificationEmail
+      description: Accepts a verification-email resend request without revealing whether a pending account exists. A configured mail service is required.
+      parameters:
+        - name: email
+          description: Email address associated with a pending account
+          in: body
+          required: true
+          schema:
+            $ref: "#/definitions/UserForgot"
+      responses:
+        "202":
+          description: Request accepted
+          schema:
+            $ref: "#/definitions/GeneralResponse"
+        default:
+          description: Error
+          schema:
+            $ref: "#/definitions/ErrorResponse"
   /user/store-password/phone:
     x-swagger-router-controller: user
     post:
