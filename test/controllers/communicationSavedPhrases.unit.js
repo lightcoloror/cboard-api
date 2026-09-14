@@ -11,8 +11,13 @@ describe('Communication saved phrases controller', function() {
   let controller;
   let findResults;
   let operations;
+  let previousCareFlag;
+  let reads;
 
   beforeEach(function() {
+    previousCareFlag = process.env.CARE_NEXT_ENABLED;
+    delete process.env.CARE_NEXT_ENABLED;
+    reads = 0;
     findResults = [];
     operations = [];
     const createQuery = records => ({
@@ -34,6 +39,7 @@ describe('Communication saved phrases controller', function() {
         operations.push(...nextOperations);
       },
       find() {
+        reads++;
         return createQuery(findResults.shift() || []);
       }
     };
@@ -48,9 +54,23 @@ describe('Communication saved phrases controller', function() {
   });
 
   afterEach(function() {
+    if (previousCareFlag === undefined) delete process.env.CARE_NEXT_ENABLED;
+    else process.env.CARE_NEXT_ENABLED = previousCareFlag;
     mockery.deregisterAll();
     mockery.disable();
   });
+
+  for (const method of ['syncCommunicationSavedPhrases', 'deleteCommunicationSavedPhrases']) {
+    it('rejects legacy ' + method + ' before reading or mutating stored content in care mode', async function() {
+      process.env.CARE_NEXT_ENABLED = 'true';
+      const response = createResponse();
+      await controller[method]({ user: { id: 'synthetic-user' }, body: { phrases: [createPhrase()], deleteAll: true } }, response);
+      expect(response.statusCode).to.equal(409);
+      expect(response.body.code).to.equal('USE_PATIENT_SYNC');
+      expect(reads).to.equal(0);
+      expect(operations).to.deep.equal([]);
+    });
+  }
 
   function createResponse() {
     return {

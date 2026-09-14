@@ -196,6 +196,9 @@ function buildDeletedSavedPhrase(userId, id, deletedAt) {
 }
 
 async function syncCommunicationSavedPhrases(req, res) {
+  if (process.env.CARE_NEXT_ENABLED === 'true') {
+    return res.status(409).json({ code: 'USE_PATIENT_SYNC', message: 'Use the scoped patient favorite endpoints.' });
+  }
   if (!req.user) {
     return res.status(400).json({
       message: 'Are you logged in? Is bearer token present?'
@@ -348,6 +351,9 @@ async function syncCommunicationSavedPhrases(req, res) {
 }
 
 async function deleteCommunicationSavedPhrases(req, res) {
+  if (process.env.CARE_NEXT_ENABLED === 'true') {
+    return res.status(409).json({ code: 'USE_PATIENT_SYNC', message: 'Use the scoped patient favorite endpoints.' });
+  }
   if (!req.user) {
     return res.status(400).json({
       message: 'Are you logged in? Is bearer token present?'
