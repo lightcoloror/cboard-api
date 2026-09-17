@@ -583,6 +583,63 @@ async function main() {
       { status: 'access_revoked', count: 0 });
     assert.equal((await runner.run(noFamilyOwner, noFamilyClosure.operationId)).cleanupStatus, 'access_revoked');
     passed.push('cross-family-access-revocation-is-atomic-and-preserves-patient-content-and-ledger');
+    const finalUserId = new mongoose.Types.ObjectId();
+    const finalOwner = String(finalUserId);
+    const usersCollection = connection.collection('users');
+    const settingsCollection = connection.collection('settings');
+    await usersCollection.insertOne({ _id: finalUserId, email: 'synthetic-finalize@example.test' });
+    await settingsCollection.insertOne({ user: finalUserId, synthetic: true });
+    await settingsCollection.insertOne({ user: loginUser, synthetic: true });
+    await careAccounts.insertOne({ _id: finalOwner, rev: 0, sealed: encryption.seal({}, `account:${finalOwner}`) });
+    const finalClosure = await coordinator.begin(finalOwner, []);
+    await runner.run(finalOwner, finalClosure.operationId);
+    assert.equal((await runner.run(finalOwner, finalClosure.operationId)).cleanupStatus, 'access_revoked');
+    const { createCareClosureFinalize } = require('../../api/helpers/careClosureFinalize');
+    const finalizeAdapters = { connection, encryption, revokeSessions: owner => deviceSessions.revoke(owner),
+      async cleanup({ id, userEmail }) {
+        assert.equal(id, finalOwner); assert.equal(userEmail, 'synthetic-finalize@example.test');
+        await settingsCollection.deleteMany({ user: finalUserId });
+        await careAccounts.deleteOne({ _id: id });
+      } };
+    const failedFinalConnection = {
+      startSession: () => connection.startSession(),
+      collection: name => name === 'careclosurejobs' ? {
+        findOne: (...args) => jobs.findOne(...args),
+        async updateOne(filter, change, options) {
+          if (change.$set && change.$set.status === 'complete') throw new Error('synthetic final transaction interruption');
+          return jobs.updateOne(filter, change, options);
+        }
+      } : connection.collection(name)
+    };
+    await assert.rejects(createCareClosureFinalize({ ...finalizeAdapters, connection: failedFinalConnection })
+      .run(finalOwner, finalClosure.operationId), /synthetic final transaction interruption/);
+    assert(await usersCollection.findOne({ _id: finalUserId }));
+    assert.equal((await accounts.findOne({ _id: finalOwner })).status, 'closing');
+    const failedFinalJob = await jobs.findOne({ _id: finalClosure.operationId });
+    assert(failedFinalJob.cleanupClaim);
+    assert.equal(failedFinalJob.status, 'account_cleanup_pending');
+    let duplicateCleanupCalls = 0;
+    await assert.rejects(createCareClosureFinalize({ ...finalizeAdapters,
+      async cleanup() { duplicateCleanupCalls++; }
+    }).run(finalOwner, finalClosure.operationId), error => error.code === 'CLOSURE_CLEANUP_IN_PROGRESS');
+    assert.equal(duplicateCleanupCalls, 0);
+    // Harness-only reconciliation: the awaited synthetic worker has terminated
+    // and no provider call was made. Production cannot clear a claim by TTL.
+    await jobs.updateOne({ _id: finalClosure.operationId, cleanupClaim: failedFinalJob.cleanupClaim },
+      { $unset: { cleanupClaim: '' }, $inc: { rev: 1 } });
+    assert.deepEqual(await createCareClosureFinalize(finalizeAdapters).run(finalOwner, finalClosure.operationId),
+      { status: 'complete', accountDeleted: true });
+    assert.equal(await usersCollection.findOne({ _id: finalUserId }), null);
+    assert.equal((await accounts.findOne({ _id: finalOwner })).status, 'closed');
+    const completeJob = await jobs.findOne({ _id: finalClosure.operationId });
+    assert.equal(completeJob.sealed, undefined);
+    assert.equal(completeJob.accountCleanup, undefined);
+    assert.equal(completeJob.cleanupClaim, undefined);
+    assert.equal(await settingsCollection.countDocuments({ user: loginUser }), 1);
+    assert.deepEqual(await createCareClosureFinalize({ ...finalizeAdapters,
+      async cleanup() { throw new Error('must not repeat completed cleanup'); }
+    }).run(finalOwner, finalClosure.operationId), { status: 'complete', accountDeleted: true });
+    passed.push('final-user-delete-is-atomic-and-interrupted-cleanup-requires-reconciliation');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

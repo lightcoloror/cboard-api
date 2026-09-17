@@ -20,8 +20,91 @@ const deviceSessions = require('../helpers/deviceSessions');
 const { requireSelfOrAdmin } = require('../helpers/userAccess');
 
 module.exports = {
-  removeAccount
+  removeAccount,
+  cleanupAccountData
 };
+
+function cleanupFailure(message, code) {
+  const error = new Error(message);
+  error.status = 500;
+  error.code = code || 'ACCOUNT_CLEANUP_FAILED';
+  if (code) error.responseError = { code };
+  return error;
+}
+
+async function cleanupAccountData({ id, userEmail, quotaService }) {
+  const response = {};
+  try {
+    response.deletedCommunicationPrivateLibrary = await deletePrivateLibraryForUser(id);
+    response.deletedCommunicationPrivateDeviceData = await deletePrivateDeviceDataForUser(id);
+  } catch (_) {
+    throw cleanupFailure('Error deleting private account archive backup');
+  }
+
+  try {
+    await Settings.findOneAndDelete({ user: id });
+  } catch (_) {
+    throw cleanupFailure('Error deleting user setting');
+  }
+
+  try {
+    const result = await CommunicationReceiverRecord.deleteMany({ user: id });
+    response.deletedCommunicationReceiverRecords = result.deletedCount;
+  } catch (_) {
+    throw cleanupFailure('Error deleting confirmed receiver records');
+  }
+
+  try {
+    const result = await CommunicationSavedPhrase.deleteMany({ user: id });
+    response.deletedCommunicationSavedPhrases = result.deletedCount;
+  } catch (_) {
+    throw cleanupFailure('Error deleting communication saved phrases');
+  }
+
+  try {
+    const result = await CommunicationAiUsage.deleteMany({ user: id });
+    response.deletedCommunicationAiUsage = result.deletedCount;
+  } catch (_) {
+    throw cleanupFailure('Error deleting communication AI usage');
+  }
+
+  try {
+    response.deletedCommunicationAiTokenQuota = quotaService &&
+      typeof quotaService.deleteUserQuota === 'function'
+      ? await quotaService.deleteUserQuota({ userId: id })
+      : false;
+  } catch (_) {
+    throw cleanupFailure('Error deleting communication AI token quota');
+  }
+
+  try {
+    const result = await Communicator.deleteMany({ email: userEmail });
+    response.deletedComunicators = result.deletedCount;
+  } catch (_) {
+    throw cleanupFailure('Error deleting user communicator');
+  }
+
+  try {
+    const result = await Board.deleteMany({ email: userEmail });
+    response.deletedBoards = result.deletedCount;
+  } catch (_) {
+    throw cleanupFailure('Error deleting user communicator');
+  }
+
+  try {
+    await Subscribers.findOneAndRemove({ userId: id });
+  } catch (_) {
+    throw cleanupFailure('Error deleting user subscriber');
+  }
+
+  try {
+    const result = await CareAccount.deleteOne({ _id: id });
+    response.deletedCareAccount = result.deletedCount;
+  } catch (_) {
+    throw cleanupFailure('Error deleting care account data', 'CARE_ACCOUNT_CLEANUP_FAILED');
+  }
+  return response;
+}
 
 async function removeAccount(req, res) {
   const id = req.swagger.params.id.value;
@@ -85,126 +168,18 @@ async function removeAccount(req, res) {
     }
   }
 
-  const response = {};
+  let response;
   try {
-    response.deletedCommunicationPrivateLibrary = await deletePrivateLibraryForUser(
-      id
-    );
-    response.deletedCommunicationPrivateDeviceData = await deletePrivateDeviceDataForUser(
-      id
-    );
+    response = await cleanupAccountData({
+      id,
+      userEmail,
+      quotaService: req.communicationAiTokenQuotaService
+    });
   } catch (error) {
     console.error('Account deletion cleanup failed.');
-    return res.status(500).json({
-      message: 'Error deleting private account archive backup'
-    });
-  }
-
-  try {
-    await Settings.findOneAndDelete({ user: id });
-  } catch (error) {
-    console.error('Account deletion cleanup failed.');
-    return res.status(500).json({
-      message: 'Error deleting user setting'
-    });
-  }
-
-  try {
-    const deletedCommunicationReceiverRecords = await CommunicationReceiverRecord.deleteMany(
-      { user: id }
-    );
-    response.deletedCommunicationReceiverRecords =
-      deletedCommunicationReceiverRecords.deletedCount;
-  } catch (error) {
-    console.error('Account deletion cleanup failed.');
-    return res.status(500).json({
-      message: 'Error deleting confirmed receiver records'
-    });
-  }
-
-  try {
-    const deletedCommunicationSavedPhrases = await CommunicationSavedPhrase.deleteMany(
-      { user: id }
-    );
-    response.deletedCommunicationSavedPhrases =
-      deletedCommunicationSavedPhrases.deletedCount;
-  } catch (error) {
-    console.error('Account deletion cleanup failed.');
-    return res.status(500).json({
-      message: 'Error deleting communication saved phrases'
-    });
-  }
-
-  try {
-    const deletedCommunicationAiUsage = await CommunicationAiUsage.deleteMany({
-      user: id
-    });
-    response.deletedCommunicationAiUsage =
-      deletedCommunicationAiUsage.deletedCount;
-  } catch (error) {
-    console.error('Account deletion cleanup failed.');
-    return res.status(500).json({
-      message: 'Error deleting communication AI usage'
-    });
-  }
-
-  try {
-    response.deletedCommunicationAiTokenQuota =
-      req.communicationAiTokenQuotaService &&
-      typeof req.communicationAiTokenQuotaService.deleteUserQuota ===
-        'function'
-        ? await req.communicationAiTokenQuotaService.deleteUserQuota({
-            userId: id
-          })
-        : false;
-  } catch (error) {
-    console.error('Account deletion cleanup failed.');
-    return res.status(500).json({
-      message: 'Error deleting communication AI token quota'
-    });
-  }
-
-  try {
-    const deletedComunicators = await Communicator.deleteMany({
-      email: userEmail
-    });
-    response.deletedComunicators = deletedComunicators.deletedCount;
-  } catch (error) {
-    console.error('Account deletion cleanup failed.');
-    return res.status(500).json({
-      message: 'Error deleting user communicator'
-    });
-  }
-
-  try {
-    const deletedBoards = await Board.deleteMany({
-      email: userEmail
-    });
-    response.deletedBoards = deletedBoards.deletedCount;
-  } catch (error) {
-    console.error('Account deletion cleanup failed.');
-    return res.status(500).json({
-      message: 'Error deleting user communicator'
-    });
-  }
-
-  try {
-    await Subscribers.findOneAndRemove({ userId: id });
-  } catch (error) {
-    console.error('Account deletion cleanup failed.');
-    return res.status(500).json({
-      message: 'Error deleting user subscriber'
-    });
-  }
-
-  try {
-    const deletedCareAccount = await CareAccount.deleteOne({ _id: id });
-    response.deletedCareAccount = deletedCareAccount.deletedCount;
-  } catch (error) {
-    console.error('Account deletion cleanup failed.');
-    return res.status(500).json({
-      message: 'Error deleting care account data',
-      error: { code: 'CARE_ACCOUNT_CLEANUP_FAILED' }
+    return res.status(error.status || 500).json({
+      message: error.message,
+      ...(error.responseError ? { error: error.responseError } : {})
     });
   }
 

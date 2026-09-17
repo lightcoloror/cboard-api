@@ -207,6 +207,33 @@ describe('Account deletion controller', function() {
     expect(res.body.deletedCareAccount).to.equal(1);
   });
 
+  it('exports cleanup data without performing authorization or user deletion', async function() {
+    const result = await controller.cleanupAccountData({
+      id: 'user-1',
+      userEmail: 'care@example.test',
+      quotaService: { async deleteUserQuota(input) { deletedFilters.aiTokenQuota = input; return true; } }
+    });
+
+    expect(result.deletedCommunicationReceiverRecords).to.equal(4);
+    expect(result.deletedCareAccount).to.equal(1);
+    expect(deletedFilters.userLookup).to.not.exist;
+    expect(deletedFilters.user).to.not.exist;
+    expect(deletedFilters.sessionRevoke).to.not.exist;
+  });
+
+  it('wraps cleanup failures without exposing the underlying error', async function() {
+    settingsFailure = true;
+    try {
+      await controller.cleanupAccountData({ id: 'user-1', userEmail: 'care@example.test' });
+      throw new Error('expected cleanup failure');
+    } catch (error) {
+      expect(error.status).to.equal(500);
+      expect(error.code).to.equal('ACCOUNT_CLEANUP_FAILED');
+      expect(error.message).to.equal('Error deleting user setting');
+      expect(error.message).not.to.include('settings unavailable');
+    }
+  });
+
   it('rejects a different non-admin user before deleting anything', async function() {
     const req = createRequest();
     req.user.id = 'user-2';
