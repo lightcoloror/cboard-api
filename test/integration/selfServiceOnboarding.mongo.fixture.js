@@ -137,7 +137,7 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
       assert(bearer, 'login token must be signed by the real auth helper');
       assert.equal(String(bearer.id), String(user._id));
       assert.equal(await sessions.valid(bearer), true);
-      return { id: String(user._id), role, email };
+      return { id: String(user._id), role, email, bearer: login.body.authToken };
     };
 
     const owner = await registerAndLogin('owner', 'patient');
@@ -168,6 +168,55 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     assert.equal(joined[0].relationship.defaultMode, 'receiver');
     assert.deepEqual(joined[0].permissions, ['read']);
     passed.push('self-service-email-registration-activation-login-and-care-invitation');
+
+    // The actual NEV implementation renders a JSON-transport email. Its reset
+    // URL stays in this in-process outbox and is not written to test output.
+    outbox.length = 0;
+    const forgot = await run(controller.forgotPassword, request({ email: owner.email }));
+    assert.equal(forgot.code, 200);
+    let resetMail = null;
+    for (let attempt = 0; attempt < 20 && !resetMail; attempt += 1) {
+      resetMail = outbox.find(message =>
+        JSON.stringify(message.to).includes(owner.email) && String(message.text || '').includes('/reset/')
+      );
+      if (!resetMail) await new Promise(resolve => setImmediate(resolve));
+    }
+    assert(resetMail, 'forgot password must render a reset email in the JSON outbox');
+    const resetLink = String(resetMail.text).match(
+      /https:\/\/app\.example\.test\/reset\/([a-f0-9]{24})\/([a-f0-9]{64})/
+    );
+    assert(resetLink, 'reset email must contain the generated user id and opaque token');
+    assert.equal(resetLink[1], owner.id);
+    const newPassword = 'synthetic-reset-password';
+    const stored = await run(controller.storePassword, request({
+      userid: resetLink[1], token: resetLink[2], password: newPassword
+    }));
+    assert.equal(stored.code, 200);
+    const replay = await run(controller.storePassword, request({
+      userid: resetLink[1], token: resetLink[2], password: 'synthetic-replay-password'
+    }));
+    assert.equal(replay.code, 400, 'consumed reset link must not change the password again');
+
+    const oldPasswordLogin = await run(controller.loginUser, request({
+      email: owner.email, password
+    }));
+    assert.equal(oldPasswordLogin.code, 401);
+    const resetLogin = await run(controller.loginUser, request({
+      email: owner.email, password: newPassword
+    }));
+    assert.equal(resetLogin.code, 200);
+    const authenticate = require('../../api/helpers/authenticateBearer').createBearerAuthenticator({
+      auth,
+      sessions,
+      users: { getById: id => User.findById(id).lean().exec() }
+    });
+    assert.equal(await authenticate({ swagger: { operation: { 'x-security-scopes': [] } } },
+      `Bearer ${owner.bearer}`), false, 'old device bearer must become unusable after reset');
+    assert.equal(await authenticate({ swagger: { operation: { 'x-security-scopes': [] } } },
+      `Bearer ${resetLogin.body.authToken}`), true);
+    const stillOwned = await care.profiles(owner.id);
+    assert.deepEqual(stillOwned.map(item => item.id), [profile.id]);
+    passed.push('self-service-password-reset-rotates-login-and-preserves-care-authorization');
   } finally {
     config.emailTransport = originalTransport;
     config.AUTH_EMAIL_APP_URL = originalOrigin;
