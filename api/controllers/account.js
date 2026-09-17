@@ -17,6 +17,7 @@ const {
   deletePrivateDeviceDataForUser
 } = require('./communicationPrivateDeviceData');
 const deviceSessions = require('../helpers/deviceSessions');
+const { requireSelfOrAdmin } = require('../helpers/userAccess');
 
 module.exports = {
   removeAccount
@@ -25,16 +26,9 @@ module.exports = {
 async function removeAccount(req, res) {
   const id = req.swagger.params.id.value;
 
-  const actorId = req.user && String(req.user.id || req.user._id || '');
-  const isRequestedByAdmin = Boolean(req.user && req.user.isAdmin);
-
-  if (!isRequestedByAdmin && (!actorId || String(id) !== actorId)) {
-    return res.status(401).json({
-      message: 'Error deleting the account',
-      error:
-        'Unauthorized request, delete account is only accessible using admin or owner user authToken'
-    });
-  }
+  const access = requireSelfOrAdmin(req, id);
+  if (!access.ok) return res.status(access.status).json(access.body);
+  const actorId = access.id;
 
   const careDeletionBlocker = await getCareAccountDeletionBlocker(id);
   if (careDeletionBlocker) {

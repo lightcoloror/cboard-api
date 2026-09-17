@@ -20,9 +20,7 @@ const buildRegistrationUserData = require('../helpers/registrationInput');
 const {
   phoneVerificationService
 } = require('../helpers/phoneVerificationRuntime');
-const {
-  getCareAccountDeletionBlocker
-} = require('../helpers/careAccountDeletion');
+const { removeAccount } = require('./account');
 const {
   consumeEmailVerificationResendLimits,
   emailVerificationResendRateLimit
@@ -521,26 +519,9 @@ async function listUser(req, res) {
 }
 
 async function removeUser(req, res) {
-  const id = req.swagger.params.id.value;
   const access = requireAdmin(req);
   if (!access.ok) return res.status(access.status).json(access.body);
-
-  const careDeletionBlocker = await getCareAccountDeletionBlocker(id);
-  if (careDeletionBlocker) {
-    return res.status(careDeletionBlocker.status).json({
-      message: careDeletionBlocker.message,
-      error: careDeletionBlocker.error
-    });
-  }
-
-  User.findByIdAndRemove(id, function(err, users) {
-    if (err) {
-      return res.status(404).json({
-        message: 'User not found. User Id: ' + id
-      });
-    }
-    return res.status(200).json(users);
-  });
+  return removeAccount(req, res);
 }
 
 async function getUser(req, res) {

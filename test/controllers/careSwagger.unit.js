@@ -3,6 +3,13 @@ const assert = require('assert').strict;
 const YAML = require('yamljs');
 const path = require('path');
 describe('care Swagger contract', () => {
+  it('documents both deletion routes without a user-content response', () => {
+    const spec = YAML.load(path.join(__dirname, '../../api/swagger/swagger.yaml'));
+    for (const route of ['/user/{id}', '/account/{id}']) {
+      assert.equal(spec.paths[route].delete.responses['200'].schema.$ref, '#/definitions/DeleteAccountResponse');
+    }
+    assert.equal(spec.definitions.DeleteAccountResponse.properties.deletedCareAccount.type, 'integer');
+  });
   it('parses with the deployed YAML parser and protects every care/session operation', () => {
     const spec = YAML.load(path.join(__dirname, '../../api/swagger/swagger.yaml'));
     for (const [route, item] of Object.entries(spec.paths)) {

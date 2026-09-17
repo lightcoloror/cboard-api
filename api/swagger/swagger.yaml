@@ -2276,7 +2276,7 @@ paths:
             $ref: "#/definitions/ErrorResponse"
     delete:
       operationId: removeUser
-      description: Deletes a specific user
+      description: Deletes an account through the shared cleanup pipeline; returns deletion counts without user content.
       security:
         - Bearer: []
       x-security-scopes:
@@ -2292,7 +2292,7 @@ paths:
         "200":
           description: Success
           schema:
-            $ref: "#/definitions/GetUserResponse"
+            $ref: "#/definitions/DeleteAccountResponse"
         default:
           description: Error
           schema:
@@ -4308,6 +4308,8 @@ definitions:
           type: string
   DeleteAccountResponse:
     properties:
+        deletedCareAccount:
+          type: integer
         deletedCommunicationReceiverRecords:
           type: integer
         deletedCommunicationSavedPhrases:

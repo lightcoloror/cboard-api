@@ -10,11 +10,15 @@ describe('legacy user deletion controller care guard', function() {
   let blocker;
   let deletedId;
   let blockerChecks;
+  let accountCalls;
+  let accountResult;
 
   beforeEach(function() {
     blocker = null;
     deletedId = null;
     blockerChecks = 0;
+    accountCalls = 0;
+    accountResult = null;
 
     const User = {
       findByIdAndRemove(id, callback) {
@@ -37,10 +41,17 @@ describe('legacy user deletion controller care guard', function() {
     mockery.registerMock('../helpers/phoneVerificationRuntime', {
       phoneVerificationService: {}
     });
-    mockery.registerMock('../helpers/careAccountDeletion', {
-      async getCareAccountDeletionBlocker() {
-        blockerChecks += 1;
-        return blocker;
+    mockery.registerMock('./account', {
+      async removeAccount(req, res) {
+        accountCalls += 1;
+        if (accountResult) {
+          const body = accountResult.body || {
+            message: accountResult.message,
+            error: accountResult.error
+          };
+          return res.status(accountResult.status).json(body);
+        }
+        return res.status(200).json({ deletedCareAccount: 1 });
       }
     });
     mockery.registerMock('../helpers/localize', {
@@ -98,7 +109,7 @@ describe('legacy user deletion controller care guard', function() {
 
     expect(res.statusCode).to.equal(403);
     expect(res.body.error.code).to.equal('USER_ACCESS_FORBIDDEN');
-    expect(blockerChecks).to.equal(0);
+    expect(accountCalls).to.equal(0);
     expect(deletedId).to.equal(null);
   });
 
@@ -111,12 +122,12 @@ describe('legacy user deletion controller care guard', function() {
 
     expect(res.statusCode).to.equal(401);
     expect(res.body.error.code).to.equal('USER_ACCESS_UNAUTHORIZED');
-    expect(blockerChecks).to.equal(0);
+    expect(accountCalls).to.equal(0);
     expect(deletedId).to.equal(null);
   });
 
   it('blocks the Swagger-reachable legacy delete when the account owns a family', async function() {
-    blocker = {
+    accountResult = {
       status: 409,
       message: 'Transfer family administration before deleting this account',
       error: {
@@ -131,14 +142,15 @@ describe('legacy user deletion controller care guard', function() {
 
     expect(res.statusCode).to.equal(409);
     expect(res.body).to.deep.equal({
-      message: blocker.message,
-      error: blocker.error
+      message: accountResult.message,
+      error: accountResult.error
     });
+    expect(accountCalls).to.equal(1);
     expect(deletedId).to.equal(null);
   });
 
   it('fails closed when family ownership cannot be checked', async function() {
-    blocker = {
+    accountResult = {
       status: 503,
       message: 'Unable to verify family administration before deleting account',
       error: { code: 'CARE_FAMILY_CHECK_UNAVAILABLE' }
@@ -149,9 +161,10 @@ describe('legacy user deletion controller care guard', function() {
 
     expect(res.statusCode).to.equal(503);
     expect(res.body).to.deep.equal({
-      message: blocker.message,
-      error: blocker.error
+      message: accountResult.message,
+      error: accountResult.error
     });
+    expect(accountCalls).to.equal(1);
     expect(deletedId).to.equal(null);
   });
 
@@ -160,8 +173,9 @@ describe('legacy user deletion controller care guard', function() {
 
     await controller.removeUser(request('user-2'), res);
 
-    expect(deletedId).to.equal('user-2');
+    expect(accountCalls).to.equal(1);
+    expect(deletedId).to.equal(null);
     expect(res.statusCode).to.equal(200);
-    expect(res.body).to.deep.equal({ id: 'user-2' });
+    expect(res.body).to.deep.equal({ deletedCareAccount: 1 });
   });
 });

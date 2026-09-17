@@ -214,7 +214,7 @@ describe('Account deletion controller', function() {
 
     await controller.removeAccount(req, res);
 
-    expect(res.statusCode).to.equal(401);
+    expect(res.statusCode).to.equal(403);
     expect(deletedFilters).to.deep.equal({});
   });
 
@@ -225,6 +225,24 @@ describe('Account deletion controller', function() {
 
     await controller.removeAccount(req, res);
 
+    expect(res.statusCode).to.equal(401);
+    expect(deletedFilters).to.deep.equal({});
+  });
+
+  it('rejects an isAdmin flag without an administrator role', async function() {
+    const req = createRequest('user-2');
+    req.user.isAdmin = true;
+    const res = createResponse();
+    await controller.removeAccount(req, res);
+    expect(res.statusCode).to.equal(403);
+    expect(deletedFilters).to.deep.equal({});
+  });
+
+  it('rejects a mismatched authenticated identity before any cleanup', async function() {
+    const req = createAdminRequest();
+    req.auth = { id: 'other-admin' };
+    const res = createResponse();
+    await controller.removeAccount(req, res);
     expect(res.statusCode).to.equal(401);
     expect(deletedFilters).to.deep.equal({});
   });
