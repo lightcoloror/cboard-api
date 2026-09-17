@@ -1086,6 +1086,42 @@ async function main() {
     await accounts.insertOne({ _id: 'owner-preview-closed', status: 'closed' });
     await assert.rejects(coordinator.preview('owner-preview-closed'), e => e.code === 'ACCOUNT_CLOSED');
     passed.push('closure-preview-is-read-only-and-confirmation-revalidates-new-members');
+
+    const { createCareClosureReceipt, INTENT_MS } = require('../../api/helpers/careClosureReceipt');
+    let receiptNow = Date.now();
+    const receiptStore = createCareClosureReceipt({ connection, now: () => receiptNow });
+    const receiptCoordinator = createCareClosureCoordinator({ connection, encryption, receipt: receiptStore });
+    const receiptOwner = String(new mongoose.Types.ObjectId());
+    const firstReceipt = await receiptStore.prepare(receiptOwner);
+    const receipt = await receiptStore.prepare(receiptOwner);
+    await assert.rejects(receiptStore.inspect(receiptOwner, firstReceipt.secret), e => e.code === 'CLOSURE_RECEIPT_UNAVAILABLE');
+    const savedReceipt = await connection.collection('careclosurereceipts').findOne({ _id: receiptOwner });
+    assert.equal(savedReceipt.secret, undefined);
+    assert.notEqual(savedReceipt.secretHash, receipt.secret);
+    await assert.rejects(service.withOpenAccount(receiptOwner, async session => {
+      await receiptStore.bind(receiptOwner, receipt.secret, 'rollback-operation', session);
+      throw new Error('synthetic receipt rollback');
+    }), /synthetic receipt rollback/);
+    assert.equal((await receiptStore.inspect(receiptOwner, receipt.secret)).status, 'prepared');
+    const confirmed = await receiptCoordinator.begin(receiptOwner, [], receipt.secret);
+    const receiptAfterRestart = createCareClosureReceipt({ connection, now: () => receiptNow });
+    const statusAfterLostResponse = await receiptAfterRestart.inspect(receipt.receiptId, receipt.secret);
+    assert.equal(statusAfterLostResponse.operationId, confirmed.operationId);
+    assert.equal(statusAfterLostResponse.cleanupStatus, 'prepared');
+    assert.equal(statusAfterLostResponse.owner, undefined);
+    assert.equal(statusAfterLostResponse.sealed, undefined);
+    assert.equal(statusAfterLostResponse.accountDeleted, false);
+    const repeatConfirmation = await receiptCoordinator.begin(receiptOwner, [], receipt.secret);
+    assert.equal(repeatConfirmation.operationId, confirmed.operationId);
+    await assert.rejects(receiptStore.prepare(receiptOwner), e => e.code === 'ACCOUNT_CLOSING');
+    await assert.rejects(receiptStore.inspect(String(new mongoose.Types.ObjectId()), receipt.secret), e => e.code === 'CLOSURE_RECEIPT_UNAVAILABLE');
+    const expiringOwner = String(new mongoose.Types.ObjectId());
+    const expiring = await receiptStore.prepare(expiringOwner);
+    receiptNow += INTENT_MS;
+    await assert.rejects(receiptCoordinator.begin(expiringOwner, [], expiring.secret), e => e.code === 'CLOSURE_RECEIPT_UNAVAILABLE');
+    assert.equal((await accounts.findOne({ _id: expiringOwner })).status, 'open');
+    assert.equal(await connection.collection('careclosurejobs').countDocuments({ owner: expiringOwner }), 0);
+    passed.push('closure-receipt-atomic-binding-secret-rotation-expiry-and-lost-response-recovery');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

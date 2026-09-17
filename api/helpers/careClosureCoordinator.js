@@ -13,6 +13,7 @@ const validId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.te
 function createCareClosureCoordinator({
   connection = mongoose.connection,
   encryption = require('./careCrypto').fromEnvironment(),
+  receipt = null,
   maxScanRecords = 1000
 } = {}) {
   if (!Number.isSafeInteger(maxScanRecords) || maxScanRecords < 1 || maxScanRecords > 10000) {
@@ -30,7 +31,7 @@ function createCareClosureCoordinator({
     return docs;
   }
 
-  const lifecycle = createCareFamilyLifecycle({ connection,
+  const lifecycleFor = secret => createCareFamilyLifecycle({ connection,
     Family: { collection: families }, Profile: { collection: profiles },
     prepareClose: async (session, closure) => {
       // The encrypted account/funding contents cannot be queried by profile.
@@ -47,6 +48,7 @@ function createCareClosureCoordinator({
       if (plan.institutionAdminIds.length) fail(409, 'INSTITUTION_TRANSFER_REQUIRED');
       if (fundingDocs.some(funding => funding.owner === closure.owner &&
         !(funding.kind === 'family' && closure.familyIds.includes(funding.familyId)))) fail(409, 'FUNDING_TRANSFER_REQUIRED');
+      if (secret !== undefined) await receipt.bind(closure.owner, secret, closure.operationId, session);
       await jobs.insertOne({ _id: closure.operationId, owner: closure.owner, rev: 0,
         status: 'prepared', createdAt: closure.at, updatedAt: closure.at,
         sealed: encryption.seal(plan, `closure:${closure.operationId}`) }, { session });
@@ -104,8 +106,16 @@ function createCareClosureCoordinator({
   }
 
   return {
-    async begin(owner, exactFamilyIds) {
-      const result = await lifecycle.beginClose(owner, exactFamilyIds);
+    async begin(owner, exactFamilyIds, secret) {
+      if (secret !== undefined) {
+        if (!receipt) fail(503, 'CLOSURE_RECEIPT_UNAVAILABLE');
+        await receipt.inspect(owner, secret);
+      }
+      const result = await lifecycleFor(secret).beginClose(owner, exactFamilyIds);
+      if (secret !== undefined) {
+        const status = await receipt.inspect(owner, secret);
+        if (status.operationId !== result.operationId) fail(409, 'CLOSURE_SCOPE_MISMATCH');
+      }
       return { ...result, ...await inspect(owner, result.operationId) };
     },
     inspect,
