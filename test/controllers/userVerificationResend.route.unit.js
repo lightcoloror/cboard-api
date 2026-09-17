@@ -59,6 +59,7 @@ describe('user verification resend Swagger route', function() {
       CBOARD_PROD_URL: 'https://app.example.test',
       CBOARD_QA_URL: 'https://qa.example.test',
       LOCALHOST_PORT_3000_URL: 'http://localhost:3000',
+      CBOARD_APP_URL: 'https://app.example.test',
       emailTransport: {
         host: 'smtp.example.test',
         auth: {

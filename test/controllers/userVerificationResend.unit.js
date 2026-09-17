@@ -12,6 +12,7 @@ describe('user verification resend controller', function() {
   let limiterError;
   let nevCalls;
   let nevError;
+  let emailLinkConfigured;
 
   beforeEach(function() {
     emailTransportConfigured = true;
@@ -19,6 +20,7 @@ describe('user verification resend controller', function() {
     limiterError = null;
     nevCalls = [];
     nevError = null;
+    emailLinkConfigured = true;
     mockery.enable({
       warnOnReplace: false,
       warnOnUnregistered: false,
@@ -56,6 +58,9 @@ describe('user verification resend controller', function() {
       CBOARD_PROD_URL: 'https://app.example.test',
       CBOARD_QA_URL: 'https://qa.example.test',
       LOCALHOST_PORT_3000_URL: 'http://localhost:3000',
+      get CBOARD_APP_URL() {
+        return emailLinkConfigured ? 'http://localhost:3000' : '';
+      },
       emailTransport: {
         host: 'smtp.example.test',
         auth: {
@@ -86,7 +91,7 @@ describe('user verification resend controller', function() {
   function request(email) {
     return {
       body: { email },
-      headers: { origin: 'http://localhost:3000' },
+      headers: { origin: 'https://attacker.example.test' },
       ip: '203.0.113.8'
     };
   }
@@ -114,6 +119,16 @@ describe('user verification resend controller', function() {
       { email: 'care@example.test', domain: 'http://localhost:3000' },
       { email: 'missing@example.test', domain: 'http://localhost:3000' }
     ]);
+  });
+
+  it('fails closed before the limiter or NEV lookup when the email origin is invalid', async function() {
+    emailLinkConfigured = false;
+    const res = response();
+    await controller.resendVerificationEmail(request('care@example.test'), res);
+    expect(res.statusCode).to.equal(503);
+    expect(res.body.error.code).to.equal('MAIL_LINK_CONFIG_UNAVAILABLE');
+    expect(limiterCalls).to.deep.equal([]);
+    expect(nevCalls).to.deep.equal([]);
   });
 
   it('keeps a uniform accepted response when NEV delivery fails so a later retry remains possible', async function() {

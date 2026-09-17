@@ -24,6 +24,7 @@ describe('legacy email password reset controller security', function() {
   let resetMailError;
   let userLookupCount;
   let passwordResetRateLimitError;
+  let emailLinkConfigured;
 
   beforeEach(function() {
     emailUser = {
@@ -41,6 +42,7 @@ describe('legacy email password reset controller security', function() {
     resetMailError = null;
     userLookupCount = 0;
     passwordResetRateLimitError = null;
+    emailLinkConfigured = true;
 
     const User = {
       findOne(query) {
@@ -141,6 +143,9 @@ describe('legacy email password reset controller security', function() {
       CBOARD_PROD_URL: 'https://app.example.test',
       CBOARD_QA_URL: 'https://qa.example.test',
       LOCALHOST_PORT_3000_URL: 'http://localhost:3000',
+      get CBOARD_APP_URL() {
+        return emailLinkConfigured ? 'http://localhost:3000' : '';
+      },
       emailTransport: {
         host: 'smtp.example.test',
         auth: {
@@ -231,6 +236,20 @@ describe('legacy email password reset controller security', function() {
       message: 'Email service is unavailable.',
       error: { code: 'MAIL_SERVICE_UNAVAILABLE' }
     });
+    expect(userLookupCount).to.equal(0);
+    expect(resetUpsert).to.equal(null);
+    expect(sentEmail).to.equal(null);
+  });
+
+  it('fails closed before the limiter or reset writes when the email origin is invalid', async function() {
+    emailLinkConfigured = false;
+    const res = response();
+    await controller.forgotPassword(
+      { body: { email: 'care@example.test' }, ip: '127.0.0.1', headers: {} },
+      res
+    );
+    expect(res.statusCode).to.equal(503);
+    expect(res.body.error.code).to.equal('MAIL_LINK_CONFIG_UNAVAILABLE');
     expect(userLookupCount).to.equal(0);
     expect(resetUpsert).to.equal(null);
     expect(sentEmail).to.equal(null);

@@ -17,6 +17,7 @@ describe('user phone registration controller', function() {
   let createTempUserCalls;
   let verificationMailError;
   let emailTransportConfigured;
+  let emailLinkConfigured;
   let registrationRateLimitError;
 
   beforeEach(function() {
@@ -29,6 +30,7 @@ describe('user phone registration controller', function() {
     createTempUserCalls = 0;
     verificationMailError = null;
     emailTransportConfigured = true;
+    emailLinkConfigured = true;
     registrationRateLimitError = null;
 
     function User(data) {
@@ -114,6 +116,9 @@ describe('user phone registration controller', function() {
       CBOARD_PROD_URL: 'https://app.example.test',
       CBOARD_QA_URL: 'https://qa.example.test',
       LOCALHOST_PORT_3000_URL: 'http://localhost:3000',
+      get CBOARD_APP_URL() {
+        return emailLinkConfigured ? 'http://localhost:3000' : '';
+      },
       emailTransport: {
         host: 'smtp.example.test',
         auth: {
@@ -162,7 +167,7 @@ describe('user phone registration controller', function() {
     }
     return {
       body,
-      headers: { origin: 'http://localhost:3000' },
+      headers: { origin: 'https://attacker.example.test' },
       ip: '127.0.0.1'
     };
   }
@@ -205,6 +210,18 @@ describe('user phone registration controller', function() {
     expect(phoneLookupCount).to.equal(0);
     expect(consumedPhoneVerification).to.equal(null);
     expect(sentVerification).to.equal(null);
+  });
+
+  it('fails closed before phone checks or temporary-user writes when the email origin is invalid', async function() {
+    emailLinkConfigured = false;
+    const response = createResponse();
+
+    await controller.createUser(createRequest('13800138000'), response);
+
+    expect(response.statusCode).to.equal(503);
+    expect(response.body.error.code).to.equal('MAIL_LINK_CONFIG_UNAVAILABLE');
+    expect(createTempUserCalls).to.equal(0);
+    expect(phoneLookupCount).to.equal(0);
   });
 
   it('returns a stable 429 before phone lookup when registration is limited', async function() {

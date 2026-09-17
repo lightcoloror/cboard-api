@@ -37,18 +37,20 @@ const {
   normalizeNewPassword,
   normalizeResetToken
 } = require('../helpers/passwordReset');
+const { configuredEmailAppOrigin } = require('../helpers/emailLinkOrigin');
 
 const config = require('../../config');
 const {
-  CBOARD_PROD_URL,
-  CBOARD_QA_URL,
-  LOCALHOST_PORT_3000_URL,
   INTERNAL_API_KEY
 } = config;
 
 const MAIL_SERVICE_UNAVAILABLE_RESPONSE = Object.freeze({
   message: 'Email service is unavailable.',
   error: { code: 'MAIL_SERVICE_UNAVAILABLE' }
+});
+const MAIL_LINK_CONFIG_UNAVAILABLE_RESPONSE = Object.freeze({
+  message: 'Email link configuration is unavailable.',
+  error: { code: 'MAIL_LINK_CONFIG_UNAVAILABLE' }
 });
 
 function hasConfiguredEmailTransport() {
@@ -65,6 +67,13 @@ function hasConfiguredEmailTransport() {
 
 function sendMailServiceUnavailable(res) {
   return res.status(503).json(MAIL_SERVICE_UNAVAILABLE_RESPONSE);
+}
+
+function getEmailAppOrigin(res) {
+  const origin = configuredEmailAppOrigin(config);
+  if (origin) return origin;
+  res.status(503).json(MAIL_LINK_CONFIG_UNAVAILABLE_RESPONSE);
+  return null;
 }
 
 function hasValidInternalApiKey(req) {
@@ -157,6 +166,8 @@ async function createUser(req, res) {
   // NEV writes a temporary user before its verification-email callback. Do
   // not enter that flow unless this process has real transport credentials.
   if (!hasConfiguredEmailTransport()) return sendMailServiceUnavailable(res);
+  const emailAppOrigin = getEmailAppOrigin(res);
+  if (!emailAppOrigin) return;
 
   const registrationEmail = normalizedEmail(req.body && req.body.email);
   try {
@@ -240,18 +251,7 @@ async function createUser(req, res) {
     if (newTempUser) {
       const URL = newTempUser[nev.options.URLFieldName];
 
-      let domain = req.headers.origin;
-
-      const isValidDomain = domain =>
-        [CBOARD_PROD_URL, CBOARD_QA_URL, LOCALHOST_PORT_3000_URL].includes(
-          domain
-        );
-      //if origin is private insert default hostname
-      if (!domain || !isValidDomain(domain)) {
-        domain = CBOARD_PROD_URL;
-      }
-
-      nev.sendVerificationEmail(newTempUser.email, domain, URL, function(
+      nev.sendVerificationEmail(newTempUser.email, emailAppOrigin, URL, function(
         err,
         info
       ) {
@@ -779,14 +779,6 @@ const VERIFICATION_RESEND_REQUEST_RESPONSE = Object.freeze({
     'Request accepted. If a pending account exists, check your email or try again later.'
 });
 
-function trustedVerificationDomain(origin) {
-  return [CBOARD_PROD_URL, CBOARD_QA_URL, LOCALHOST_PORT_3000_URL].includes(
-    origin
-  )
-    ? origin
-    : CBOARD_PROD_URL;
-}
-
 function normalizedEmail(value) {
   return String(value || '')
     .trim()
@@ -815,6 +807,8 @@ async function resendVerificationEmail(req, res) {
   // This gate precedes the limiter and NEV lookup so an unconfigured service
   // creates no limiter records or temporary-account side effects.
   if (!hasConfiguredEmailTransport()) return sendMailServiceUnavailable(res);
+  const emailAppOrigin = getEmailAppOrigin(res);
+  if (!emailAppOrigin) return;
 
   const email = normalizedEmail(req.body && req.body.email);
   try {
@@ -834,7 +828,7 @@ async function resendVerificationEmail(req, res) {
     await new Promise(resolve => {
       nev.resendVerificationEmail(
         email,
-        trustedVerificationDomain(req.headers && req.headers.origin),
+        emailAppOrigin,
         error => {
           if (error) console.error('Unable to resend verification email.');
           resolve();
@@ -846,14 +840,6 @@ async function resendVerificationEmail(req, res) {
   }
 
   return res.status(202).json(VERIFICATION_RESEND_REQUEST_RESPONSE);
-}
-
-function trustedPasswordResetDomain(origin) {
-  return [CBOARD_PROD_URL, CBOARD_QA_URL, LOCALHOST_PORT_3000_URL].includes(
-    origin
-  )
-    ? origin
-    : CBOARD_PROD_URL;
 }
 
 function sendPasswordResetFailure(res, status = 400) {
@@ -889,6 +875,8 @@ async function forgotPassword(req, res) {
   // Unlike a configured transport's generic response, a globally unavailable
   // transport must not claim that reset instructions are on their way.
   if (!hasConfiguredEmailTransport()) return sendMailServiceUnavailable(res);
+  const emailAppOrigin = getEmailAppOrigin(res);
+  if (!emailAppOrigin) return;
 
   const email = String((req.body && req.body.email) || '')
     .trim()
@@ -929,7 +917,7 @@ async function forgotPassword(req, res) {
       try {
         nev.sendResetPasswordEmail(
           user.email,
-          trustedPasswordResetDomain(req.headers.origin),
+          emailAppOrigin,
           userId,
           token,
           error => {

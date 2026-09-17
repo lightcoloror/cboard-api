@@ -61,6 +61,8 @@ module.exports = {
   CBOARD_PROD_URL: 'https://app.cboard.io',
   CBOARD_QA_URL: 'https://app.qa.cboard.io',
   LOCALHOST_PORT_3000_URL: 'http://localhost',
+  CBOARD_APP_URL: process.env.CBOARD_APP_URL,
+  AUTH_EMAIL_APP_URL: process.env.AUTH_EMAIL_APP_URL,
   INTERNAL_API_KEY: process.env.INTERNAL_API_KEY,
   CBUILDER_API_URL: process.env.CBUILDER_APP_URL || 'http://localhost:3000',
   CBOARD_PRODUCTION_BLOB_CONTAINER_HOSTNAME: 'https://cboardgroupdiag483.blob.core.windows.net',
