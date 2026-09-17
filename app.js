@@ -31,8 +31,12 @@ const {
 const {
   createCommunicationAiTokenQuotaMiddleware
 } = require('./api/helpers/communicationAiTokenQuota');
+const { createTrustedProxyTrust } = require('./api/helpers/trustedProxy');
 
 const app = express();
+// Trust only explicitly configured proxy addresses. The default is false so
+// client-supplied forwarding headers cannot replace the socket address.
+app.set('trust proxy', createTrustedProxyTrust(process.env));
 const authenticateBearer = require('./api/helpers/authenticateBearer').createBearerAuthenticator({
   auth, users: User, sessions: require('./api/helpers/deviceSessions')
 });
@@ -159,8 +163,6 @@ swaggerTools.initializeMiddleware(swaggerConfig, async function (middleware) {
   app.use(middleware.swaggerRouter(routerConfig));
 
   app.use(middleware.swaggerUi());
-
-  app.enable('trust proxy')
 
   Facebook.configureFacebookStrategy(app);
   Google.configureGoogleStrategy(app);
