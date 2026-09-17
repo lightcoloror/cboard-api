@@ -388,6 +388,17 @@ async function main() {
       sealed: encryption.seal(mixedState, 'account:cleanup-collaborator') });
     await careAccounts.insertOne({ _id: 'selection-only', rev: 0,
       sealed: encryption.seal({ selectedProfileId: cleanFamily.profileId }, 'account:selection-only') });
+    await budget.provision('cleanup-funding', { owner: cleanFamily.owner, familyId: cleanFamily.familyId,
+      kind: 'family', startsAt, expiresAt, weeklyLimit: 100 });
+    const fundingCollection = connection.collection('carefundings');
+    await fundingCollection.insertOne({ _id: 'scope-institution', kind: 'institution', owner: 'unrelated-institution-owner',
+      familyId: cleanFamily.familyId, rev: 0, sealed: encryption.seal({ receipts: {} }, 'funding:scope-institution') });
+    const communicatorCollection = connection.collection('communicators');
+    await communicatorCollection.insertMany([
+      { _id: 'cleanup-marker', careFamilyId: cleanFamily.familyId, careProfileId: cleanFamily.profileId, rootBoard: '', boards: [] },
+      { _id: 'unrelated-marker', careFamilyId: otherFamily.familyId, careProfileId: cleanFamily.profileId, rootBoard: '', boards: [] },
+      { _id: 'legacy-marker', email: `care-${cleanFamily.profileId}@invalid.local`, rootBoard: 'legacy-board', boards: ['legacy-board'] }
+    ]);
     const cleanJob = await coordinator.begin(cleanFamily.owner, [cleanFamily.familyId]);
     const { createCareClosureAccountStep } = require('../../api/helpers/careClosureAccountStep');
     await assert.rejects(createCareClosureAccountStep({ connection, encryption }).run(cleanFamily.owner, cleanJob.operationId),
@@ -449,6 +460,44 @@ async function main() {
       { expectedOwner: otherFamily.owner, actor: otherFamily.owner }), error => error.code === 'ACCOUNT_CLOSING');
     assert.deepEqual(await profiles.findOne({ _id: otherFamily.profileId }), openProfileBefore);
     passed.push('closing-actors-and-new-members-cannot-write-an-open-family');
+    const { createCareClosureDataStep } = require('../../api/helpers/careClosureDataStep');
+    await communicatorCollection.updateOne({ _id: 'cleanup-marker' }, { $set: { rootBoard: 'unexpected-board' } });
+    await assert.rejects(createCareClosureDataStep({ connection, encryption }).run(cleanFamily.owner, cleanJob.operationId),
+      error => error.code === 'CLOSURE_RECONCILIATION_REQUIRED');
+    assert(await profiles.findOne({ _id: cleanFamily.profileId }));
+    await communicatorCollection.updateOne({ _id: 'cleanup-marker' }, { $set: { rootBoard: '' } });
+    const interruptedDataConnection = {
+      startSession: () => connection.startSession(),
+      collection: name => name === 'carefamilies' ? {
+        find: (...args) => families.find(...args),
+        async replaceOne() { throw new Error('synthetic family checkpoint interruption'); }
+      } : connection.collection(name)
+    };
+    await assert.rejects(createCareClosureDataStep({ connection: interruptedDataConnection, encryption })
+      .run(cleanFamily.owner, cleanJob.operationId), /synthetic family checkpoint interruption/);
+    assert(await profiles.findOne({ _id: cleanFamily.profileId }));
+    assert(await fundingCollection.findOne({ _id: 'cleanup-funding' }));
+    assert(await communicatorCollection.findOne({ _id: 'cleanup-marker' }));
+    assert.equal((await jobs.findOne({ _id: cleanJob.operationId })).status, 'accounts_cleaned');
+    const untouchedFunding = await fundingCollection.findOne({ _id: 'scope-institution' });
+    const untouchedFamily = await families.findOne({ _id: otherFamily.familyId });
+    assert.deepEqual(await createCareClosureDataStep({ connection, encryption }).run(cleanFamily.owner, cleanJob.operationId),
+      { status: 'family_data_cleaned', count: 1 });
+    assert.equal(await profiles.findOne({ _id: cleanFamily.profileId }), null);
+    assert.equal(await fundingCollection.findOne({ _id: 'cleanup-funding' }), null);
+    assert.equal(await communicatorCollection.findOne({ _id: 'cleanup-marker' }), null);
+    assert(await communicatorCollection.findOne({ _id: 'unrelated-marker' }));
+    assert(await communicatorCollection.findOne({ _id: 'legacy-marker' }));
+    assert.deepEqual(await fundingCollection.findOne({ _id: 'scope-institution' }), untouchedFunding);
+    assert.deepEqual(await families.findOne({ _id: otherFamily.familyId }), untouchedFamily);
+    const tombstone = await families.findOne({ _id: cleanFamily.familyId });
+    assert.equal(tombstone.closure.status, 'closed');
+    assert.equal(tombstone.sealed, undefined);
+    assert.equal(tombstone.subscriptionId, undefined);
+    assert.deepEqual(await createCareClosureDataStep({ connection, encryption }).run(cleanFamily.owner, cleanJob.operationId),
+      { status: 'family_data_cleaned', count: 0 });
+    assert.equal((await accounts.findOne({ _id: cleanFamily.owner })).status, 'closing', 'account deletion remains a later stage');
+    passed.push('family-data-cleanup-is-atomic-exact-scoped-and-preserves-institutions');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));
