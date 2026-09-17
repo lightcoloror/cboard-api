@@ -8,6 +8,8 @@ const mockery = require('mockery');
 const nodemailer = require('nodemailer');
 
 module.exports = async function selfServiceOnboardingFixture({ mongoose, passed }) {
+  const previousCollaboration = process.env.CARE_COLLABORATION_ENABLED;
+  process.env.CARE_COLLABORATION_ENABLED = 'true';
   process.env.JWT_SECRET = process.env.JWT_SECRET || 'self-service-onboarding-fixture-jwt';
   process.env.API_SESSION_SECRET = process.env.API_SESSION_SECRET || 'self-service-onboarding-fixture-session';
   process.env.CARE_ENCRYPTION_ACTIVE_KEY = process.env.CARE_ENCRYPTION_ACTIVE_KEY || 'onboarding';
@@ -69,6 +71,9 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     const User = require('../../api/models/User');
     const auth = require('../../api/helpers/auth');
     const sessions = require('../../api/helpers/deviceSessions');
+    const bearerAuthenticator = require('../../api/helpers/authenticateBearer').createBearerAuthenticator({
+      auth, sessions, users: User
+    });
     // Reuse the existing care HTTP fixture's real Swagger metadata/router stack.
     // Only mail delivery is substituted; requests cross a loopback HTTP socket.
     const express = require('express');
@@ -79,8 +84,15 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     await new Promise((resolve, reject) => require('swagger-tools').initializeMiddleware(spec, middleware => {
       try {
         api.use(middleware.swaggerMetadata());
+        api.use(middleware.swaggerSecurity({ Bearer: async (req, _, token, callback) => {
+          try {
+            if (await bearerAuthenticator(req, token)) return callback();
+            const error = new Error('Unauthorized'); error.statusCode = 401; callback(error);
+          } catch (_) { const error = new Error('Unavailable'); error.statusCode = 503; callback(error); }
+        } }));
         api.use(middleware.swaggerRouter({ controllers: Object.fromEntries(
-          Object.entries(controller).map(([name, handler]) => [`user_${name}`, handler])
+          [...Object.entries(controller).map(([name, handler]) => [`user_${name}`, handler]),
+            ...Object.entries(require('../../api/controllers/care')).map(([name, handler]) => [`care_${name}`, handler])]
         ), ignoreMissingHandlers: true }));
         api.use((error, req, res, next) => res.status(error.statusCode || error.status || 500).json({ code: 'TEST_HTTP_ERROR' }));
         resolve();
@@ -89,6 +101,15 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     server = api.listen(0, '127.0.0.1');
     await new Promise((resolve, reject) => { server.once('listening', resolve); server.once('error', reject); });
     const base = `http://127.0.0.1:${server.address().port}`;
+    const careRequest = async (token, route, body, expected = 200) => {
+      const result = await fetch(base + route, {
+        method: body === undefined ? 'GET' : 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) })
+      });
+      assert.equal(result.status, expected, `unexpected HTTP status for ${route}`);
+      return result.json();
+    };
     const run = async (handler, input) => {
       const operation = Object.keys(controller).find(key => controller[key] === handler);
       let route;
@@ -161,20 +182,22 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     const owner = await registerAndLogin('owner', 'patient');
     const invitee = await registerAndLogin('invitee', 'relative');
     const care = require('../../api/helpers/careRuntime').createRuntime();
-    const family = await care.createFamily(owner.id, { name: 'Synthetic onboarding family' });
-    const profile = await care.createProfile(owner.id, {
+    await careRequest(null, '/care/profiles', undefined, 401);
+    const family = await careRequest(owner.bearer, '/care/families', { name: 'Synthetic onboarding family' });
+    const profile = await careRequest(owner.bearer, '/care/profiles', {
       familyId: family.id,
       name: 'Synthetic patient profile',
       role: owner.role
     });
     assert.equal((await care.profiles(owner.id))[0].relationship.defaultMode, 'expression');
     assert.deepEqual(await care.profiles(invitee.id), []);
-    const invitation = await care.command(owner.id, profile.id, {
+    await careRequest(invitee.bearer, `/care/profiles/${profile.id}`, undefined, 403);
+    const invitation = await careRequest(owner.bearer, `/care/profiles/${profile.id}/commands`, {
       action: 'invite',
       operationId: `invite-${suffix}`,
       permissions: ['read']
     });
-    assert.equal((await care.accept(invitee.id, invitation.token)).id, profile.id);
+    assert.equal((await careRequest(invitee.bearer, '/care/invitations/accept', { token: invitation.token })).id, profile.id);
     await care.command(invitee.id, profile.id, {
       action: 'relationship',
       operationId: `relationship-${suffix}`,
@@ -223,6 +246,8 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
       email: owner.email, password: newPassword
     }));
     assert.equal(resetLogin.code, 200);
+    await careRequest(owner.bearer, '/care/profiles', undefined, 401);
+    assert.deepEqual((await careRequest(resetLogin.body.authToken, '/care/profiles')).map(item => item.id), [profile.id]);
     const authenticate = require('../../api/helpers/authenticateBearer').createBearerAuthenticator({
       auth,
       sessions,
@@ -292,6 +317,8 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     passed.push('self-service-family-administrator-transfer-and-no-self-promotion');
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
+    if (previousCollaboration === undefined) delete process.env.CARE_COLLABORATION_ENABLED;
+    else process.env.CARE_COLLABORATION_ENABLED = previousCollaboration;
     config.emailTransport = originalTransport;
     config.AUTH_EMAIL_APP_URL = originalOrigin;
     mockery.deregisterAll();
