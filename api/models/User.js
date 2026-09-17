@@ -354,23 +354,17 @@ userSchema.statics = {
   // Updates an user from a Facebook Profile (+ accessToken)
   // Returns a promise
   updateUserFromFacebook: async function(profile, existingUser) {
-    const user = updateUserFromProfile(profile, existingUser, 'facebook');
-    const dbUser = await user.save();
-    return dbUser;
+    return updateExistingUserFromOAuth(profile, existingUser, 'facebook');
   },
 
   // Updates an user from a Google Profile (+ accessToken)
   // Returns a promise
   updateUserFromGoogle: async function(profile, existingUser) {
-    const user = updateUserFromProfile(profile, existingUser, 'google');
-    const dbUser = await user.save();
-    return dbUser;
+    return updateExistingUserFromOAuth(profile, existingUser, 'google');
   },
 
   updateUserFromApple: async function(profile, existingUser) {
-    const user = updateUserFromProfile(profile, existingUser, 'apple');
-    const dbUser = await user.save();
-    return dbUser;
+    return updateExistingUserFromOAuth(profile, existingUser, 'apple');
   }
 };
 
@@ -407,6 +401,37 @@ function updateUserFromProfile(profile, existingUser, type = 'facebook') {
   existingUser[type] = userType;
 
   return existingUser;
+}
+
+async function updateExistingUserFromOAuth(profile, existingUser, type) {
+  if (process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED !== 'true') {
+    const user = updateUserFromProfile(profile, existingUser, type);
+    return user.save();
+  }
+
+  const originalId = existingUser && existingUser._id;
+  const originalEmail = existingUser && existingUser.email;
+  const owner = originalId && String(originalId);
+  if (!owner || !originalEmail) {
+    throw new Error('OAuth user identity is required');
+  }
+
+  // Keep this require lazy: User is also used by the lifecycle helper's model
+  // defaults, and loading it while this module is initializing creates a cycle.
+  const { createCareFamilyLifecycle } = require('../helpers/careFamilyLifecycle');
+  const lifecycle = createCareFamilyLifecycle();
+  return lifecycle.withOpenAccount(owner, async session => {
+    const currentUser = await User.findOne({ _id: originalId, email: originalEmail })
+      .session(session).exec();
+    if (!currentUser) {
+      const error = new Error('OAuth user is no longer available');
+      error.status = 409;
+      error.code = 'OAUTH_USER_NOT_FOUND';
+      throw error;
+    }
+    const user = updateUserFromProfile(profile, currentUser, type);
+    return user.save({ session });
+  });
 }
 
 const User = mongoose.model('User', userSchema);

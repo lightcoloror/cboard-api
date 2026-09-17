@@ -583,7 +583,7 @@ const UPDATEABLE_FIELDS = [
   'isFirstLogin'
 ];
 
-function updateUser(req, res) {
+async function updateUser(req, res) {
   const id = req.swagger.params.id.value;
   const access = requireSelfOrAdmin(req, id);
   if (!access.ok) return res.status(access.status).json(access.body);
@@ -595,49 +595,67 @@ function updateUser(req, res) {
     });
   }
 
-  User.findById(id).exec(async function(err, user) {
-    if (err) {
-      return res.status(500).json({
-        message: 'Error updating user. ',
-        error: err.message
-      });
-    }
-    if (!user) {
+  try {
+    const initial = await User.findById(id).exec();
+    if (!initial) {
       return res.status(404).json({
         message: 'Unable to find user. User Id: ' + id
       });
     }
-    for (let key in req.body) {
+    const changes = {};
+    for (const key in req.body || {}) {
       if (UPDATEABLE_FIELDS.includes(key)) {
         if (key === 'location') {
-          if ((user.location && user.location.country) || isLocalIp(req.ip))
+          if ((initial.location && initial.location.country) || isLocalIp(req.ip)) {
             continue;
+          }
           try {
-            req.body.location = await findIpLocation(req.ip);
+            changes.location = await findIpLocation(req.ip);
           } catch (error) {
             console.error(error.message);
             continue;
           }
+        } else {
+          changes[key] = req.body[key];
         }
-
-        user[key] = req.body[key];
       }
     }
-    try {
-      const dbUser = await user.save();
-      if (!dbUser) {
-        return res.status(404).json({
-          message: 'Unable to find user. User id: ' + id
-        });
+
+    const write = async session => {
+      let user = initial;
+      if (session) {
+        user = await User.findById(id).session(session).exec();
+        if (!user) return { status: 404, body: { message: 'Unable to find user. User Id: ' + id } };
       }
-      return res.status(200).json(user);
-    } catch (e) {
-      return res.status(500).json({
-        message: 'Error saving user. ',
-        error: e.message
+      for (const key of Object.keys(changes)) {
+        if (key === 'location' && user.location && user.location.country) continue;
+        user[key] = changes[key];
+      }
+      const dbUser = await user.save(session ? { session } : undefined);
+      if (!dbUser) return { status: 404, body: { message: 'Unable to find user. User id: ' + id } };
+      return { status: 200, body: dbUser };
+    };
+
+    const result = process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true'
+      ? await createCareFamilyLifecycle().withOpenFamilyAccounts(
+        null,
+        [String(access.id), String(id)],
+        write
+      )
+      : await write(null);
+    return res.status(result.status).json(result.body);
+  } catch (error) {
+    if (error && ['ACCOUNT_CLOSING', 'ACCOUNT_CLOSED', 'ACCOUNT_CLOSE_CONFLICT'].includes(error.code)) {
+      return res.status(error.status || 409).json({
+        message: 'Account is unavailable for this change',
+        error: { code: error.code }
       });
     }
-  });
+    return res.status(500).json({
+      message: 'Error saving user.',
+      error: { code: 'USER_UPDATE_FAILED' }
+    });
+  }
 }
 
 async function completeUserLogin(req, res, user) {
@@ -753,6 +771,27 @@ async function updateUserLocation(ip, user) {
     try {
       const newLocation = await findIpLocation(ip);
       if (newLocation && newLocation.country) {
+        if (process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true') {
+          const location = await createCareFamilyLifecycle().withOpenAccount(
+            String(user._id),
+            async session => {
+              const current = await User.findById(user._id).session(session).exec();
+              if (!current) {
+                const error = new Error('ACCOUNT_UNAVAILABLE');
+                error.code = 'ACCOUNT_UNAVAILABLE';
+                throw error;
+              }
+              // Another device may have populated it during the external lookup.
+              if (!current.location || !current.location.country) {
+                current.location = newLocation;
+                await current.save({ session });
+              }
+              return current.location;
+            }
+          );
+          user.location = location;
+          return;
+        }
         user.location = newLocation;
         try {
           const dbUser = await user.save();

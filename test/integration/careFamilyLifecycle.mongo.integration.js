@@ -1053,6 +1053,7 @@ async function main() {
     }
     passed.push('legacy-board-create-update-delete-fence-actor-owner-and-owner-transfer');
     await require('./passwordResetLifecycle.mongo.fixture')({ mongoose, coordinator, passed });
+    await require('./userProfileLifecycle.mongo.fixture')({ mongoose, passed });
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));
