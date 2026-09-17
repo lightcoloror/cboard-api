@@ -58,14 +58,14 @@ module.exports = function(mongoose) {
 
     // emailing options
     transportOptions: {
-      service: 'Gmail',
+      service: '',
       auth: {
-        user: 'user@gmail.com',
-        pass: 'password'
+        user: '',
+        pass: ''
       }
     },
     verifyMailOptions: {
-      from: 'Do Not Reply <cboard@cboard.io>',
+      from: '',
       subject: 'Confirm your account',
       html:
         '<p>Please verify your account by clicking <a href="${URL}">this link</a>. If you are unable to do so, copy and ' +
@@ -82,7 +82,7 @@ module.exports = function(mongoose) {
     },
     shouldSendConfirmation: true,
     confirmMailOptions: {
-      from: 'Do Not Reply<cboard@cboard.io>',
+      from: '',
       subject: 'Successfully verified!',
       html: '<p>Your account has been successfully verified.</p>',
       text: 'Your account has been successfully verified.'
@@ -95,7 +95,7 @@ module.exports = function(mongoose) {
       }
     },
     resetPasswordEmailOptions: {
-      from: 'Do Not Reply <user@gmail.com>',
+      from: '',
       subject: 'Cboard - Password reset',
       html:
         '<p>A request was submitted to reset the password of your Cboard account. </p> \
@@ -110,7 +110,7 @@ module.exports = function(mongoose) {
     },
     hashingFunction: null,
     reportPublicBoardEmailOptions:{
-      from: 'Cboard Support <cboard@cboard.io>',
+      from: '',
       subject: 'Public Board Report',
       html:
         '<p>The user ${whistleblowerName} reported that the board ${name} from the user ${author} contains inappropiate contet. </p> \
@@ -167,6 +167,7 @@ module.exports = function(mongoose) {
     var transport = transportOptions || {};
     var auth = transport.auth || {};
     return Boolean(
+      String(transport.from || '').trim() &&
       (String(transport.host || '').trim() ||
         String(transport.service || '').trim()) &&
         String(auth.user || '').trim() &&

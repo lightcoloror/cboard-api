@@ -54,12 +54,18 @@ const MAIL_LINK_CONFIG_UNAVAILABLE_RESPONSE = Object.freeze({
   message: 'Email link configuration is unavailable.',
   error: { code: 'MAIL_LINK_CONFIG_UNAVAILABLE' }
 });
+const REGISTRATION_ACCEPTED_RESPONSE = Object.freeze({
+  success: 1,
+  message:
+    'If registration can proceed, please check your email for next steps.'
+});
 
 function hasConfiguredEmailTransport() {
   const transport = config.emailTransport;
   const auth = transport && transport.auth;
   return Boolean(
     transport &&
+      String(transport.from || '').trim() &&
       String(transport.host || '').trim() &&
       auth &&
       String(auth.user || '').trim() &&
@@ -194,20 +200,18 @@ async function createUser(req, res) {
 
   if (phoneInput.provided) {
     try {
+      await phoneVerificationService.consumeRegistrationVerification({
+        phone: phoneInput.phone,
+        token: phoneVerificationToken
+      });
       const TempUser = nev.options.tempUserModel;
       const [persistentUser, temporaryUser] = await Promise.all([
         User.findOne({ phone: phoneInput.phone }).exec(),
         TempUser ? TempUser.findOne({ phone: phoneInput.phone }).exec() : null
       ]);
       if (persistentUser || temporaryUser) {
-        return res.status(409).json({
-          message: 'This phone number is already registered.'
-        });
+        return res.status(200).json(REGISTRATION_ACCEPTED_RESPONSE);
       }
-      await phoneVerificationService.consumeRegistrationVerification({
-        phone: phoneInput.phone,
-        token: phoneVerificationToken
-      });
       req.body.phone = phoneInput.phone;
     } catch (error) {
       if (/^PHONE_VERIFICATION_[A-Z_]+$/.test(String(error.code || ''))) {
@@ -234,9 +238,7 @@ async function createUser(req, res) {
   nev.createTempUser(user, function(err, existingPersistentUser, newTempUser) {
     if (err) {
       if (isDuplicateMainlandChinaPhoneError(err)) {
-        return res.status(409).json({
-          message: 'This phone number is already registered.'
-        });
+        return res.status(200).json(REGISTRATION_ACCEPTED_RESPONSE);
       }
       return res.status(500).json({
         message: 'Unable to create the account.'
@@ -244,38 +246,29 @@ async function createUser(req, res) {
     }
     // user already exists in persistent collection
     if (existingPersistentUser) {
-      return res.status(409).json({
-        message:
-          'You have already signed up and confirmed your account. Did you forget your password?'
-      });
+      return res.status(200).json(REGISTRATION_ACCEPTED_RESPONSE);
     }
     // new user created
     if (newTempUser) {
       const URL = newTempUser[nev.options.URLFieldName];
 
-      nev.sendVerificationEmail(newTempUser.email, emailAppOrigin, URL, function(
-        err,
-        info
-      ) {
-        if (err) {
-          return res.status(500).json({
-            message: 'ERROR: sending verification email FAILED ' + info
-          });
-        }
-
-        return res.status(200).json({
-          success: 1,
-          message:
-            'An email has been sent to you. Please check it to verify your account.'
+      try {
+        nev.sendVerificationEmail(newTempUser.email, emailAppOrigin, URL, function(
+          err
+        ) {
+          if (err) {
+            console.error('Unable to send registration verification email.');
+          }
+          return res.status(200).json(REGISTRATION_ACCEPTED_RESPONSE);
         });
-      });
+      } catch (_) {
+        console.error('Unable to send registration verification email.');
+        return res.status(200).json(REGISTRATION_ACCEPTED_RESPONSE);
+      }
 
       // user already exists in temporary collection!
     } else {
-      return res.status(409).json({
-        message:
-          'You have already signed up. Please check your email to verify your account.'
-      });
+      return res.status(200).json(REGISTRATION_ACCEPTED_RESPONSE);
     }
   });
 }

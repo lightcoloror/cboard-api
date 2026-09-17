@@ -61,7 +61,10 @@ describe('email-verification module resend and transport guards', function() {
     return new Promise((resolve, reject) => {
       nev.configure(
         {
-          transportOptions,
+          transportOptions: {
+            from: 'No Reply <noreply@example.test>',
+            ...transportOptions
+          },
           verificationURL: '${DOMAIN}/activate/${URL}',
           verifyMailOptions: {
             from: 'No Reply <noreply@example.test>',
@@ -91,6 +94,15 @@ describe('email-verification module resend and transport guards', function() {
 
   it('does not verify or connect when transport credentials are absent', async function() {
     await configure({ host: 'smtp.example.test', auth: { user: '', pass: '' } });
+    expect(verifyCalls).to.equal(0);
+  });
+
+  it('does not verify or connect when the configured sender is absent', async function() {
+    await configure({
+      from: '',
+      host: 'smtp.example.test',
+      auth: { user: 'apikey', pass: 'synthetic-secret' }
+    });
     expect(verifyCalls).to.equal(0);
   });
 

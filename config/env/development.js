@@ -39,9 +39,9 @@ module.exports = {
     CALLBACK_URL: process.env.APPLE_CALLBACK_URL
   },
   emailTransport: {
-    from: 'cboard@cboard.io',
+    from: process.env.EMAIL_FROM,
     host: 'smtp.sendgrid.net',
-    port: 465,
+    port: 587,
     secure: false,
     service: 'Sendgrid',
     auth: {
@@ -49,9 +49,10 @@ module.exports = {
       pass: process.env.SENDGRID_API_KEY
     },
     tls: {
-      rejectUnauthorized: false,
+      rejectUnauthorized: true,
       minVersion: "TLSv1.2"
-    }
+    },
+    requireTLS: true
   },
   appInsightConnectionString: process.env.APPLICATIONINSIGHTS_CONNECTION_STRING,
   GOOGLE_PLAY_CREDENTIALS: process.env.GOOGLE_PLAY_CREDENTIALS,

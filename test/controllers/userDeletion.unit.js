@@ -55,7 +55,7 @@ describe('legacy user deletion controller care guard', function() {
       CBOARD_PROD_URL: 'https://app.example.test',
       CBOARD_QA_URL: 'https://qa.example.test',
       LOCALHOST_PORT_3000_URL: 'http://localhost:3000',
-      emailTransport: { host: 'smtp.example.test', auth: { user: 'apikey', pass: 'test' } }
+      emailTransport: { from: 'No Reply <noreply@example.test>', host: 'smtp.example.test', auth: { user: 'apikey', pass: 'test' } }
     });
     controller = require('../../api/controllers/user');
   });

@@ -120,6 +120,7 @@ describe('user phone registration controller', function() {
         return emailLinkConfigured ? 'http://localhost:3000' : '';
       },
       emailTransport: {
+        from: 'No Reply <noreply@example.test>',
         host: 'smtp.example.test',
         auth: {
           user: 'apikey',
@@ -281,7 +282,7 @@ describe('user phone registration controller', function() {
     expect(response.body).to.deep.equal({
       success: 1,
       message:
-        'An email has been sent to you. Please check it to verify your account.'
+        'If registration can proceed, please check your email for next steps.'
     });
     expect(response.body).not.to.have.property('url');
   });
@@ -371,10 +372,11 @@ describe('user phone registration controller', function() {
       error: { code: 'PHONE_VERIFICATION_REQUIRED' }
     });
     expect(capturedUser).to.equal(null);
+    expect(phoneLookupCount).to.equal(0);
     expect(sentVerification).to.equal(null);
   });
 
-  it('maps a concurrent phone duplicate to a bounded conflict response', async function() {
+  it('maps a concurrent phone duplicate to the opaque accepted response', async function() {
     createTempUserError = Object.assign(new Error('duplicate phone value'), {
       code: 11000,
       keyPattern: { phone: 1 }
@@ -383,9 +385,11 @@ describe('user phone registration controller', function() {
 
     await controller.createUser(createRequest('13800138000'), response);
 
-    expect(response.statusCode).to.equal(409);
+    expect(response.statusCode).to.equal(200);
     expect(response.body).to.deep.equal({
-      message: 'This phone number is already registered.'
+      success: 1,
+      message:
+        'If registration can proceed, please check your email for next steps.'
     });
     expect(sentVerification).to.equal(null);
   });
@@ -403,15 +407,18 @@ describe('user phone registration controller', function() {
     expect(response.body.message).not.to.contain('mongo');
   });
 
-  it('does not claim success when an available transport reports delivery failure', async function() {
+  it('keeps an available transport delivery failure opaque', async function() {
     verificationMailError = new Error('smtp delivery failed');
     const response = createResponse();
 
     await controller.createUser(createRequest('13800138000'), response);
 
-    expect(response.statusCode).to.equal(500);
-    expect(response.body.message).to.contain('sending verification email FAILED');
-    expect(response.body.success).to.equal(undefined);
+    expect(response.statusCode).to.equal(200);
+    expect(response.body).to.deep.equal({
+      success: 1,
+      message:
+        'If registration can proceed, please check your email for next steps.'
+    });
     expect(createTempUserCalls).to.equal(1);
     expect(sentVerification).not.to.equal(null);
   });

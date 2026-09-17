@@ -62,6 +62,7 @@ describe('user verification resend controller', function() {
         return emailLinkConfigured ? 'http://localhost:3000' : '';
       },
       emailTransport: {
+        from: 'No Reply <noreply@example.test>',
         host: 'smtp.example.test',
         auth: {
           user: 'apikey',

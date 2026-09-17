@@ -80,7 +80,7 @@ describe('user access Swagger routes', function() {
     });
     mockery.registerMock('../../config', {
       jwt: { secret: 'synthetic-secret', issuer: 'synthetic-issuer' },
-      emailTransport: { host: 'smtp.example.test', auth: { user: 'u', pass: 'p' } }
+      emailTransport: { from: 'No Reply <noreply@example.test>', host: 'smtp.example.test', auth: { user: 'u', pass: 'p' } }
     });
     mockery.registerMock('../helpers/response', {
       async paginatedResponse() {

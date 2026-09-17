@@ -61,6 +61,7 @@ describe('user verification resend Swagger route', function() {
       LOCALHOST_PORT_3000_URL: 'http://localhost:3000',
       CBOARD_APP_URL: 'https://app.example.test',
       emailTransport: {
+        from: 'No Reply <noreply@example.test>',
         host: 'smtp.example.test',
         auth: {
           user: 'apikey',

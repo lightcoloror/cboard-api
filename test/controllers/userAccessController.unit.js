@@ -84,7 +84,7 @@ describe('user controller access guards', function() {
       }
     });
     mockery.registerMock('../../config', {
-      emailTransport: { host: 'smtp.example.test', auth: { user: 'u', pass: 'p' } }
+      emailTransport: { from: 'No Reply <noreply@example.test>', host: 'smtp.example.test', auth: { user: 'u', pass: 'p' } }
     });
     controller = require('../../api/controllers/user');
   });
