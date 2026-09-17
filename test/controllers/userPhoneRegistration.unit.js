@@ -182,7 +182,7 @@ describe('user phone registration controller', function() {
     expect(sentVerification).to.equal(null);
   });
 
-  it('normalizes a valid phone and preserves the existing email activation flow', async function() {
+  it('normalizes a valid phone, sends verification email, and keeps its token out of the response', async function() {
     const response = createResponse();
 
     await controller.createUser(createRequest('138 0013 8000'), response);
@@ -199,6 +199,12 @@ describe('user phone registration controller', function() {
       domain: 'http://localhost:3000',
       url: 'verification-url'
     });
+    expect(response.body).to.deep.equal({
+      success: 1,
+      message:
+        'An email has been sent to you. Please check it to verify your account.'
+    });
+    expect(response.body).not.to.have.property('url');
   });
 
   it('keeps registrations without phone compatible with upstream CBoard', async function() {

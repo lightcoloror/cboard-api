@@ -247,7 +247,6 @@ async function createUser(req, res) {
 
         return res.status(200).json({
           success: 1,
-          url: URL,
           message:
             'An email has been sent to you. Please check it to verify your account.'
         });
