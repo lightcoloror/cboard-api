@@ -1060,6 +1060,32 @@ async function main() {
     await require('./userProfileLifecycle.mongo.fixture')({ mongoose, passed });
     await require('./legacyQuotaLifecycle.mongo.fixture')({ mongoose, coordinator, passed });
     await require('./privateArchiveJournal.mongo.fixture')({ mongoose, passed, fileMedia, coordinator });
+
+    const previewOwner = 'owner-closure-preview';
+    const previewFamily = 'family-closure-preview';
+    await families.insertOne({ _id: previewFamily, owner: previewOwner, rev: 0 });
+    await profiles.insertOne({ _id: 'profile-closure-preview', familyId: previewFamily, members: [previewOwner] });
+    const jobsBeforePreview = await connection.collection('careclosurejobs').countDocuments({ owner: previewOwner });
+    const soloPreview = await coordinator.preview(previewOwner);
+    assert.equal(soloPreview.canConfirm, true);
+    assert.deepEqual(soloPreview.familyIds, [previewFamily]);
+    assert.equal(soloPreview.preservesLocalData, true);
+    assert.equal(soloPreview.revalidationRequired, true);
+    assert.equal(await accounts.findOne({ _id: previewOwner }), null);
+    assert.equal(await connection.collection('careclosurejobs').countDocuments({ owner: previewOwner }), jobsBeforePreview);
+    assert.equal((await families.findOne({ _id: previewFamily })).rev, 0);
+    await profiles.updateOne({ _id: 'profile-closure-preview' }, { $addToSet: { members: 'collaborator-preview' } });
+    const sharedPreview = await coordinator.preview(previewOwner);
+    assert.equal(sharedPreview.canConfirm, false);
+    assert.deepEqual(sharedPreview.blockers, [{ code: 'FAMILY_TRANSFER_REQUIRED', familyIds: [previewFamily] }]);
+    await assert.rejects(coordinator.begin(previewOwner, soloPreview.familyIds), e => e.code === 'FAMILY_TRANSFER_REQUIRED');
+    assert.equal(await accounts.findOne({ _id: previewOwner }), null);
+    const emptyPreview = await coordinator.preview('owner-preview-empty');
+    assert.deepEqual(emptyPreview.familyIds, []);
+    assert.equal(emptyPreview.canConfirm, true);
+    await accounts.insertOne({ _id: 'owner-preview-closed', status: 'closed' });
+    await assert.rejects(coordinator.preview('owner-preview-closed'), e => e.code === 'ACCOUNT_CLOSED');
+    passed.push('closure-preview-is-read-only-and-confirmation-revalidates-new-members');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

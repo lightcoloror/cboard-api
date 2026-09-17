@@ -1,7 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
-const { createCareFamilyLifecycle } = require('./careFamilyLifecycle');
+const { createCareFamilyLifecycle, TRANSACTION_OPTIONS } = require('./careFamilyLifecycle');
 const { buildCareClosurePlan } = require('./careClosurePlan');
 const { fail } = require('./carePolicy');
 const validId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value) &&
@@ -24,8 +24,8 @@ function createCareClosureCoordinator({
   const accounts = connection.collection('careaccounts');
   const jobs = connection.collection('careclosurejobs');
 
-  async function boundedRead(collection, filter, session) {
-    const docs = await collection.find(filter, { session }).limit(maxScanRecords + 1).toArray();
+  async function boundedRead(collection, filter, session, projection) {
+    const docs = await collection.find(filter, { session, ...(projection ? { projection } : {}) }).limit(maxScanRecords + 1).toArray();
     if (docs.length > maxScanRecords) fail(503, 'CLOSURE_SCAN_LIMIT_REACHED');
     return docs;
   }
@@ -61,12 +61,55 @@ function createCareClosureCoordinator({
     return { operationId: job._id, cleanupStatus: job.status, createdAt: job.createdAt, updatedAt: job.updatedAt };
   }
 
+  async function preview(owner) {
+    if (!validId(owner)) fail(400, 'INVALID_OWNER');
+    const session = await connection.startSession();
+    let result;
+    try {
+      await session.withTransaction(async current => {
+        const account = await connection.collection('careaccountlifecycles').findOne({ _id: owner }, { session: current });
+        if (account && account.status !== 'open') {
+          fail(409, account.status === 'closing' ? 'ACCOUNT_CLOSING' : account.status === 'closed' ? 'ACCOUNT_CLOSED' : 'ACCOUNT_CLOSE_CONFLICT');
+        }
+        const owned = await boundedRead(families, { owner }, current, { _id: 1, closure: 1 });
+        if (owned.some(family => family.closure && family.closure.status !== 'open')) fail(409, 'FAMILY_CLOSE_CONFLICT');
+        const familyIds = owned.map(family => family._id);
+        if (familyIds.some(id => !validId(id)) || new Set(familyIds).size !== familyIds.length) fail(503, 'CLOSURE_SCOPE_MISMATCH');
+        familyIds.sort();
+        const patientDocs = familyIds.length ? await boundedRead(profiles, { familyId: { $in: familyIds } }, current, { _id: 1, familyId: 1, members: 1 }) : [];
+        const fundingDocs = await boundedRead(fundings, { owner }, current, { _id: 1, kind: 1, familyId: 1 });
+        const transferFamilies = new Set(patientDocs.filter(profile => {
+          const members = Array.isArray(profile.members) ? [...new Set(profile.members.map(String))] : [];
+          return members.length !== 1 || members[0] !== owner;
+        }).map(profile => profile.familyId));
+        const blockers = [];
+        if (transferFamilies.size) blockers.push({ code: 'FAMILY_TRANSFER_REQUIRED', familyIds: [...transferFamilies].sort() });
+        const institutions = fundingDocs.filter(funding => funding.kind === 'institution').map(funding => funding._id).sort();
+        if (institutions.length) blockers.push({ code: 'INSTITUTION_TRANSFER_REQUIRED', fundingIds: institutions });
+        const otherFunding = fundingDocs.filter(funding => funding.kind !== 'institution' &&
+          !(funding.kind === 'family' && familyIds.includes(funding.familyId))).map(funding => funding._id).sort();
+        if (otherFunding.length) blockers.push({ code: 'FUNDING_TRANSFER_REQUIRED', fundingIds: otherFunding });
+        result = {
+          familyIds,
+          families: familyIds.map(familyId => ({ familyId,
+            profileCount: patientDocs.filter(profile => profile.familyId === familyId).length,
+            requiresTransfer: transferFamilies.has(familyId) })),
+          blockers, canConfirm: blockers.length === 0,
+          confirmationRequired: true, revalidationRequired: true,
+          deletesCloudData: true, preservesLocalData: true
+        };
+      }, TRANSACTION_OPTIONS);
+    } finally { await session.endSession(); }
+    return result;
+  }
+
   return {
     async begin(owner, exactFamilyIds) {
       const result = await lifecycle.beginClose(owner, exactFamilyIds);
       return { ...result, ...await inspect(owner, result.operationId) };
     },
-    inspect
+    inspect,
+    preview
   };
 }
 

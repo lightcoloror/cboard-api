@@ -287,6 +287,26 @@ paths:
           description: Sign in again
         '503':
           description: Feature or storage unavailable
+  /care/account/closure-preview:
+    x-swagger-router-controller: careClosure
+    get:
+      operationId: previewClosure
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      responses:
+        '200':
+          description: Read-only closure preview for the authenticated user
+          schema:
+            $ref: "#/definitions/ClosurePreview"
+        '401':
+          description: Sign in again
+        '409':
+          description: Account or family closure is already in progress
+        '503':
+          description: Closure preview is disabled or unavailable
   /user/sessions:
     x-swagger-router-controller: deviceSessions
     get:
@@ -2944,6 +2964,72 @@ paths:
             $ref: "#/definitions/ErrorResponse"
 # complex objects have schema definitions
 definitions:
+  ClosurePreview:
+    type: object
+    additionalProperties: false
+    required:
+      - familyIds
+      - families
+      - blockers
+      - canConfirm
+      - confirmationRequired
+      - revalidationRequired
+      - deletesCloudData
+      - preservesLocalData
+    properties:
+      familyIds:
+        type: array
+        items:
+          type: string
+      families:
+        type: array
+        items:
+          $ref: "#/definitions/ClosurePreviewFamily"
+      blockers:
+        type: array
+        items:
+          $ref: "#/definitions/ClosurePreviewBlocker"
+      canConfirm:
+        type: boolean
+      confirmationRequired:
+        type: boolean
+      revalidationRequired:
+        type: boolean
+      deletesCloudData:
+        type: boolean
+      preservesLocalData:
+        type: boolean
+  ClosurePreviewFamily:
+    type: object
+    additionalProperties: false
+    required:
+      - familyId
+      - profileCount
+      - requiresTransfer
+    properties:
+      familyId:
+        type: string
+      profileCount:
+        type: integer
+        minimum: 0
+      requiresTransfer:
+        type: boolean
+  ClosurePreviewBlocker:
+    type: object
+    additionalProperties: false
+    required:
+      - code
+    properties:
+      code:
+        type: string
+      familyIds:
+        type: array
+        items:
+          type: string
+      fundingIds:
+        type: array
+        items:
+          type: string
   ServiceHealth:
     type: object
     additionalProperties: false
