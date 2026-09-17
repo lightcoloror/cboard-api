@@ -16,6 +16,7 @@ describe('Account deletion controller', function() {
   let sessionDestroyError;
   let userMissing;
   let settingsFailure;
+  let careAccountFailure;
 
   beforeEach(function() {
     requestedBy = 'user-1';
@@ -25,6 +26,7 @@ describe('Account deletion controller', function() {
     sessionDestroyError = null;
     userMissing = false;
     settingsFailure = false;
+    careAccountFailure = false;
 
     const models = {
       '../models/User': {
@@ -80,6 +82,15 @@ describe('Account deletion controller', function() {
         async deleteMany(filter) {
           deletedFilters.aiUsage = filter;
           return { deletedCount: 6 };
+        }
+      },
+      '../models/CareWorkspace': {
+        Account: {
+          async deleteOne(filter) {
+            deletedFilters.careAccount = filter;
+            if (careAccountFailure) throw new Error('care account unavailable');
+            return { deletedCount: 1 };
+          }
         }
       }
     };
@@ -192,6 +203,8 @@ describe('Account deletion controller', function() {
     expect(res.body).not.to.have.property('userEmail');
     expect(deletedFilters.sessionRevoke).to.equal('user-1');
     expect(deletedFilters.sessionDestroy).to.equal(true);
+    expect(deletedFilters.careAccount).to.deep.equal({ _id: 'user-1' });
+    expect(res.body.deletedCareAccount).to.equal(1);
   });
 
   it('rejects a different non-admin user before deleting anything', async function() {
@@ -257,6 +270,27 @@ describe('Account deletion controller', function() {
 
     expect(res.statusCode).to.equal(200);
     expect(deletedFilters.userLookup).to.equal('user-1');
+    expect(deletedFilters.user).to.equal('user-1');
+  });
+
+  it('keeps the user when care account cleanup fails and allows retry', async function() {
+    careAccountFailure = true;
+    let res = createResponse();
+
+    await controller.removeAccount(createRequest(), res);
+
+    expect(res.statusCode).to.equal(500);
+    expect(res.body.error.code).to.equal('CARE_ACCOUNT_CLEANUP_FAILED');
+    expect(deletedFilters.careAccount).to.deep.equal({ _id: 'user-1' });
+    expect(deletedFilters.user).to.not.exist;
+
+    careAccountFailure = false;
+    deletedFilters = {};
+    res = createResponse();
+    await controller.removeAccount(createRequest(), res);
+
+    expect(res.statusCode).to.equal(200);
+    expect(deletedFilters.careAccount).to.deep.equal({ _id: 'user-1' });
     expect(deletedFilters.user).to.equal('user-1');
   });
 

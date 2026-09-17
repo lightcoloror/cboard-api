@@ -21,6 +21,8 @@ async function main() {
   process.env.CARE_ENCRYPTION_ACTIVE_KEY = 'test';
   process.env.CARE_ENCRYPTION_KEYS = JSON.stringify({ test: crypto.randomBytes(32).toString('hex') });
   process.env.CARE_MEDIA_ROOT = mediaRoot;
+  process.env.CARE_FAMILY_MEDIA_QUOTA_BYTES = String(8 * 1024 * 1024);
+  process.env.CARE_FAMILY_MEDIA_QUOTA_MAX_FILES = '32';
   await mongoose.connect(uri, { useNewUrlParser: true, useUnifiedTopology: true });
   const sessions = require('../../api/helpers/deviceSessions');
   const auth = require('../../api/helpers/auth');
@@ -130,6 +132,27 @@ async function main() {
     assert.equal((await request(tokens[2], endpoint + '/media/photo')).body.data, asset.data);
     assert.equal((await request(tokens[0], endpoint + '/commands', 'POST', { action: 'grant', operationId: 'revoke-one', member: b, permissions: [] })).status, 200);
     assert.equal((await request(tokens[2], endpoint + '/media/photo')).status, 403);
+    // Simulate an interrupted cleanup/restore with an orphaned profile. Family
+    // existence is an authorization boundary even when subscription gates are off.
+    const orphanInvite = await request(tokens[1], endpoint + '/commands', 'POST',
+      { action: 'invite', operationId: 'orphan-invite', permissions: ['read'] });
+    assert.equal(orphanInvite.status, 200);
+    assert.equal((await request(tokens[1], '/care/context', 'PUT', { profileId: profile.body.id })).status, 200);
+    const families = mongoose.connection.collection('carefamilies');
+    const familyBackup = await families.findOne({ _id: family.body.id });
+    await families.deleteOne({ _id: family.body.id });
+    for (const suffix of ['', '/media/photo', '/favorites', '/audit']) {
+      assert.equal((await request(tokens[1], endpoint + suffix)).status, 403, `orphan ${suffix}`);
+    }
+    assert.equal((await request(tokens[1], endpoint + '/commands', 'POST',
+      { ...op, operationId: 'orphan-write', resourceId: 'orphan-tile', baseVersion: 0 })).status, 403);
+    assert.equal((await request(tokens[1], '/care/context')).body.selectedProfileId, null);
+    assert(!(await request(tokens[1], '/care/profiles')).body.some(item => item.id === profile.body.id));
+    const acceptPath = Object.keys(spec.paths).find(p => spec.paths[p].post && spec.paths[p].post.operationId === 'acceptInvitation');
+    assert.equal((await request(tokens[2], acceptPath, 'POST', { token: orphanInvite.body.token })).status, 403);
+    await families.insertOne(familyBackup);
+    assert.equal((await request(tokens[2], endpoint)).status, 403, 'orphan invitation must not add a grant');
+    assert.equal((await request(tokens[1], endpoint)).status, 200);
     const list = await request(tokens[0], '/user/sessions'); assert.equal(list.body.items.length, 2);
     assert.equal((await request(tokens[0], '/user/sessions', 'POST', { id: auth.getTokenData(tokens[0]).sid })).status, 200);
     assert.equal((await request(tokens[0], endpoint)).status, 401);
@@ -137,7 +160,7 @@ async function main() {
     await request(tokens[1], '/user/sessions', 'POST', { all: true });
     assert.equal((await request(tokens[1], endpoint)).status, 401);
     console.log(JSON.stringify({ result: 'passed', httpMongo: true, encryptedFileMedia: true, restore: true,
-      nextPhase, syntheticAiMetering: nextPhase, externalAiProviderExecuted: false,
+      nextPhase, orphanFamilyAccessDenied: true, syntheticAiMetering: nextPhase, externalAiProviderExecuted: false,
       syntheticOnly: true, productionDatabaseTouched: false }));
   } finally {
     await new Promise(resolve => server.close(resolve));

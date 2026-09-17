@@ -100,6 +100,31 @@ describe('patient collaboration security and offline recovery', () => {
     await f.service.command('familyA', profile.id, { action: 'grant', operationId: newId(), member: 'reader', permissions: [] });
     assert.equal((await f.service.context('reader')).selectedProfileId, null);
   });
+  it('rejects orphan profiles and invitations even when entitlements are disabled', async () => {
+    const f = fixture(); const { family, profile } = await setup(f);
+    const invitation = await f.service.command('familyA', profile.id, { action: 'invite', operationId: newId(), permissions: ['read'] });
+    await f.service.context('familyA', { profileId: profile.id });
+    delete f.families[family.id];
+
+    await assert.rejects(f.service.snapshot('familyA', profile.id), e => e.code === 'PROFILE_ACCESS_DENIED');
+    await assert.rejects(f.service.command('familyA', profile.id, command()), e => e.code === 'PROFILE_ACCESS_DENIED');
+    await assert.rejects(f.service.favorite('familyA', profile.id, { operationId: newId(), resourceId: 'orphan', action: 'put', baseVersion: 0, value: { sentence: '孤儿收藏' } }), e => e.code === 'PROFILE_ACCESS_DENIED');
+    assert.equal((await f.service.profiles('familyA')).length, 0);
+    await assert.rejects(f.service.context('familyA', { profileId: profile.id }), e => e.code === 'PROFILE_ACCESS_DENIED');
+    assert.equal((await f.service.context('familyA')).selectedProfileId, null);
+    await assert.rejects(f.service.accept('reader', invitation.token), e => e.code === 'FAMILY_ACCESS_DENIED');
+    const orphanState = f.encryption.open(f.profiles[profile.id].sealed, `profile:${profile.id}`);
+    assert.equal(orphanState.grants.reader, undefined);
+  });
+  it('rejects a download when its family disappears during blob retrieval', async () => {
+    const f = fixture(); const { family, profile } = await setup(f);
+    const bytes = Buffer.from('89504e470d0a1a0a112233', 'hex');
+    const asset = { mediaId: 'orphan-download', type: 'image/png', data: bytes.toString('base64'), sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    await f.service.upload('familyA', profile.id, asset);
+    const read = f.media.read;
+    f.media.read = async key => { const value = await read(key); delete f.families[family.id]; return value; };
+    await assert.rejects(f.service.download('familyA', profile.id, asset.mediaId), e => e.code === 'PROFILE_ACCESS_DENIED');
+  });
   it('encrypts data with authenticated context and restores using the separately held key', async () => {
     const f = fixture(); const { profile } = await setup(f);
     await f.service.command('familyA', profile.id, command());

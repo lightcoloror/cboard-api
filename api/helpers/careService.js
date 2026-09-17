@@ -28,7 +28,8 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
     return { family, state, rights: policy.entitlement(state.subscription, now()) };
   }
   async function checkEntitlement(familyId, operation) {
-    if (enforceEntitlements) policy.requireEntitlement((await familyPolicy(familyId)).rights, operation);
+    const { rights } = await familyPolicy(familyId);
+    if (enforceEntitlements) policy.requireEntitlement(rights, operation);
   }
   async function load(profileId, user, permission = 'read') {
     if (!validId(profileId)) fail(400, 'INVALID_PROFILE');
@@ -36,6 +37,7 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
     if (!doc) fail(403, 'PROFILE_ACCESS_DENIED');
     const state = encryption.open(doc.sealed, `profile:${profileId}`);
     const family = await store.getFamily(doc.familyId);
+    if (!family) fail(403, 'PROFILE_ACCESS_DENIED');
     const previousAdmin = state.adminOwner || doc.owner;
     if (family && family.owner !== previousAdmin) {
       if (state.grants[previousAdmin]) state.grants[previousAdmin] = state.grants[previousAdmin].filter(p => p !== 'members.manage');

@@ -6,6 +6,7 @@ const Subscribers = require('../models/Subscribers');
 const CommunicationReceiverRecord = require('../models/CommunicationReceiverRecord');
 const CommunicationSavedPhrase = require('../models/CommunicationSavedPhrase');
 const CommunicationAiUsage = require('../models/CommunicationAiUsage');
+const { Account: CareAccount } = require('../models/CareWorkspace');
 const {
   getCareAccountDeletionBlocker
 } = require('../helpers/careAccountDeletion');
@@ -199,6 +200,17 @@ async function removeAccount(req, res) {
     console.error('Account deletion cleanup failed.');
     return res.status(500).json({
       message: 'Error deleting user subscriber'
+    });
+  }
+
+  try {
+    const deletedCareAccount = await CareAccount.deleteOne({ _id: id });
+    response.deletedCareAccount = deletedCareAccount.deletedCount;
+  } catch (error) {
+    console.error('Account deletion cleanup failed.');
+    return res.status(500).json({
+      message: 'Error deleting care account data',
+      error: { code: 'CARE_ACCOUNT_CLEANUP_FAILED' }
     });
   }
 
