@@ -181,7 +181,15 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
 
     const owner = await registerAndLogin('owner', 'patient');
     const invitee = await registerAndLogin('invitee', 'relative');
-    const care = require('../../api/helpers/careRuntime').createRuntime();
+    // All user-visible care operations below use the real HTTP routes.
+    const bearerByUser = new Map([[owner.id, owner.bearer], [invitee.id, invitee.bearer]]);
+    const care = {
+      profiles: user => careRequest(bearerByUser.get(user), '/care/profiles'),
+      createProfile: (user, body) => careRequest(bearerByUser.get(user), '/care/profiles', body),
+      command: (user, profileId, body) => careRequest(bearerByUser.get(user), `/care/profiles/${profileId}/commands`, body),
+      transferAdmin: (user, profileId, body, expected = 200) =>
+        careRequest(bearerByUser.get(user), `/care/profiles/${profileId}/administrator`, body, expected)
+    };
     await careRequest(null, '/care/profiles', undefined, 401);
     const family = await careRequest(owner.bearer, '/care/families', { name: 'Synthetic onboarding family' });
     const profile = await careRequest(owner.bearer, '/care/profiles', {
@@ -248,6 +256,7 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     assert.equal(resetLogin.code, 200);
     await careRequest(owner.bearer, '/care/profiles', undefined, 401);
     assert.deepEqual((await careRequest(resetLogin.body.authToken, '/care/profiles')).map(item => item.id), [profile.id]);
+    bearerByUser.set(owner.id, resetLogin.body.authToken);
     const authenticate = require('../../api/helpers/authenticateBearer').createBearerAuthenticator({
       auth,
       sessions,
@@ -296,9 +305,9 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
       familyId: family.id, name: 'Synthetic second patient', role: 'relative'
     });
     assert.deepEqual((await care.profiles(invitee.id)).map(item => item.id), [profile.id]);
-    await assert.rejects(care.transferAdmin(invitee.id, profile.id, {
+    assert.equal((await care.transferAdmin(invitee.id, profile.id, {
       member: invitee.id, operationId: `self-promote-${suffix}`
-    }), error => error.code === 'OWNER_REQUIRED');
+    }, 403)).code, 'OWNER_REQUIRED');
     const transfer = { member: invitee.id, operationId: `transfer-${suffix}` };
     await care.transferAdmin(owner.id, profile.id, transfer);
     await care.transferAdmin(owner.id, profile.id, transfer);
@@ -306,9 +315,9 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     assert.deepEqual(administered.map(item => item.id).sort(), [profile.id, secondProfile.id].sort());
     assert(administered.every(item => item.owner && item.permissions.includes('members.manage')));
     assert((await care.profiles(owner.id)).every(item => !item.owner && !item.permissions.includes('members.manage')));
-    await assert.rejects(care.transferAdmin(owner.id, profile.id, {
+    assert.equal((await care.transferAdmin(owner.id, profile.id, {
       member: owner.id, operationId: `take-back-${suffix}`
-    }), error => error.code === 'OWNER_REQUIRED');
+    }, 403)).code, 'OWNER_REQUIRED');
     await care.command(invitee.id, secondProfile.id, {
       action: 'invite', operationId: `new-admin-invite-${suffix}`, permissions: ['read']
     });
