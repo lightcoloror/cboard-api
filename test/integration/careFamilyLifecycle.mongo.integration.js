@@ -996,6 +996,55 @@ async function main() {
       assert(await communicatorCollection.findOne({ _id: actorDocument.body.id }));
     }
     passed.push('legacy-communicator-update-and-delete-fence-ownership-and-admin-authorization');
+    const boardController = require('../../api/controllers/board');
+    const boardAdminId = new mongoose.Types.ObjectId();
+    const boardOwnerId = new mongoose.Types.ObjectId();
+    const boardAdminEmail = 'synthetic-board-admin@example.test';
+    const boardOwnerEmail = 'synthetic-board-owner@example.test';
+    await usersCollection.insertMany([{ _id: boardAdminId, email: boardAdminEmail },
+      { _id: boardOwnerId, email: boardOwnerEmail }]);
+    const boardAdmin = { id: String(boardAdminId), email: boardAdminEmail, isAdmin: true };
+    const boardOwner = { id: String(boardOwnerId), email: boardOwnerEmail, isAdmin: false };
+    const callBoard = async (method, actor, body, id) => {
+      const response = settingsResponse();
+      await boardController[method]({ user: actor, body,
+        swagger: { params: { id: { value: String(id || '') } } } }, response);
+      return response;
+    };
+    const boardBody = { name: 'Synthetic board', author: 'Synthetic', email: boardAdminEmail, tiles: [] };
+    const createdBoard = await callBoard('createBoard', boardAdmin, boardBody);
+    assert.equal(createdBoard.code, 200, JSON.stringify(createdBoard.body));
+    const boardId = new mongoose.Types.ObjectId(String(createdBoard.body.id));
+    const cannotEdit = await callBoard('updateBoard', boardOwner, { name: 'Unauthorized' }, boardId);
+    assert.equal(cannotEdit.code, 404);
+    const cannotDelete = await callBoard('deleteBoard', boardOwner, {}, boardId);
+    assert.equal(cannotDelete.code, 404);
+    const movedBoard = await callBoard('updateBoard', boardAdmin, { name: 'Synthetic moved board', email: boardOwnerEmail }, boardId);
+    assert.equal(movedBoard.code, 200, JSON.stringify(movedBoard.body));
+    const boardBeforeClose = await Board.collection.findOne({ _id: boardId });
+    assert.equal(boardBeforeClose.email, boardOwnerEmail);
+    const disposableBoard = await callBoard('createBoard', boardOwner, { ...boardBody, email: boardOwnerEmail });
+    assert.equal(disposableBoard.code, 200);
+    assert.equal((await callBoard('deleteBoard', boardOwner, {}, disposableBoard.body.id)).code, 200);
+    assert.equal(await Board.collection.findOne({ _id: new mongoose.Types.ObjectId(String(disposableBoard.body.id)) }), null);
+    await coordinator.begin(String(boardOwnerId), []);
+    for (const method of ['createBoard', 'updateBoard', 'deleteBoard']) {
+      const refused = await callBoard(method, boardAdmin, { ...boardBody, email: boardOwnerEmail }, boardId);
+      assert.equal(refused.code, 409, JSON.stringify(refused.body));
+      assert.equal(refused.body.error.code, 'ACCOUNT_CLOSING');
+      assert.deepEqual(await Board.collection.findOne({ _id: boardId }), boardBeforeClose);
+    }
+    const remainingBoard = await callBoard('createBoard', boardAdmin, boardBody);
+    assert.equal(remainingBoard.code, 200);
+    const blockedTransfer = await callBoard('updateBoard', boardAdmin, { email: boardOwnerEmail }, remainingBoard.body.id);
+    assert.equal(blockedTransfer.code, 409);
+    await coordinator.begin(String(boardAdminId), []);
+    for (const method of ['createBoard', 'updateBoard', 'deleteBoard']) {
+      const refused = await callBoard(method, boardAdmin, boardBody, remainingBoard.body.id);
+      assert.equal(refused.code, 409);
+      assert.equal(refused.body.error.code, 'ACCOUNT_CLOSING');
+    }
+    passed.push('legacy-board-create-update-delete-fence-actor-owner-and-owner-transfer');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

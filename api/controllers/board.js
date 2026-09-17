@@ -15,13 +15,40 @@ const {
   sanitizePublicBoard
 } = require('../helpers/publicBoardLibrary');
 const { loadPublicBoardTileImage } = require('../helpers/publicBoardImage');
-
-const { nev } = require('../mail');
+const { withLegacyAccountWrite } = require('../helpers/legacyAccountWrite');
 
 const BLOB_CONTAINER_NAME = process.env.BLOB_CONTAINER_NAME || 'cblob';
 // Upper bound on ids per /board/byids request. Guards against runaway clients
 // (e.g. a copy-loop bug) without limiting any healthy user.
 const MAX_BOARDS_BY_IDS = 3000;
+
+function lifecycleFailure(error, res) {
+  if (error && [
+    'ACCOUNT_CLOSING',
+    'ACCOUNT_CLOSED',
+    'LEGACY_OWNER_UNAVAILABLE',
+    'LEGACY_OWNER_CHANGED',
+    'ACCOUNT_UNAVAILABLE'
+  ].includes(error.code)) {
+    return res.status(error.status || 409).json({
+      message: 'Account is unavailable for this change',
+      error: { code: error.code }
+    });
+  }
+  return null;
+}
+
+function lifecycleEnabled() {
+  return process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true';
+}
+
+function queryWithSession(query, session) {
+  if (!session) return query;
+  if (!query || typeof query.session !== 'function') {
+    throw new Error('Board query does not support transaction sessions');
+  }
+  return query.session(session);
+}
 
 module.exports = {
   createBoard: createBoard,
@@ -39,7 +66,7 @@ module.exports = {
   getCbuilderBoard: getCbuilderBoard
 };
 
-function createBoard(req, res) {
+async function createBoard(req, res) {
   const boardData = { ...req.body };
   if (!req.user.isAdmin) {
     boardData.email = req.user.email;
@@ -47,15 +74,24 @@ function createBoard(req, res) {
 
   const board = new Board(boardData);
   board.lastEdited = moment().format();
-  board.save(function(err, board) {
-    if (err) {
-      return res.status(409).json({
-        message: 'Error saving board',
-        error: err.message
-      });
-    }
-    return res.status(200).json(board.toJSON());
-  });
+  try {
+    const savedBoard = await withLegacyAccountWrite(
+      req.user.id,
+      [boardData.email],
+      async session => {
+        const saved = await board.save(session ? { session } : undefined);
+        return { status: 200, body: saved.toJSON() };
+      }
+    );
+    return res.status(savedBoard.status).json(savedBoard.body);
+  } catch (error) {
+    const rejected = lifecycleFailure(error, res);
+    if (rejected) return rejected;
+    return res.status(409).json({
+      message: 'Error saving board',
+      error: error.message
+    });
+  }
 }
 
 async function listBoard(req, res) {
@@ -245,26 +281,43 @@ async function getPublicBoardTileImage(req, res) {
 
 async function deleteBoard(req, res) {
   const id = req.swagger.params.id.value;
-  const query = { _id: id };
-  if (!req.user.isAdmin) {
-    query.email = req.user.email;
+  if (!lifecycleEnabled()) {
+    const query = { _id: id };
+    if (!req.user.isAdmin) query.email = req.user.email;
+    return new Promise(resolve => {
+      Board.findOneAndRemove(query, function(err, boards) {
+        if (err || !boards) {
+          resolve(res.status(404).json({
+            message: 'Board not found. Board Id: ' + id,
+            error: err ? err.message : 'Board not found.'
+          }));
+          return;
+        }
+        resolve(res.status(200).json(boards));
+      });
+    });
   }
-
-  Board.findOneAndRemove(query, function(err, boards) {
-    if (err) {
-      return res.status(404).json({
-        message: 'Board not found. Board Id: ' + id,
-        error: err.message
-      });
-    }
-    if (!boards) {
-      return res.status(404).json({
-        message: 'Board not found. Board Id: ' + id,
-        error: 'Board not found.'
-      });
-    }
-    return res.status(200).json(boards);
-  });
+  const query = { _id: id };
+  if (!req.user.isAdmin) query.email = req.user.email;
+  try {
+    const authorized = await Board.findOne(query).exec();
+    if (!authorized) return res.status(404).json({
+      message: 'Board not found. Board Id: ' + id,
+      error: 'Board not found.'
+    });
+    const result = await withLegacyAccountWrite(req.user.id, [authorized.email], async session => {
+      const removeQuery = Board.findOneAndDelete({ _id: id, email: authorized.email });
+      const deleted = await queryWithSession(removeQuery, session).exec();
+      return deleted
+        ? { status: 200, body: deleted }
+        : { status: 404, body: { message: 'Board not found. Board Id: ' + id, error: 'Board not found.' } };
+    });
+    return res.status(result.status).json(result.body);
+  } catch (error) {
+    const rejected = lifecycleFailure(error, res);
+    if (rejected) return rejected;
+    return res.status(404).json({ message: 'Board not found. Board Id: ' + id, error: error.message });
+  }
 }
 
 function getBoard(req, res) {
@@ -301,7 +354,10 @@ async function updateBoard(req, res) {
       query.email = req.user.email;
     }
 
-    const board = await Board.findOne(query);
+    const initialQuery = Board.findOne(query);
+    const board = await (initialQuery && typeof initialQuery.exec === 'function'
+      ? initialQuery.exec()
+      : initialQuery);
 
     if (!board) {
       return res.status(404).json({
@@ -317,11 +373,30 @@ async function updateBoard(req, res) {
       delete updateData.email;
     }
 
-    if (
+    const hasImages = Boolean(
       updateData.tiles &&
       Array.isArray(updateData.tiles) &&
       hasBase64Images(updateData.tiles)
-    ) {
+    );
+    if (hasImages && lifecycleEnabled()) {
+      try {
+        await withLegacyAccountWrite(
+          req.user.id,
+          [
+            board.email,
+            Object.prototype.hasOwnProperty.call(updateData, 'email')
+              ? updateData.email
+              : board.email
+          ],
+          async () => true
+        );
+      } catch (gateError) {
+        const rejected = lifecycleFailure(gateError, res);
+        if (rejected) return rejected;
+        throw gateError;
+      }
+    }
+    if (hasImages) {
       try {
         const imageProcessResult = await processBase64Images(
           updateData.tiles,
@@ -339,24 +414,35 @@ async function updateBoard(req, res) {
       }
     }
 
-    for (let key in updateData) {
-      board[key] = updateData[key];
-    }
-    board.lastEdited = moment().format();
-
     try {
-      const savedBoard = await board.save();
-      if (!savedBoard) {
-        return res.status(404).json({
-          message: 'Unable to find board. board id: ' + id
-        });
-      }
-
-      const response = savedBoard.toJSON();
-      response.isLocalUpdateNeeded = isLocalUpdateNeeded;
-
-      return res.status(200).json(response);
+      const result = await withLegacyAccountWrite(
+        req.user.id,
+        [board.email, req.user.isAdmin && Object.prototype.hasOwnProperty.call(updateData, 'email') ? updateData.email : board.email],
+        async session => {
+          let current = board;
+          if (session) {
+            const currentQuery = Board.findOne({ _id: id, email: board.email });
+            current = await queryWithSession(currentQuery, session).exec();
+            if (!current) {
+              const ownerError = new Error('LEGACY_OWNER_CHANGED');
+              ownerError.code = 'LEGACY_OWNER_CHANGED';
+              ownerError.status = 409;
+              throw ownerError;
+            }
+          }
+          for (const key in updateData) current[key] = updateData[key];
+          current.lastEdited = moment().format();
+          const savedBoard = await current.save(session ? { session } : undefined);
+          if (!savedBoard) return { status: 404, body: { message: 'Unable to find board. board id: ' + id } };
+          const response = savedBoard.toJSON();
+          response.isLocalUpdateNeeded = isLocalUpdateNeeded;
+          return { status: 200, body: response };
+        }
+      );
+      return res.status(result.status).json(result.body);
     } catch (err) {
+      const rejected = lifecycleFailure(err, res);
+      if (rejected) return rejected;
       return res.status(500).json({
         message: 'Error saving board. ',
         error: err.message
@@ -371,6 +457,7 @@ async function updateBoard(req, res) {
 }
 
 function reportPublicBoard(req, res) {
+  const { nev } = require('../mail');
   nev.sendReportEmail(req.body, function(err, info) {
     if (err) {
       return res.status(500).json({

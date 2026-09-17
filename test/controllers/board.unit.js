@@ -44,6 +44,12 @@ describe('Board write ownership', function() {
   let findQuery;
   let foundBoard;
   let MockBoard;
+  let previousLifecycleFlag;
+  let lifecycleMode;
+  let lifecycleCalls;
+  let lifecycleSession;
+  let base64Present;
+  let imageUploads;
 
   beforeEach(function() {
     constructedData = null;
@@ -52,6 +58,13 @@ describe('Board write ownership', function() {
     deleteResult = null;
     findQuery = null;
     foundBoard = null;
+    previousLifecycleFlag = process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    lifecycleMode = 'off';
+    lifecycleCalls = [];
+    lifecycleSession = { id: 'board-session' };
+    base64Present = false;
+    imageUploads = 0;
 
     MockBoard = class {
       constructor(data) {
@@ -61,7 +74,8 @@ describe('Board write ownership', function() {
       }
 
       save(callback) {
-        if (callback) callback(null, this);
+        this.saveOptions = arguments[0];
+        if (typeof callback === 'function') callback(null, this);
         return Promise.resolve(this);
       }
 
@@ -72,7 +86,35 @@ describe('Board write ownership', function() {
 
       static findOne(query) {
         findQuery = query;
-        return Promise.resolve(foundBoard);
+        return {
+          session(value) {
+            this.sessionValue = value;
+            return this;
+          },
+          exec: async () => {
+            if (query.email && foundBoard && foundBoard.email !== query.email) return null;
+            return foundBoard;
+          },
+          then(resolve, reject) {
+            return this.exec().then(resolve, reject);
+          }
+        };
+      }
+
+      static findOneAndDelete(query) {
+        deleteQuery = query;
+        return {
+          session(value) {
+            this.sessionValue = value;
+            return this;
+          },
+          async exec() {
+            if (!foundBoard || foundBoard.email !== query.email) return null;
+            const deleted = foundBoard;
+            foundBoard = null;
+            return deleted;
+          }
+        };
       }
 
       static findOneAndRemove(query, callback) {
@@ -89,10 +131,29 @@ describe('Board write ownership', function() {
     mockery.registerMock('../models/Board', MockBoard);
     mockery.registerMock('../helpers/imageProcessor', {
       hasBase64Images() {
-        return false;
+        return base64Present;
       },
-      processBase64Images() {
-        throw new Error('Image processing should not run in ownership tests');
+      async processBase64Images(tiles) {
+        imageUploads += 1;
+        return { tiles };
+      }
+    });
+    mockery.registerMock('../helpers/legacyAccountWrite', {
+      async withLegacyAccountWrite(actorId, ownerEmails, callback) {
+        lifecycleCalls.push({ actorId, ownerEmails });
+        if (lifecycleMode === 'closing' || (lifecycleMode === 'upload-close' && lifecycleCalls.length > 1)) {
+          throw Object.assign(new Error('closing'), {
+            code: 'ACCOUNT_CLOSING',
+            status: 409
+          });
+        }
+        const result = await callback(
+          lifecycleMode === 'open' || lifecycleMode === 'upload-close'
+            ? lifecycleSession
+            : null
+        );
+        if (lifecycleMode === 'commit-fail') throw new Error('commit failed');
+        return result;
       }
     });
     mockery.registerMock('../mail', { nev: {} });
@@ -100,11 +161,13 @@ describe('Board write ownership', function() {
   });
 
   afterEach(function() {
+    if (previousLifecycleFlag === undefined) delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    else process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = previousLifecycleFlag;
     mockery.deregisterAll();
     mockery.disable();
   });
 
-  it('assigns a regular user board to the authenticated email', function() {
+  it('assigns a regular user board to the authenticated email', async function() {
     const body = {
       name: 'Board',
       email: 'another-user@example.com',
@@ -112,21 +175,21 @@ describe('Board write ownership', function() {
     };
     const res = createResponse();
 
-    controller.createBoard(createRequest({ body }), res);
+    await controller.createBoard(createRequest({ body }), res);
 
     expect(res.statusCode).to.equal(200);
     expect(constructedData.email).to.equal('owner@example.com');
     expect(body.email).to.equal('another-user@example.com');
   });
 
-  it('lets an admin create a board for the requested user', function() {
+  it('lets an admin create a board for the requested user', async function() {
     const body = {
       name: 'Board',
       email: 'managed-user@example.com',
       tiles: []
     };
 
-    controller.createBoard(
+    await controller.createBoard(
       createRequest({ body, email: 'admin@example.com', isAdmin: true }),
       createResponse()
     );
@@ -241,5 +304,131 @@ describe('Board write ownership', function() {
 
     expect(deleteQuery).to.deep.equal({ _id: 'board-1' });
     expect(res.statusCode).to.equal(200);
+  });
+
+  it('creates with the account session and responds after the gated write', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'open';
+    const request = createRequest({
+      body: { name: 'Board', email: 'owner@example.com', tiles: [] },
+      id: 'board-1'
+    });
+    request.user.id = 'actor-1';
+    const response = createResponse();
+
+    await controller.createBoard(request, response);
+
+    expect(response.statusCode).to.equal(200);
+    expect(lifecycleCalls[0]).to.deep.equal({
+      actorId: 'actor-1',
+      ownerEmails: ['owner@example.com']
+    });
+    expect(constructedData.email).to.equal('owner@example.com');
+  });
+
+  it('updates with a session after rereading the board owner', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'open';
+    foundBoard = new MockBoard({
+      name: 'Old board',
+      email: 'old-owner@example.com',
+      tiles: []
+    });
+    const request = createRequest({
+      body: {
+        name: 'Updated board',
+        email: 'new-owner@example.com',
+        tiles: []
+      },
+      email: 'admin@example.com',
+      isAdmin: true
+    });
+    request.user.id = 'actor-1';
+    const response = createResponse();
+
+    await controller.updateBoard(request, response);
+
+    expect(response.statusCode).to.equal(200);
+    expect(lifecycleCalls[0].ownerEmails).to.deep.equal([
+      'old-owner@example.com',
+      'new-owner@example.com'
+    ]);
+    expect(foundBoard.saveOptions).to.deep.equal({ session: lifecycleSession });
+  });
+
+  it('rejects an image update if the account closes after upload and before save', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'upload-close';
+    base64Present = true;
+    foundBoard = new MockBoard({
+      name: 'Board',
+      email: 'owner@example.com',
+      tiles: []
+    });
+    const request = createRequest({
+      body: { tiles: [{ image: 'data:image/png;base64,abc' }] }
+    });
+    request.user.id = 'actor-1';
+    const response = createResponse();
+
+    await controller.updateBoard(request, response);
+
+    expect(imageUploads).to.equal(1);
+    expect(response.statusCode).to.equal(409);
+    expect(response.body.error.code).to.equal('ACCOUNT_CLOSING');
+    expect(foundBoard.saveOptions).to.equal(undefined);
+  });
+
+  it('deletes through a session-bound _id and original owner filter', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'open';
+    foundBoard = new MockBoard({
+      email: 'owner@example.com',
+      tiles: []
+    });
+    const request = createRequest({
+      email: 'admin@example.com',
+      isAdmin: true
+    });
+    request.user.id = 'actor-1';
+    const response = createResponse();
+
+    await controller.deleteBoard(request, response);
+
+    expect(response.statusCode).to.equal(200);
+    expect(deleteQuery).to.deep.equal({
+      _id: 'board-1',
+      email: 'owner@example.com'
+    });
+  });
+
+  it('does not return success when a gated create commit fails', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'commit-fail';
+    const request = createRequest({
+      body: { name: 'Board', email: 'owner@example.com', tiles: [] }
+    });
+    request.user.id = 'actor-1';
+    const response = createResponse();
+
+    await controller.createBoard(request, response);
+
+    expect(response.statusCode).to.equal(409);
+    expect(response.body).not.to.have.property('id');
+  });
+
+  it('does not let a non-owner update through the existing ownership filter', async function() {
+    foundBoard = new MockBoard({
+      email: 'different-owner@example.com',
+      tiles: []
+    });
+    const response = createResponse();
+
+    await controller.updateBoard(
+      createRequest({ body: { name: 'No access' } }),
+      response
+    );
+
+    expect(response.statusCode).to.equal(404);
   });
 });
