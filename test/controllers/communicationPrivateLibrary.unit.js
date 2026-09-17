@@ -75,6 +75,7 @@ function createHarness(initial = null, options = {}) {
   let nextBlob = 1;
   const removed = [];
   const uploaded = [];
+  const metadataUpdates = [];
   let downloadBuffer = initial
     ? createEncryptedArchiveBuffer('existing')
     : null;
@@ -83,7 +84,8 @@ function createHarness(initial = null, options = {}) {
     findOne(filter) {
       return createQuery(stored && stored.user === filter.user ? stored : null);
     },
-    findOneAndUpdate(filter, update) {
+    findOneAndUpdate(filter, update, options) {
+      metadataUpdates.push({ filter, update, options });
       const previous =
         stored && stored.user === filter.user ? { ...stored } : null;
       stored = {
@@ -150,6 +152,8 @@ function createHarness(initial = null, options = {}) {
     legacyArchiveErrorCode: options.legacyArchiveErrorCode,
     legacyArchiveMessage: options.legacyArchiveMessage,
     storageConfigured: () => options.storageConfigured !== false,
+    lifecycle: options.lifecycle,
+    lifecycleEnabled: options.lifecycleEnabled || (() => false),
     now: () => 1700000000000
   });
 
@@ -161,7 +165,8 @@ function createHarness(initial = null, options = {}) {
     setDownloadBuffer(value) {
       downloadBuffer = value;
     },
-    uploaded
+    uploaded,
+    metadataUpdates
   };
 }
 
@@ -297,6 +302,81 @@ describe('Private picture library controller', function() {
     });
     expect(harness.uploaded[0].containerOptions).to.equal(undefined);
     expect(harness.getStored().blobName).to.equal('private-1.pijenc');
+    expect(harness.metadataUpdates[0].options.session).to.equal(undefined);
+  });
+
+  it('publishes metadata through the account lifecycle session when enabled', async function() {
+    const session = { id: 'session-1' };
+    const calls = [];
+    const harness = createHarness(null, {
+      lifecycleEnabled: () => true,
+      lifecycle: {
+        async withOpenAccount(id, callback) {
+          calls.push(id);
+          return callback(session);
+        }
+      }
+    });
+    const response = createResponse();
+
+    await harness.controller.uploadPrivateLibrary(
+      createRequest({ buffer: createEncryptedArchiveBuffer() }),
+      response
+    );
+
+    expect(response.statusCode).to.equal(200);
+    expect(calls).to.deep.equal(['user-1']);
+    expect(harness.metadataUpdates[0].options.session).to.equal(session);
+    expect(harness.removed).to.deep.equal([]);
+  });
+
+  it('rejects metadata publication for a closing account and removes only the new blob', async function() {
+    const harness = createHarness({
+      user: 'user-1', blobName: 'old-private.zip', format: PRIVATE_LIBRARY_FORMAT,
+      contractVersion: PRIVATE_LIBRARY_CONTRACT_VERSION, size: 1, sha256: 'old', createdAt: 100, updatedAt: 100
+    }, {
+      lifecycleEnabled: () => true,
+      lifecycle: {
+        async withOpenAccount() {
+          throw Object.assign(new Error('closing'), { code: 'ACCOUNT_CLOSING' });
+        }
+      }
+    });
+    const response = createResponse();
+
+    await harness.controller.uploadPrivateLibrary(
+      createRequest({ buffer: createEncryptedArchiveBuffer('late') }),
+      response
+    );
+
+    expect(response.statusCode).to.equal(409);
+    expect(response.body.error.code).to.equal('ACCOUNT_CLOSING');
+    expect(harness.getStored().blobName).to.equal('old-private.zip');
+    expect(harness.removed).to.deep.equal([{ containerName: 'private-test', blobName: 'private-1.pijenc' }]);
+    expect(harness.metadataUpdates).to.have.length(0);
+  });
+
+  it('returns ACCOUNT_CLOSED for a closed account without leaking the lifecycle error', async function() {
+    const harness = createHarness(null, {
+      lifecycleEnabled: () => true,
+      lifecycle: {
+        async withOpenAccount() {
+          throw Object.assign(new Error('closed internals'), { code: 'ACCOUNT_CLOSED' });
+        }
+      }
+    });
+    const response = createResponse();
+
+    await harness.controller.uploadPrivateLibrary(
+      createRequest({ buffer: createEncryptedArchiveBuffer('closed') }),
+      response
+    );
+
+    expect(response.statusCode).to.equal(403);
+    expect(response.body.error.code).to.equal('ACCOUNT_CLOSED');
+    expect(response.body.message).to.equal('Account is closed');
+    expect(harness.removed).to.have.length(1);
+    expect(harness.metadataUpdates).to.have.length(0);
   });
 
   it('reuses the same private archive controller for a separate device-data snapshot', async function() {

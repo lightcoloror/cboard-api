@@ -708,6 +708,46 @@ async function main() {
     { operationId: finalClosure.operationId, cleanupStatus: 'complete', waiting: false, accountDeleted: true });
     passed.push('final-user-delete-is-atomic-and-interrupted-cleanup-requires-reconciliation');
     passed.push('real-account-cleanup-removes-private-files-legacy-records-and-current-month-quota-with-isolation');
+    for (const PrivateLibrary of archiveModels) {
+      const uploadUser = new mongoose.Types.ObjectId();
+      const uploadOwner = String(uploadUser);
+      await usersCollection.insertOne({ _id: uploadUser, email: `synthetic-upload-${uploadOwner}@example.test` });
+      const written = [];
+      let closeDuringUpload = false;
+      const uploadController = createCommunicationPrivateLibraryController({ PrivateLibrary,
+        storageConfigured: () => true,
+        blobStore: {
+          async create(_container, _name, file) {
+            const name = await fileMedia.write(file.buffer);
+            written.push(name);
+            // Deterministic interleaving: close after storage accepted bytes,
+            // before the original request publishes its Mongo metadata.
+            if (closeDuringUpload) await coordinator.begin(uploadOwner, []);
+            return [{ name }];
+          },
+          remove: (_container, name) => fileMedia.remove(name)
+        } });
+      const request = { user: { id: uploadOwner }, files: { file: [{
+        buffer: Buffer.concat([Buffer.from('PIE2EE01'), ciphertext])
+      }] } };
+      const response = () => ({ status(code) { this.code = code; return this; },
+        json(body) { this.body = body; return this; } });
+      const first = response();
+      await uploadController.uploadPrivateLibrary(request, first);
+      assert.equal(first.code, 200);
+      assert.equal((await PrivateLibrary.collection.findOne({ user: uploadUser })).blobName, written[0]);
+      closeDuringUpload = true;
+      const late = response();
+      await uploadController.uploadPrivateLibrary(request, late);
+      assert.equal(late.code, 409);
+      assert.equal(late.body.error.code, 'ACCOUNT_CLOSING');
+      assert.equal((await PrivateLibrary.collection.findOne({ user: uploadUser })).blobName, written[0]);
+      assert.deepEqual(await fileMedia.read(written[0]), request.files.file[0].buffer);
+      await assert.rejects(fileMedia.read(written[1]), error => error.code === 'MEDIA_FILE_DELETED');
+      await uploadController.deletePrivateLibraryForUser(uploadOwner);
+      assert.equal(await PrivateLibrary.collection.countDocuments({ user: uploadUser }), 0);
+    }
+    passed.push('private-archive-publication-fenced-against-account-close-after-file-upload');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

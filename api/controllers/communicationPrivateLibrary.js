@@ -8,6 +8,7 @@ const {
   getBlobToBuffer,
   isBlobStorageConfigured
 } = require('../helpers/blob');
+const { createCareFamilyLifecycle } = require('../helpers/careFamilyLifecycle');
 
 const PRIVATE_LIBRARY_CONTAINER_NAME =
   process.env.PRIVATE_LIBRARY_CONTAINER_NAME || 'cboard-private';
@@ -62,6 +63,8 @@ function createCommunicationPrivateLibraryController({
   legacyArchiveErrorCode = 'PRIVATE_PICTURE_LIBRARY_REENCRYPTION_REQUIRED',
   legacyArchiveMessage = `${archiveLabel} must be re-uploaded in the current encrypted format`,
   storageConfigured = isBlobStorageConfigured,
+  lifecycle = null,
+  lifecycleEnabled = () => process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true',
   now = Date.now
 } = {}) {
   function rejectUnconfiguredStorage(res) {
@@ -76,6 +79,27 @@ function createCommunicationPrivateLibraryController({
       .select('+blobName')
       .lean()
       .exec();
+  }
+
+  async function publishMetadata(userId, update, session) {
+    const options = {
+      new: false,
+      upsert: true,
+      setDefaultsOnInsert: true,
+      ...(session ? { session } : {})
+    };
+    return PrivateLibrary.findOneAndUpdate({ user: userId }, update, options)
+      .select('+blobName')
+      .lean()
+      .exec();
+  }
+
+  async function publishMetadataWithLifecycle(userId, update) {
+    if (!lifecycleEnabled()) return publishMetadata(userId, update);
+    const activeLifecycle = lifecycle || createCareFamilyLifecycle();
+    return activeLifecycle.withOpenAccount(userId, session =>
+      publishMetadata(userId, update, session)
+    );
   }
 
   async function removeForUser(userId) {
@@ -167,30 +191,19 @@ function createCommunicationPrivateLibraryController({
         throw new Error('Private blob upload did not return a blob name');
       }
 
-      const previous = await PrivateLibrary.findOneAndUpdate(
-        { user: req.user.id },
-        {
-          $set: {
-            blobName: newBlobName,
-            format: archiveFormat,
-            contractVersion: archiveContractVersion,
-            size: buffer.length,
-            sha256,
-            updatedAt: timestamp
-          },
-          $setOnInsert: {
-            createdAt: timestamp
-          }
+      const previous = await publishMetadataWithLifecycle(req.user.id, {
+        $set: {
+          blobName: newBlobName,
+          format: archiveFormat,
+          contractVersion: archiveContractVersion,
+          size: buffer.length,
+          sha256,
+          updatedAt: timestamp
         },
-        {
-          new: false,
-          upsert: true,
-          setDefaultsOnInsert: true
+        $setOnInsert: {
+          createdAt: timestamp
         }
-      )
-        .select('+blobName')
-        .lean()
-        .exec();
+      });
 
       if (previous && previous.blobName && previous.blobName !== newBlobName) {
         try {
@@ -216,6 +229,12 @@ function createCommunicationPrivateLibraryController({
         } catch (cleanupError) {
           console.error('Unable to roll back private library blob');
         }
+      }
+      if (error && error.code === 'ACCOUNT_CLOSING') {
+        return res.status(409).json({ message: 'Account is closing', error: { code: 'ACCOUNT_CLOSING' } });
+      }
+      if (error && error.code === 'ACCOUNT_CLOSED') {
+        return res.status(403).json({ message: 'Account is closed', error: { code: 'ACCOUNT_CLOSED' } });
       }
       return res.status(500).json({
         message: `Error storing ${archiveLabel.toLowerCase()} backup`
