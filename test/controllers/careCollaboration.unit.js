@@ -8,15 +8,15 @@ const { createCareSync } = require('../../../cboard/src/common/communicationSupp
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const newId = () => crypto.randomBytes(16).toString('hex');
 function fixture({ atomicProfile = null } = {}) {
-  const families = {}, profiles = {}, blobs = {}, accounts = {};
+  const families = {}, profiles = {}, blobs = {}, accounts = {}, accountContexts = [];
   let profileCasContextHook = null;
   const writes = { communicator: 0, profile: 0, atomicProfile: 0 };
   const keys = { test: crypto.randomBytes(32).toString('hex') };
   const encryption = createCareCrypto(keys, 'test');
   const store = {
     getAccount: async id => clone(accounts[id]),
-    createAccount: async d => { if (accounts[d._id]) return false; accounts[d._id] = clone(d); return true; },
-    casAccount: async (id, rev, update) => { if (accounts[id].rev !== rev) return false; accounts[id] = { ...accounts[id], ...clone(update) }; return true; },
+    createAccount: async (d, context = {}) => { accountContexts.push(clone(context)); if (accounts[d._id]) return false; accounts[d._id] = clone(d); return true; },
+    casAccount: async (id, rev, update, context = {}) => { accountContexts.push(clone(context)); if (accounts[id].rev !== rev) return false; accounts[id] = { ...accounts[id], ...clone(update) }; return true; },
     createFamily: async d => { families[d._id] = clone(d); },
     getFamily: async id => clone(families[id]),
     casFamily: async (id, rev, update) => { if ((families[id].rev || 0) !== rev) return false; families[id] = { ...families[id], ...clone(update) }; return true; },
@@ -48,7 +48,7 @@ function fixture({ atomicProfile = null } = {}) {
   const media = { write: async data => { const k = newId(); blobs[k] = Buffer.from(data); return k; },
     read: async k => blobs[k], remove: async k => { delete blobs[k]; } };
   const service = createCareService({ store, encryption, media });
-  return { service, profiles, families, blobs, encryption, store, keys, media, writes,
+  return { service, profiles, families, blobs, accounts, accountContexts, encryption, store, keys, media, writes,
     setProfileCasContextHook(hook) { profileCasContextHook = hook; } };
 }
 async function setup(f, user = 'familyA') {
@@ -140,6 +140,7 @@ describe('patient collaboration security and offline recovery', () => {
     await invite(f, profile.id, 'therapist');
     const original = { operationId: newId(), action: 'put', resourceId: 'phrase', baseVersion: 0, value: { sentence: '合成收藏' } };
     await f.service.favorite('therapist', profile.id, original);
+    assert.deepEqual(f.accountContexts.at(-1), { mode: 'favorite', actor: 'therapist', profileId: profile.id, resourceId: 'phrase' });
     assert.equal((await f.service.snapshot('familyA', profile.id)).resources.length, 0);
     assert.equal((await f.service.favorites('familyA', profile.id)).items.length, 0);
     const share = await f.service.command('therapist', profile.id, { action: 'shareFavorite', operationId: newId(), sourceId: 'phrase', sourceVersion: 1, resourceId: 'shared' });
@@ -148,6 +149,7 @@ describe('patient collaboration security and offline recovery', () => {
     assert.equal((await f.service.favorites('therapist', profile.id)).items[0].value.sentence, '合成收藏');
     const sourceUpdate = { ...original, operationId: newId(), baseVersion: 1, sharedId: 'shared', sharedVersion: 2, value: { sentence: '一起修改' } };
     await f.service.favoriteOriginal('familyA', profile.id, sourceUpdate);
+    assert.deepEqual(f.accountContexts.at(-1), { mode: 'favorite', actor: 'familyA', profileId: profile.id, resourceId: 'phrase', sharedId: 'shared', sharedVersion: 2 });
     assert.equal((await f.service.favorites('therapist', profile.id)).items[0].value.sentence, '一起修改');
     await assert.rejects(f.service.favoriteOriginal('therapist', profile.id, sourceUpdate), e => e.code === 'OWNER_REQUIRED');
     const other = await setup(f, 'familyB');

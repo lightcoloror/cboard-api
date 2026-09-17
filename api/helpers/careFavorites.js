@@ -15,9 +15,11 @@ function createCareFavorites({ store, encryption, now = Date.now }) {
     async list(owner) { const { state } = await load(owner); return Object.values(state.favorites || {}); },
     async get(owner, favoriteId) { const { state } = await load(owner); return (state.favorites || {})[favoriteId] || null; },
     async audit(owner, profileId) { const { state } = await load(owner); return (state.favoriteAudit || []).filter(item => item.profileId === profileId); },
-    async write(owner, actor, body, profileId) {
+    async write(owner, actor, body, profileId, access = {}) {
       if (!valid(body.resourceId) || !valid(body.operationId) || !Number.isSafeInteger(body.baseVersion) || body.baseVersion < 0 || !['put', 'delete'].includes(body.action)) fail(400, 'INVALID_FAVORITE');
       if (body.action === 'put' && (!body.value || typeof body.value.sentence !== 'string' || !body.value.sentence.trim() || body.value.sentence.length > 5000 || Buffer.byteLength(JSON.stringify(body.value)) > 256 * 1024)) fail(400, 'INVALID_FAVORITE');
+      const context = { mode: 'favorite', actor, profileId, resourceId: body.resourceId,
+        ...(access.sharedId !== undefined ? { sharedId: access.sharedId, sharedVersion: access.sharedVersion } : {}) };
       const fingerprint = crypto.createHash('sha256').update(JSON.stringify({ body, profileId })).digest('hex');
       const key = `${actor}:${body.operationId}`;
       for (let attempt = 0; attempt < 8; attempt++) {
@@ -40,7 +42,7 @@ function createCareFavorites({ store, encryption, now = Date.now }) {
         state.favoriteAudit = [...(state.favoriteAudit || []), { actor, action: `favorite.${body.action}`, target: body.resourceId, profileId, revision: resource.version, at: now() }];
         if (Buffer.byteLength(JSON.stringify(state)) > 5 * 1024 * 1024) fail(413, 'ACCOUNT_CAPACITY_REACHED');
         const value = { _id: owner, rev: doc ? doc.rev + 1 : 0, sealed: encryption.seal(state, `account:${owner}`) };
-        if (doc ? await store.casAccount(owner, doc.rev, value) : await store.createAccount(value)) return result;
+        if (doc ? await store.casAccount(owner, doc.rev, value, context) : await store.createAccount(value, context)) return result;
       }
       fail(409, 'RETRY_CONCURRENT_CHANGE');
     }

@@ -306,7 +306,8 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
       // This endpoint authorizes precisely the original linked to this shared
       // item, never an arbitrary account or public template supplied by a client.
       await pinFavoriteMedia(profileId, user, body.value);
-      return favorites.write(shared.source.owner, user, { ...body, resourceId: shared.source.id }, profileId);
+      return favorites.write(shared.source.owner, user, { ...body, resourceId: shared.source.id }, profileId,
+        { sharedId: body.sharedId, sharedVersion: body.sharedVersion });
     },
     async accept(user, token) {
       if (typeof token !== 'string') fail(400, 'INVALID_INVITATION');
@@ -314,7 +315,9 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
       if (extra || !validId(profileId) || !validId(invitationId) || !/^[a-f0-9]{64}$/.test(secret || '')) fail(400, 'INVALID_INVITATION');
       for (let attempt = 0; attempt < 8; attempt++) {
         const doc = await store.getProfile(profileId); if (!doc) fail(403, 'INVALID_INVITATION');
-        await checkEntitlement(doc.familyId, 'write');
+        const { family, rights } = await familyPolicy(doc.familyId);
+        if (enforceEntitlements) policy.requireEntitlement(rights, 'write');
+        doc.owner = family.owner;
         const state = encryption.open(doc.sealed, `profile:${profileId}`); const invite = state.invites[invitationId];
         if (state.deleted || !invite || invite.revoked || invite.expiresAt <= now() || invite.hash !== hash(secret)) fail(403, 'INVALID_INVITATION');
         if (invite.acceptedBy) {

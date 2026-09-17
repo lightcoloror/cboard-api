@@ -4,12 +4,14 @@ const assert = require('assert').strict;
 const mockery = require('mockery');
 
 describe('care runtime account lifecycle adapter', () => {
-  let previous, calls, store, lifecycleError, account;
+  let previous, previousNext, calls, store, lifecycleError, account, familyExpired;
 
   beforeEach(() => {
     previous = process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    previousNext = process.env.CARE_NEXT_ENABLED;
     calls = [];
     lifecycleError = null;
+    familyExpired = false;
     const accountCollection = {
       insertOne: async (value, options) => {
         calls.push({ op: 'insertOne', value, options });
@@ -30,10 +32,18 @@ describe('care runtime account lifecycle adapter', () => {
         return { nModified: 1 };
       } })
     };
+    const profileState = { grants: { 'reader-a': ['read'] }, resources: {
+      'favorite:shared-a': { version: 2, source: { owner: 'owner-a', id: 'favorite-a' } }
+    } };
+    const profile = {
+      findById: () => ({ lean: () => ({ exec: async () => ({ _id: 'profile-a', familyId: 'family-a', sealed: profileState }) }) }),
+      collection: { findOne: async (filter, options) => { calls.push({ op: 'profileFindOne', filter, options }); return { _id: 'profile-a', familyId: 'family-a', sealed: profileState }; } }
+    };
     mockery.enable({ useCleanCache: true, warnOnUnregistered: false, warnOnReplace: false });
-    mockery.registerMock('../models/CareWorkspace', { Family: {}, Profile: {}, Account: account });
+    mockery.registerMock('../models/CareWorkspace', { Family: {}, Profile: profile, Account: account });
     mockery.registerMock('mongoose', { connection: { collection: () => ({ insertOne: async () => {} }) } });
     mockery.registerMock('./blob', {});
+    mockery.registerMock('./careCrypto', { fromEnvironment: () => ({ open: value => value }) });
     mockery.registerMock('./careFamilyLifecycle', {
       createCareFamilyLifecycle: () => ({
         withOpenAccount: async (owner, callback) => {
@@ -45,6 +55,13 @@ describe('care runtime account lifecycle adapter', () => {
             calls.push({ op: 'lifecycleAbort', code: error.code });
             throw error;
           }
+        },
+        withOpenFamilyAccounts: async (familyId, accountIds, callback) => {
+          calls.push({ op: 'withOpenFamilyAccounts', familyId, accountIds });
+          if (lifecycleError) throw lifecycleError;
+          const family = { _id: familyId, owner: 'owner-a', sealed: { subscription: { startsAt: 1, expiresAt: familyExpired ? 1 : Date.now() + 100000 } } };
+          try { return await callback({ id: 'session-1' }, family); }
+          catch (error) { calls.push({ op: 'lifecycleAbort', code: error.code }); throw error; }
         }
       })
     });
@@ -54,6 +71,8 @@ describe('care runtime account lifecycle adapter', () => {
   afterEach(() => {
     if (previous === undefined) delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
     else process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = previous;
+    if (previousNext === undefined) delete process.env.CARE_NEXT_ENABLED;
+    else process.env.CARE_NEXT_ENABLED = previousNext;
     mockery.deregisterAll();
     mockery.disable();
   });
@@ -107,5 +126,29 @@ describe('care runtime account lifecycle adapter', () => {
     assert.equal(await store.createAccount({ _id: 'owner-a' }), true);
     assert.equal(await store.casAccount('owner-a', 0, { rev: 1 }), true);
     assert.deepEqual(calls.map(call => call.op), ['legacyCreate', 'legacyUpdateOne']);
+  });
+
+  it('authorizes favorite CAS inside the family transaction and passes its session', async () => {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    assert.equal(await store.casAccount('owner-a', 0, { rev: 1 }, { mode: 'favorite', actor: 'owner-a', profileId: 'profile-a', resourceId: 'favorite-a' }), true);
+    const tx = calls.find(call => call.op === 'withOpenFamilyAccounts');
+    const write = calls.find(call => call.op === 'collectionUpdateOne');
+    assert.deepEqual(tx.accountIds, ['owner-a', 'owner-a']);
+    assert.deepEqual(write.options, { session: { id: 'session-1' } });
+  });
+
+  it('rejects impersonated favorite writes and shared source mismatches', async () => {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    await assert.rejects(store.casAccount('owner-a', 0, { rev: 1 }, { mode: 'favorite', actor: 'reader-a', profileId: 'profile-a', resourceId: 'favorite-a' , sharedId: 'shared-a', sharedVersion: 2 }), e => e.code === 'FAVORITE_SCOPE_DENIED');
+    await assert.rejects(store.casAccount('owner-a', 0, { rev: 1 }, { mode: 'favorite', actor: 'owner-a', profileId: 'profile-a', resourceId: 'other', sharedId: 'shared-a', sharedVersion: 2 }), e => e.code === 'FAVORITE_SCOPE_DENIED');
+    await assert.rejects(store.casAccount('owner-a', 0, { rev: 1 }, { mode: 'favorite', actor: 'owner-a', profileId: 'profile-a', resourceId: 'favorite-a', sharedId: 'shared-a', sharedVersion: 1 }), e => e.code === 'SHARED_FAVORITE_CHANGED');
+    assert.equal(calls.some(call => call.op === 'collectionUpdateOne'), false);
+  });
+
+  it('enforces active sync-write entitlement for favorites when enabled', async () => {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    process.env.CARE_NEXT_ENABLED = 'true';
+    familyExpired = true;
+    await assert.rejects(store.casAccount('owner-a', 0, { rev: 1 }, { mode: 'favorite', actor: 'owner-a', profileId: 'profile-a', resourceId: 'favorite-a' }), e => e.code === 'SUBSCRIPTION_EXPIRED');
   });
 });

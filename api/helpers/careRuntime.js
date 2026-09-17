@@ -7,10 +7,43 @@ const {
   createCareMediaQuota,
   resolveCareMediaQuotaConfig
 } = require('./careMediaQuota');
+const validId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
 const communicatorRecord = (id, familyId) => ({
   careProfileId: id, careFamilyId: familyId, name: '共享沟通档案', author: 'care-service',
   email: `care-${id}@invalid.local`, rootBoard: '', boards: []
 });
+async function withAccountWrite(owner, context, callback) {
+  const lifecycle = require('./careFamilyLifecycle').createCareFamilyLifecycle();
+  if (!context || context.mode !== 'favorite') return lifecycle.withOpenAccount(owner, callback);
+  const { actor, profileId, resourceId, sharedId, sharedVersion } = context;
+  if (!validId(owner) || !validId(actor) || !validId(profileId) || !validId(resourceId) ||
+      (sharedId !== undefined && (!validId(sharedId) || !Number.isSafeInteger(sharedVersion) || sharedVersion < 1))) {
+    throw Object.assign(new Error('FAVORITE_SCOPE_DENIED'), { status: 403, code: 'FAVORITE_SCOPE_DENIED' });
+  }
+  const initial = await Profile.findById(profileId).lean().exec();
+  if (!initial) throw Object.assign(new Error('FAVORITE_SCOPE_DENIED'), { status: 403, code: 'FAVORITE_SCOPE_DENIED' });
+  return lifecycle.withOpenFamilyAccounts(initial.familyId, [owner, actor], async (session, family) => {
+    const profile = await Profile.collection.findOne({ _id: profileId }, { session });
+    if (!profile || profile.familyId !== initial.familyId) throw Object.assign(new Error('FAVORITE_SCOPE_DENIED'), { status: 403, code: 'FAVORITE_SCOPE_DENIED' });
+    const crypto = require('./careCrypto').fromEnvironment();
+    const state = crypto.open(profile.sealed, `profile:${profileId}`);
+    if (state.deleted) throw Object.assign(new Error('FAVORITE_SCOPE_DENIED'), { status: 403, code: 'FAVORITE_SCOPE_DENIED' });
+    if (actor !== family.owner && !((state.grants || {})[actor] || []).includes('read')) throw Object.assign(new Error('FAVORITE_SCOPE_DENIED'), { status: 403, code: 'FAVORITE_SCOPE_DENIED' });
+    if (process.env.CARE_NEXT_ENABLED === 'true') {
+      const familyState = crypto.open(family.sealed, `family:${initial.familyId}`);
+      if (!require('./carePolicy').entitlement(familyState.subscription, Date.now()).syncWrite) throw Object.assign(new Error('SUBSCRIPTION_EXPIRED'), { status: 403, code: 'SUBSCRIPTION_EXPIRED' });
+    }
+    if (sharedId !== undefined) {
+      if (actor !== family.owner) throw Object.assign(new Error('FAVORITE_SCOPE_DENIED'), { status: 403, code: 'FAVORITE_SCOPE_DENIED' });
+      const shared = state.resources && state.resources[`favorite:${sharedId}`];
+      if (!shared || !shared.source || shared.source.owner !== owner || shared.source.id !== resourceId) throw Object.assign(new Error('FAVORITE_SCOPE_DENIED'), { status: 403, code: 'FAVORITE_SCOPE_DENIED' });
+      if (shared.version !== sharedVersion) throw Object.assign(new Error('SHARED_FAVORITE_CHANGED'), { status: 409, code: 'SHARED_FAVORITE_CHANGED' });
+    } else if (owner !== actor) {
+      throw Object.assign(new Error('FAVORITE_SCOPE_DENIED'), { status: 403, code: 'FAVORITE_SCOPE_DENIED' });
+    }
+    return callback(session);
+  });
+}
 const store = {
   createFamily: value => process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true'
     ? require('./careFamilyLifecycle').createCareFamilyLifecycle().createFamily(value)
@@ -26,10 +59,10 @@ const store = {
   },
   listFamilies: owner => Family.find({ owner }).lean().exec(),
   getAccount: id => Account.findById(id).lean().exec(),
-  createAccount: async value => {
+  createAccount: async (value, context = {}) => {
     if (process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true') {
       try {
-        return await require('./careFamilyLifecycle').createCareFamilyLifecycle().withOpenAccount(value._id, async session => {
+        return await withAccountWrite(value._id, context, async session => {
           await Account.collection.insertOne(value, { session });
           return true;
         });
@@ -37,9 +70,9 @@ const store = {
     }
     try { await Account.create(value); return true; } catch (e) { if (e.code === 11000) return false; throw e; }
   },
-  casAccount: async (id, rev, value) => {
+  casAccount: async (id, rev, value, context = {}) => {
     if (process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true') {
-      return require('./careFamilyLifecycle').createCareFamilyLifecycle().withOpenAccount(id, async session => {
+      return withAccountWrite(id, context, async session => {
         const result = await Account.collection.updateOne({ _id: id, rev }, { $set: value }, { session });
         return (result.matchedCount !== undefined ? result.matchedCount : result.n) === 1;
       });

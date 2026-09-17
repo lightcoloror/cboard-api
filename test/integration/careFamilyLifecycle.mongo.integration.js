@@ -336,8 +336,62 @@ async function main() {
     assert.equal((await families.findOne({ _id: bounded.familyId })).closure, undefined);
     assert.equal(await accounts.findOne({ _id: bounded.owner }), null);
     passed.push('failed-or-incomplete-manifest-rolls-back-closing-state');
+    const favorites = require('../../api/helpers/careFavorites').createCareFavorites({ store: runtimeStore, encryption });
+    const favoriteBody = { resourceId: 'linked-favorite', operationId: 'favorite-write', baseVersion: 0,
+      action: 'put', value: { sentence: 'SYNTHETIC-FAVORITE' } };
+    const formerBefore = await careAccounts.findOne({ _id: 'former-collaborator' });
+    await assert.rejects(favorites.write('former-collaborator', 'former-collaborator', favoriteBody, jobFamily.profileId),
+      error => error.code === 'FAMILY_CLOSING');
+    assert.deepEqual(await careAccounts.findOne({ _id: 'former-collaborator' }), formerBefore);
+    await profiles.updateOne({ _id: otherFamily.profileId }, { $set: { sealed: encryption.seal({
+      grants: { [otherFamily.owner]: ['read'] }, resources: { 'favorite:shared': {
+        version: 1, source: { owner: 'former-collaborator', id: favoriteBody.resourceId }
+      } }
+    }, `profile:${otherFamily.profileId}`) } });
+    await assert.rejects(favorites.write('former-collaborator', otherFamily.owner,
+      { ...favoriteBody, sharedId: 'shared', sharedVersion: 1 }, otherFamily.profileId),
+    error => error.code === 'FAVORITE_SCOPE_DENIED');
+    await assert.rejects(favorites.write('former-collaborator', otherFamily.owner, favoriteBody,
+      otherFamily.profileId, { sharedId: 'shared', sharedVersion: 2 }),
+    error => error.code === 'SHARED_FAVORITE_CHANGED');
+    assert.equal((await favorites.write('former-collaborator', otherFamily.owner, favoriteBody,
+      otherFamily.profileId, { sharedId: 'shared', sharedVersion: 1 })).resource.version, 1);
+    passed.push('favorite-writes-recheck-closure-and-exact-shared-original-authority');
+    const { createCareClosureMediaStep } = require('../../api/helpers/careClosureMediaStep');
+    let blockedRemovals = 0;
+    assert.equal((await createCareClosureMediaStep({ connection, encryption,
+      media: { async remove() { blockedRemovals += 1; } }
+    }).run(jobFamily.owner, prepared.operationId)).status, 'waiting');
+    assert.equal(blockedRemovals, 0);
+    const fs = require('fs').promises;
+    const mediaRoot = await fs.mkdtemp(require('path').join(require('os').tmpdir(), 'care-closure-'));
+    const fileMedia = require('../../api/helpers/careFileMedia').createCareFileMedia(mediaRoot);
+    const ciphertext = Buffer.from(JSON.stringify(encryption.seal({ synthetic: true }, 'test-media')));
+    const firstBlob = await fileMedia.write(ciphertext);
+    const secondBlob = await fileMedia.write(ciphertext);
+    const cleanFamily = await seed('media-cleanup');
+    await families.updateOne({ _id: cleanFamily.familyId }, { $set: {
+      sealed: encryption.seal({}, `family:${cleanFamily.familyId}`)
+    } });
+    await profiles.updateOne({ _id: cleanFamily.profileId }, { $set: {
+      sealed: encryption.seal({ media: { a: { blob: firstBlob }, b: { blob: secondBlob } } }, `profile:${cleanFamily.profileId}`)
+    } });
+    const cleanJob = await coordinator.begin(cleanFamily.owner, [cleanFamily.familyId]);
+    await assert.rejects(createCareClosureMediaStep({ connection, encryption, media: {
+      async remove(blob) { if (blob === secondBlob) throw new Error('synthetic interruption'); await fileMedia.remove(blob); }
+    } }).run(cleanFamily.owner, cleanJob.operationId), error => error.code === 'CLOSURE_MEDIA_RETRY_REQUIRED');
+    assert.equal((await jobs.findOne({ _id: cleanJob.operationId })).mediaCursor, 1);
+    await assert.rejects(fileMedia.read(firstBlob), error => error.code === 'MEDIA_FILE_DELETED');
+    assert.deepEqual(await fileMedia.read(secondBlob), ciphertext);
+    assert.deepEqual(await createCareClosureMediaStep({ connection, encryption, media: fileMedia })
+      .run(cleanFamily.owner, cleanJob.operationId), { status: 'media_cleaned', count: 1 });
+    await assert.rejects(fileMedia.read(secondBlob), error => error.code === 'MEDIA_FILE_DELETED');
+    await assert.rejects(fileMedia.writeNamed(firstBlob, ciphertext), error => error.code === 'MEDIA_FILE_DELETED');
+    assert(await families.findOne({ _id: cleanFamily.familyId }));
+    assert(await profiles.findOne({ _id: cleanFamily.profileId }));
+    passed.push('synthetic-file-media-checkpoints-resume-and-prevent-resurrection');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
-      httpClosureEnabled: false, externalMediaDeleted: false, accountCreationFenceVerified: true,
+      httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));
   } finally {
     if (connection.name !== name) throw new Error('Cleanup database guard failed');
