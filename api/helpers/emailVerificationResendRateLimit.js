@@ -119,14 +119,22 @@ async function consumeEmailVerificationResendLimits({ limiters, email, ip }) {
 }
 
 function createEmailVerificationResendRateLimitRuntime(options = {}) {
+  if (options.limiters) return { limiters: options.limiters };
+
+  const config = options.config || resolveEmailVerificationResendLimitConfig();
+  const storeClient = options.storeClient || mongoose.connection;
+  let limiters;
   return {
-    limiters:
-      options.limiters ||
-      createEmailVerificationResendMongoLimiters({
-        storeClient: options.storeClient || mongoose.connection,
-        config: options.config,
-        RateLimiterClass: options.RateLimiterClass
-      })
+    get limiters() {
+      if (!limiters) {
+        limiters = createEmailVerificationResendMongoLimiters({
+          storeClient,
+          config,
+          RateLimiterClass: options.RateLimiterClass
+        });
+      }
+      return limiters;
+    }
   };
 }
 

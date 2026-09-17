@@ -4,6 +4,7 @@ const chai = require('chai');
 const {
   consumeEmailVerificationResendLimits,
   createEmailVerificationResendMongoLimiters,
+  createEmailVerificationResendRateLimitRuntime,
   resolveEmailVerificationResendLimitConfig
 } = require('../../api/helpers/emailVerificationResendRateLimit');
 
@@ -51,5 +52,39 @@ describe('email verification resend rate limits', function() {
     keys.forEach(key => expect(key).to.match(/^[a-f0-9]{64}$/));
     expect(keys.join(' ')).not.to.contain('care@example.test');
     expect(keys.join(' ')).not.to.contain('203.0.113.8');
+  });
+
+  it('creates Mongo limiters lazily and caches them', function() {
+    let constructions = 0;
+    class FakeLimiter {
+      constructor() {
+        constructions += 1;
+      }
+    }
+
+    const runtime = createEmailVerificationResendRateLimitRuntime({
+      storeClient: { readyState: 1 },
+      RateLimiterClass: FakeLimiter
+    });
+
+    expect(constructions).to.equal(0);
+    const first = runtime.limiters;
+    expect(constructions).to.equal(3);
+    expect(runtime.limiters).to.equal(first);
+    expect(constructions).to.equal(3);
+  });
+
+  it('keeps injected limiters available without constructing Mongo limiters', function() {
+    const injected = { resend: {}, emailDaily: {}, ipHourly: {} };
+    const runtime = createEmailVerificationResendRateLimitRuntime({
+      limiters: injected,
+      RateLimiterClass: class UnexpectedLimiter {
+        constructor() {
+          throw new Error('injected limiters should bypass Mongo construction');
+        }
+      }
+    });
+
+    expect(runtime.limiters).to.equal(injected);
   });
 });
