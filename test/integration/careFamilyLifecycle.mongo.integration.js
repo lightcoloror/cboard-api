@@ -950,6 +950,52 @@ async function main() {
     assert.equal(actorClosed.body.error.code, 'ACCOUNT_CLOSING');
     assert.equal(await communicatorCollection.countDocuments({ email: 'synthetic-open-owner@example.test' }), 0);
     passed.push('legacy-communicator-create-locks-actor-and-owner-and-keeps-idempotency');
+    const editAdminId = new mongoose.Types.ObjectId();
+    const editAdminEmail = 'synthetic-edit-admin@example.test';
+    await usersCollection.insertOne({ _id: editAdminId, email: editAdminEmail });
+    const editAdmin = { id: String(editAdminId), email: editAdminEmail, isAdmin: true };
+    const editable = await createAs(editAdmin, editAdminEmail, 'editable');
+    const disposable = await createAs(editAdmin, editAdminEmail, 'disposable');
+    assert.equal(editable.code, 200);
+    assert.equal(disposable.code, 200);
+    const changeCommunicator = async (method, actor, id, body = {}) => {
+      const response = settingsResponse();
+      await legacyCommunicator[method]({ user: actor, body, swagger: { params: { id: { value: String(id) } } } }, response);
+      return response;
+    };
+    const rejectedTransfer = await changeCommunicator('updateCommunicator', editAdmin, editable.body.id,
+      { email: delegatedEmail });
+    assert.equal(rejectedTransfer.code, 409);
+    assert.equal(rejectedTransfer.body.error.code, 'ACCOUNT_CLOSING');
+    assert.equal((await communicatorCollection.findOne({ _id: editable.body.id })).email, editAdminEmail);
+    const moved = await changeCommunicator('updateCommunicator', editAdmin, editable.body.id,
+      { name: 'Synthetic moved', email: 'synthetic-open-owner@example.test' });
+    assert.equal(moved.code, 200, JSON.stringify(moved.body));
+    const movedDoc = await communicatorCollection.findOne({ _id: editable.body.id });
+    assert.equal(movedDoc.email, 'synthetic-open-owner@example.test');
+    const forbiddenDelete = await changeCommunicator('removeCommunicator', { ...editAdmin, isAdmin: false }, disposable.body.id);
+    assert.equal(forbiddenDelete.code, 403);
+    assert(await communicatorCollection.findOne({ _id: disposable.body.id }));
+    const removed = await changeCommunicator('removeCommunicator', editAdmin, disposable.body.id);
+    assert.equal(removed.code, 200);
+    assert.equal(await communicatorCollection.findOne({ _id: disposable.body.id }), null);
+    await coordinator.begin(String(anotherOwnerId), []);
+    for (const method of ['updateCommunicator', 'removeCommunicator']) {
+      const refused = await changeCommunicator(method, editAdmin, editable.body.id, { name: 'Late change', email: editAdminEmail });
+      assert.equal(refused.code, 409, JSON.stringify(refused.body));
+      assert.equal(refused.body.error.code, 'ACCOUNT_CLOSING');
+      assert.deepEqual(await communicatorCollection.findOne({ _id: editable.body.id }), movedDoc);
+    }
+    const actorDocument = await createAs(editAdmin, editAdminEmail, 'actor-close-edit');
+    assert.equal(actorDocument.code, 200);
+    await coordinator.begin(String(editAdminId), []);
+    for (const method of ['updateCommunicator', 'removeCommunicator']) {
+      const refused = await changeCommunicator(method, editAdmin, actorDocument.body.id, { name: 'Late actor change' });
+      assert.equal(refused.code, 409);
+      assert.equal(refused.body.error.code, 'ACCOUNT_CLOSING');
+      assert(await communicatorCollection.findOne({ _id: actorDocument.body.id }));
+    }
+    passed.push('legacy-communicator-update-and-delete-fence-ownership-and-admin-authorization');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

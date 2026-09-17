@@ -241,20 +241,55 @@ async function updateCommunicator(req, res) {
     });
   }
 
-  for (let key in updateData) {
-    communicator[key] = updateData[key];
-  }
-
   try {
-    const dbCommunicator = await communicator.save();
-    if (!dbCommunicator) {
-      return res.status(404).json({
-        message: `Unable to update communicator. Communicator Id: ${id}`
-      });
-    }
-
-    return res.status(200).json(dbCommunicator);
+    const originalEmail = communicator.email;
+    const nextEmail = req.user.isAdmin &&
+      Object.prototype.hasOwnProperty.call(updateData, 'email')
+      ? updateData.email
+      : originalEmail;
+    const result = await withLegacyAccountWrite(
+      req.user.id,
+      [originalEmail, nextEmail],
+      async session => {
+        let current = communicator;
+        if (session) {
+          const query = Communicator.findOne({ _id: id, email: originalEmail });
+          current = await query.session(session).exec();
+          if (!current) {
+            const error = new Error('LEGACY_OWNER_CHANGED');
+            error.status = 409;
+            error.code = 'LEGACY_OWNER_CHANGED';
+            throw error;
+          }
+        }
+        const currentRootBoard = updateData.rootBoard || current.rootBoard;
+        const currentBoards = updateData.boards || current.boards;
+        if (currentBoards.indexOf(currentRootBoard) < 0) {
+          return {
+            status: 400,
+            body: {
+              message: `RootBoard '${currentRootBoard}' does not exist in boards: ${currentBoards.join(
+                ', '
+              )}`
+            }
+          };
+        }
+        for (const key in updateData) current[key] = updateData[key];
+        const dbCommunicator = await current.save(
+          session ? { session } : undefined
+        );
+        return {
+          status: dbCommunicator ? 200 : 404,
+          body: dbCommunicator || {
+            message: `Unable to update communicator. Communicator Id: ${id}`
+          }
+        };
+      }
+    );
+    return res.status(result.status).json(result.body);
   } catch (err) {
+    const rejected = lifecycleFailure(err, res);
+    if (rejected) return rejected;
     return res.status(500).json({
       message: 'Error saving communicator.',
       error: err.message
@@ -262,21 +297,65 @@ async function updateCommunicator(req, res) {
   }
 }
 
-function removeCommunicator(req, res) {
+async function removeCommunicator(req, res) {
+  if (!req.user || !req.user.isAdmin) {
+    return res.status(403).json({
+      message: 'Only administrators can remove communicators'
+    });
+  }
   const id = req.swagger.params.id.value;
-  Communicator.findByIdAndRemove(id, function(err, communicator) {
-    if (err) {
+  try {
+    const authorized = await Communicator.findOne({ _id: id }).exec();
+    if (!authorized) {
       return res.status(404).json({
         message: `Communicator not found. Communicator Id: ${id}`,
-        error: err.message
-      });
-    }
-    if (!communicator) {
-      return res.status(404).json({
-        message: 'Communicator not found. Communicator Id: ' + id,
         error: 'Communicator not found.'
       });
     }
-    return res.status(200).json(communicator);
-  });
+    const result = await withLegacyAccountWrite(
+      req.user.id,
+      [authorized.email],
+      async session => {
+        if (!session) {
+          return new Promise(resolve => {
+            Communicator.findByIdAndRemove(id, (err, communicator) => {
+              if (err || !communicator) {
+                resolve({
+                  status: 404,
+                  body: {
+                    message: `Communicator not found. Communicator Id: ${id}`,
+                    error: err ? err.message : 'Communicator not found.'
+                  }
+                });
+                return;
+              }
+              resolve({ status: 200, body: communicator });
+            });
+          });
+        }
+        const query = Communicator.findOneAndDelete({
+          _id: id,
+          email: authorized.email
+        });
+        const deleted = await query.session(session).exec();
+        return deleted
+          ? { status: 200, body: deleted }
+          : {
+              status: 404,
+              body: {
+                message: `Communicator not found. Communicator Id: ${id}`,
+                error: 'Communicator not found.'
+              }
+            };
+      }
+    );
+    return res.status(result.status).json(result.body);
+  } catch (err) {
+    const rejected = lifecycleFailure(err, res);
+    if (rejected) return rejected;
+    return res.status(404).json({
+      message: `Communicator not found. Communicator Id: ${id}`,
+      error: err.message
+    });
+  }
 }

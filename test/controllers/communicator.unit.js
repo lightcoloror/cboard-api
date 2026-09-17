@@ -259,6 +259,10 @@ describe('Communicator resource ownership', function() {
   let MockCommunicator;
   let findCallCount;
   let saveCallCount;
+  let previousLifecycleFlag;
+  let lifecycleMode;
+  let lifecycleCalls;
+  let lifecycleSession;
 
   beforeEach(function() {
     findQuery = null;
@@ -266,6 +270,11 @@ describe('Communicator resource ownership', function() {
     paginationOptions = null;
     findCallCount = 0;
     saveCallCount = 0;
+    previousLifecycleFlag = process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    lifecycleMode = 'open';
+    lifecycleCalls = [];
+    lifecycleSession = { id: 'communicator-session' };
 
     MockCommunicator = class {
       constructor(data) {
@@ -275,6 +284,7 @@ describe('Communicator resource ownership', function() {
 
       async save() {
         saveCallCount += 1;
+        this.saveOptions = arguments[0];
         return this;
       }
 
@@ -286,7 +296,31 @@ describe('Communicator resource ownership', function() {
           return undefined;
         }
         return {
-          exec: async () => foundCommunicator
+          session(value) {
+            this.sessionValue = value;
+            return this;
+          },
+          exec: async () =>
+            foundCommunicator &&
+            (!query.email || foundCommunicator.email === query.email)
+              ? foundCommunicator
+              : null
+        };
+      }
+
+      static findOneAndDelete(query) {
+        findQuery = query;
+        return {
+          session(value) {
+            this.sessionValue = value;
+            return this;
+          },
+          async exec() {
+            if (!foundCommunicator || foundCommunicator.email !== query.email) return null;
+            const deleted = foundCommunicator;
+            foundCommunicator = null;
+            return deleted;
+          }
         };
       }
     };
@@ -297,6 +331,27 @@ describe('Communicator resource ownership', function() {
       useCleanCache: true
     });
     mockery.registerMock('../models/Communicator', MockCommunicator);
+    mockery.registerMock('../helpers/legacyAccountWrite', {
+      async withLegacyAccountWrite(actorId, ownerEmails, callback) {
+        lifecycleCalls.push({ actorId, ownerEmails });
+        if (lifecycleMode === 'closing') {
+          throw Object.assign(new Error('closing'), {
+            code: 'ACCOUNT_CLOSING',
+            status: 409
+          });
+        }
+        if (lifecycleMode === 'owner-change') {
+          foundCommunicator.email = 'changed-owner@example.com';
+        }
+        const result = await callback(
+          ['legacy-open', 'owner-change'].includes(lifecycleMode)
+            ? lifecycleSession
+            : null
+        );
+        if (lifecycleMode === 'commit-fail') throw new Error('commit failed');
+        return result;
+      }
+    });
     mockery.registerMock('../helpers/response', {
       async paginatedResponse(model, options) {
         paginationOptions = options;
@@ -307,6 +362,8 @@ describe('Communicator resource ownership', function() {
   });
 
   afterEach(function() {
+    if (previousLifecycleFlag === undefined) delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    else process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = previousLifecycleFlag;
     mockery.deregisterAll();
     mockery.disable();
   });
@@ -485,6 +542,136 @@ describe('Communicator resource ownership', function() {
     expect(findQuery).to.deep.equal({ _id: 'communicator-1' });
     expect(updateResponse.statusCode).to.equal(200);
     expect(foundCommunicator.email).to.equal('new-owner@example.com');
+  });
+
+  it('updates through the account gate and passes session to reread and save', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'legacy-open';
+    foundCommunicator = new MockCommunicator({
+      email: 'old-owner@example.com',
+      rootBoard: 'root',
+      boards: ['root']
+    });
+    const request = createOwnedRequest({
+      body: {
+        email: 'new-owner@example.com',
+        name: 'Updated',
+        rootBoard: 'root',
+        boards: ['root']
+      },
+      email: 'admin@example.com',
+      isAdmin: true
+    });
+    request.user.id = 'actor-1';
+    const response = createResponse();
+
+    await controller.updateCommunicator(request, response);
+
+    expect(response.statusCode).to.equal(200);
+    expect(lifecycleCalls[0]).to.deep.equal({
+      actorId: 'actor-1',
+      ownerEmails: ['old-owner@example.com', 'new-owner@example.com']
+    });
+    expect(foundCommunicator.saveOptions).to.deep.equal({ session: lifecycleSession });
+  });
+
+  it('rejects an owner change observed by the gate without saving the old document', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'owner-change';
+    foundCommunicator = new MockCommunicator({
+      email: 'owner@example.com',
+      rootBoard: 'root',
+      boards: ['root']
+    });
+    const request = createOwnedRequest({
+      body: { name: 'Updated', rootBoard: 'root', boards: ['root'] },
+      email: 'admin@example.com',
+      isAdmin: true
+    });
+    request.user.id = 'actor-1';
+    const response = createResponse();
+
+    await controller.updateCommunicator(request, response);
+
+    expect(response.statusCode).to.equal(409);
+    expect(response.body.error.code).to.equal('LEGACY_OWNER_CHANGED');
+    expect(saveCallCount).to.equal(0);
+  });
+
+  it('does not write or respond successfully when the account gate closes', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'closing';
+    foundCommunicator = new MockCommunicator({
+      email: 'owner@example.com',
+      rootBoard: 'root',
+      boards: ['root']
+    });
+    const request = createOwnedRequest({
+      body: { name: 'Updated', rootBoard: 'root', boards: ['root'] },
+      email: 'admin@example.com',
+      isAdmin: true
+    });
+    request.user.id = 'actor-1';
+    const response = createResponse();
+
+    await controller.updateCommunicator(request, response);
+
+    expect(response.statusCode).to.equal(409);
+    expect(response.body.error.code).to.equal('ACCOUNT_CLOSING');
+    expect(saveCallCount).to.equal(0);
+  });
+
+  it('requires admin authorization before removing a communicator', async function() {
+    const response = createResponse();
+    await controller.removeCommunicator(
+      createOwnedRequest({ isAdmin: false }),
+      response
+    );
+    expect(response.statusCode).to.equal(403);
+    expect(findCallCount).to.equal(0);
+  });
+
+  it('removes by original owner under the gate and passes session', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'legacy-open';
+    foundCommunicator = new MockCommunicator({
+      email: 'owner@example.com',
+      rootBoard: 'root',
+      boards: ['root']
+    });
+    const request = createOwnedRequest({
+      email: 'admin@example.com',
+      isAdmin: true
+    });
+    request.user.id = 'actor-1';
+    const response = createResponse();
+
+    await controller.removeCommunicator(request, response);
+
+    expect(response.statusCode).to.equal(200);
+    expect(findQuery).to.deep.equal({
+      _id: 'communicator-1',
+      email: 'owner@example.com'
+    });
+    expect(lifecycleCalls[0].ownerEmails).to.deep.equal(['owner@example.com']);
+  });
+
+  it('does not send a successful remove response if the gate commit fails', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'commit-fail';
+    foundCommunicator = new MockCommunicator({
+      email: 'owner@example.com',
+      rootBoard: 'root',
+      boards: ['root']
+    });
+    const request = createOwnedRequest({ email: 'admin@example.com', isAdmin: true });
+    request.user.id = 'actor-1';
+    const response = createResponse();
+
+    await controller.removeCommunicator(request, response);
+
+    expect(response.statusCode).to.equal(404);
+    expect(response.body).not.to.have.property('email');
   });
 });
 
