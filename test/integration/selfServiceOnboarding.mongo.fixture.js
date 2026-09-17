@@ -1,0 +1,181 @@
+'use strict';
+
+// Synthetic controller/service acceptance fixture. The enclosing runner owns the
+// explicitly isolated Mongo connection and its final database cleanup.
+const assert = require('assert').strict;
+const crypto = require('crypto');
+const mockery = require('mockery');
+const nodemailer = require('nodemailer');
+
+module.exports = async function selfServiceOnboardingFixture({ mongoose, passed }) {
+  process.env.JWT_SECRET = process.env.JWT_SECRET || 'self-service-onboarding-fixture-jwt';
+  process.env.API_SESSION_SECRET = process.env.API_SESSION_SECRET || 'self-service-onboarding-fixture-session';
+  process.env.CARE_ENCRYPTION_ACTIVE_KEY = process.env.CARE_ENCRYPTION_ACTIVE_KEY || 'onboarding';
+  process.env.CARE_ENCRYPTION_KEYS = process.env.CARE_ENCRYPTION_KEYS || JSON.stringify({
+    onboarding: crypto.randomBytes(32).toString('hex')
+  });
+
+  const config = require('../../config');
+  const outbox = [];
+  const originalTransport = config.emailTransport;
+  const originalOrigin = config.AUTH_EMAIL_APP_URL;
+  const controllerPath = require.resolve('../../api/controllers/user');
+  const mailPath = require.resolve('../../api/mail');
+  const verificationPath = require.resolve('../../api/mail/email-verification');
+  const cached = new Map([
+    [controllerPath, require.cache[controllerPath]],
+    [mailPath, require.cache[mailPath]],
+    [verificationPath, require.cache[verificationPath]]
+  ]);
+
+  const response = () => {
+    let finish;
+    const completed = new Promise(resolve => { finish = resolve; });
+    return {
+      code: null,
+      body: null,
+      status(code) { this.code = code; return this; },
+      json(body) {
+        this.body = body;
+        finish(this);
+        return this;
+      },
+      wait() { return completed; }
+    };
+  };
+  const run = async (handler, request) => {
+    const res = response();
+    await handler(request, res);
+    return res.wait();
+  };
+  const request = body => ({
+    body,
+    ip: '127.0.0.1',
+    session: {},
+    get(name) { return name === 'User-Agent' ? 'self-service-onboarding-fixture' : ''; },
+    swagger: { params: {} }
+  });
+
+  config.emailTransport = {
+    from: 'Self-service fixture <noreply@example.test>',
+    host: 'smtp.example.test',
+    port: 587,
+    auth: { user: 'fixture-user', pass: 'fixture-pass' }
+  };
+  config.AUTH_EMAIL_APP_URL = 'https://app.example.test';
+  delete require.cache[controllerPath];
+  delete require.cache[mailPath];
+  delete require.cache[verificationPath];
+  mockery.enable({ warnOnReplace: false, warnOnUnregistered: false, useCleanCache: false });
+  mockery.registerMock('nodemailer', {
+    createTransport() {
+      const transport = nodemailer.createTransport({ jsonTransport: true });
+      transport.verify = callback => callback(null, true);
+      const send = transport.sendMail.bind(transport);
+      transport.sendMail = (message, callback) => send(message, (error, info) => {
+        if (!error) outbox.push(JSON.parse(info.message));
+        callback(error, info);
+      });
+      return transport;
+    }
+  });
+
+  try {
+    // `api/mail` loads the real email-verification implementation; nodemailer is
+    // the only substituted boundary and never creates a network transport.
+    const { nev } = require('../../api/mail');
+    const controller = require('../../api/controllers/user');
+    const User = require('../../api/models/User');
+    const auth = require('../../api/helpers/auth');
+    const sessions = require('../../api/helpers/deviceSessions');
+
+    const suffix = new mongoose.Types.ObjectId().toString();
+    const password = 'synthetic-onboarding-password';
+    const registerAndLogin = async (label, role) => {
+      const email = `onboarding-${label}-${suffix}@example.test`;
+      const registration = await run(controller.createUser, request({
+        name: `Synthetic ${label}`,
+        email,
+        password
+      }));
+      assert.equal(registration.code, 200);
+      assert.equal(registration.body.success, 1);
+
+      const temporary = await nev.options.tempUserModel.findOne({ email }).lean().exec();
+      assert(temporary, 'registration must create a temporary user');
+      assert.equal(await User.countDocuments({ email }), 0);
+      const verification = outbox.find(message => JSON.stringify(message.to).includes(email) && message.text.includes('/activate/'));
+      assert(verification, 'registration must generate a verification email');
+      const link = verification.text.match(/https:\/\/app\.example\.test\/activate\/([A-Za-z0-9_-]+)/);
+      assert(link, 'generated email must contain the configured activation link');
+      assert.equal(link[1], temporary[nev.options.URLFieldName]);
+
+      const beforeActivationLogin = await run(controller.loginUser, request({ email, password }));
+      assert.equal(beforeActivationLogin.code, 401);
+
+      const activation = await run(controller.activateUser, {
+        swagger: { params: { url: { value: link[1] } } }
+      });
+      assert.equal(activation.code, 200);
+      assert.equal(activation.body.success, 1);
+      assert.equal(await nev.options.tempUserModel.countDocuments({ email }), 0);
+      const user = await User.findOne({ email }).lean().exec();
+      assert(user, 'activation must persist the confirmed user');
+      assert.equal(String(activation.body.userid), String(user._id));
+
+      const wrongPasswordLogin = await run(controller.loginUser, request({
+        email,
+        password: 'synthetic-wrong-password'
+      }));
+      assert.equal(wrongPasswordLogin.code, 401);
+
+      const login = await run(controller.loginUser, request({ email, password }));
+      assert.equal(login.code, 200);
+      assert(login.body.settings, 'login must create and return settings');
+      assert.equal(typeof login.body.authToken, 'string');
+      const bearer = auth.getTokenData(login.body.authToken);
+      assert(bearer, 'login token must be signed by the real auth helper');
+      assert.equal(String(bearer.id), String(user._id));
+      assert.equal(await sessions.valid(bearer), true);
+      return { id: String(user._id), role, email };
+    };
+
+    const owner = await registerAndLogin('owner', 'patient');
+    const invitee = await registerAndLogin('invitee', 'relative');
+    const care = require('../../api/helpers/careRuntime').createRuntime();
+    const family = await care.createFamily(owner.id, { name: 'Synthetic onboarding family' });
+    const profile = await care.createProfile(owner.id, {
+      familyId: family.id,
+      name: 'Synthetic patient profile',
+      role: owner.role
+    });
+    assert.equal((await care.profiles(owner.id))[0].relationship.defaultMode, 'expression');
+    assert.deepEqual(await care.profiles(invitee.id), []);
+    const invitation = await care.command(owner.id, profile.id, {
+      action: 'invite',
+      operationId: `invite-${suffix}`,
+      permissions: ['read']
+    });
+    assert.equal((await care.accept(invitee.id, invitation.token)).id, profile.id);
+    await care.command(invitee.id, profile.id, {
+      action: 'relationship',
+      operationId: `relationship-${suffix}`,
+      value: { role: invitee.role }
+    });
+    const joined = await care.profiles(invitee.id);
+    assert.deepEqual(joined.map(item => item.id), [profile.id]);
+    assert.equal(joined[0].relationship.role, invitee.role);
+    assert.equal(joined[0].relationship.defaultMode, 'receiver');
+    assert.deepEqual(joined[0].permissions, ['read']);
+    passed.push('self-service-email-registration-activation-login-and-care-invitation');
+  } finally {
+    config.emailTransport = originalTransport;
+    config.AUTH_EMAIL_APP_URL = originalOrigin;
+    mockery.deregisterAll();
+    mockery.disable();
+    for (const [modulePath, value] of cached) {
+      delete require.cache[modulePath];
+      if (value) require.cache[modulePath] = value;
+    }
+  }
+};

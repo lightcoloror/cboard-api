@@ -32,6 +32,11 @@ async function main() {
   };
   const passed = [];
   try {
+    if (process.argv.includes('--onboarding-only')) {
+      await require('./selfServiceOnboarding.mongo.fixture')({ mongoose, passed });
+      console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true, realEmailDelivered: false }));
+      return;
+    }
     const a = await seed('solo');
     await assert.rejects(service.beginClose(a.owner, []), e => e.code === 'FAMILY_CLOSE_CONFIRMATION_REQUIRED');
     assert.equal((await families.findOne({ _id: a.familyId })).lifecycleRev, undefined);
