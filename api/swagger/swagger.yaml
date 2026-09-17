@@ -361,6 +361,43 @@ paths:
           description: Too many status requests
         '503':
           description: Status unavailable
+  /care/account/closure-confirm:
+    x-swagger-router-controller: careClosureConfirm
+    post:
+      operationId: confirmClosure
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      description: Confirms cloud deletion for the authenticated account. This requires the independent confirmation switch; members and ownership are revalidated for every attempt. After a lost or failed response, query the existing receipt before retrying with a still-valid login. The receipt only authorizes status queries and acceptance must not be interpreted as deletion completed.
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            $ref: "#/definitions/ClosureConfirmRequest"
+      responses:
+        '202':
+          description: Closure accepted and remains incomplete
+          headers:
+            Cache-Control:
+              type: string
+              enum: [no-store]
+          schema:
+            $ref: "#/definitions/ClosureConfirmAccepted"
+        '400':
+          description: Invalid confirmation body
+        '401':
+          description: Sign in again
+        '404':
+          description: Receipt unavailable
+        '409':
+          description: Account, family, membership, or confirmation conflict
+        '429':
+          description: Too many confirmation attempts
+        '503':
+          description: Closure confirmation unavailable
   /user/sessions:
     x-swagger-router-controller: deviceSessions
     get:
@@ -3018,6 +3055,48 @@ paths:
             $ref: "#/definitions/ErrorResponse"
 # complex objects have schema definitions
 definitions:
+  ClosureConfirmRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - familyIds
+      - secret
+      - confirmCloudDeletion
+    properties:
+      familyIds:
+        type: array
+        minItems: 0
+        maxItems: 1000
+        uniqueItems: true
+        items:
+          type: string
+          minLength: 1
+          maxLength: 80
+          pattern: '^[A-Za-z0-9_-]+$'
+      secret:
+        type: string
+        pattern: '^[a-f0-9]{64}$'
+      confirmCloudDeletion:
+        type: boolean
+        enum: [true]
+  ClosureConfirmAccepted:
+    type: object
+    additionalProperties: false
+    required:
+      - operationId
+      - cleanupStatus
+      - accountDeleted
+    properties:
+      operationId:
+        type: string
+        minLength: 1
+        maxLength: 80
+      cleanupStatus:
+        type: string
+        maxLength: 80
+      accountDeleted:
+        type: boolean
+        enum: [false]
   ClosureReceiptPrepareResponse:
     type: object
     additionalProperties: false

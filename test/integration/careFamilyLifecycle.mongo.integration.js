@@ -1122,7 +1122,7 @@ async function main() {
     assert.equal((await accounts.findOne({ _id: expiringOwner })).status, 'open');
     assert.equal(await connection.collection('careclosurejobs').countDocuments({ owner: expiringOwner }), 0);
     passed.push('closure-receipt-atomic-binding-secret-rotation-expiry-and-lost-response-recovery');
-    await require('./careClosureReceiptHttp.mongo.fixture')({ mongoose, passed, encryption });
+    await require('./careClosureReceiptHttp.mongo.fixture')({ mongoose, passed, encryption, fileMedia, quotaService: legacyQuota });
 
     const runtimeUser = new mongoose.Types.ObjectId();
     const runtimeOwner = String(runtimeUser);

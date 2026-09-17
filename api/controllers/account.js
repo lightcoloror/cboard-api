@@ -127,6 +127,12 @@ async function removeAccount(req, res) {
   if (!access.ok) return res.status(access.status).json(access.body);
   const actorId = access.id;
 
+  if (process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true') {
+    return res.status(409).json({
+      error: { code: 'CLOSURE_CONFIRMATION_REQUIRED' }
+    });
+  }
+
   const careDeletionBlocker = await getCareAccountDeletionBlocker(id);
   if (careDeletionBlocker) {
     return res

@@ -5,6 +5,12 @@ const mongoose = require('mongoose');
 const { RateLimiterMongo } = require('rate-limiter-flexible');
 
 const OPERATIONS = Object.freeze({
+  closureConfirm: Object.freeze({
+    codePrefix: 'CLOSURE_CONFIRM', keyPrefix: 'closure_confirm',
+    emailTable: 'closureConfirmAccountHourlyLimits', ipTable: 'closureConfirmIpHourlyLimits',
+    emailEnv: 'CLOSURE_CONFIRM_ACCOUNT_HOURLY_LIMIT', ipEnv: 'CLOSURE_CONFIRM_IP_HOURLY_LIMIT',
+    emailDefault: 10, ipDefault: 30
+  }),
   closurePrepare: Object.freeze({
     codePrefix: 'CLOSURE_PREPARE', keyPrefix: 'closure_prepare',
     emailTable: 'closurePrepareAccountHourlyLimits', ipTable: 'closurePrepareIpHourlyLimits',

@@ -18,8 +18,11 @@ describe('Account deletion controller', function() {
   let settingsFailure;
   let careAccountFailure;
   let passwordResetFailure;
+  let previousLifecycleFlag;
 
   beforeEach(function() {
+    previousLifecycleFlag = process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
     requestedBy = 'user-1';
     deletedFilters = {};
     careDeletionBlocker = null;
@@ -145,6 +148,8 @@ describe('Account deletion controller', function() {
   });
 
   afterEach(function() {
+    if (previousLifecycleFlag === undefined) delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    else process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = previousLifecycleFlag;
     mockery.deregisterAll();
     mockery.disable();
   });
@@ -216,6 +221,28 @@ describe('Account deletion controller', function() {
     expect(deletedFilters.sessionDestroy).to.equal(true);
     expect(deletedFilters.careAccount).to.deep.equal({ _id: 'user-1' });
     expect(res.body.deletedCareAccount).to.equal(1);
+  });
+
+  it('requires the confirmation flow for the owner when lifecycle transactions are enabled', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    const res = createResponse();
+
+    await controller.removeAccount(createRequest(), res);
+
+    expect(res.statusCode).to.equal(409);
+    expect(res.body).to.deep.equal({ error: { code: 'CLOSURE_CONFIRMATION_REQUIRED' } });
+    expect(deletedFilters).to.deep.equal({});
+  });
+
+  it('requires the confirmation flow for administrators too without querying or deleting', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    const res = createResponse();
+
+    await controller.removeAccount(createAdminRequest(), res);
+
+    expect(res.statusCode).to.equal(409);
+    expect(res.body).to.deep.equal({ error: { code: 'CLOSURE_CONFIRMATION_REQUIRED' } });
+    expect(deletedFilters).to.deep.equal({});
   });
 
   it('exports cleanup data without performing authorization or user deletion', async function() {

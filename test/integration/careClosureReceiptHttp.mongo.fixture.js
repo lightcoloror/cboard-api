@@ -5,18 +5,19 @@ const path = require('path');
 const express = require('express');
 const swaggerTools = require('swagger-tools');
 const YAML = require('yamljs');
-const { createCareClosureCoordinator } = require('../../api/helpers/careClosureCoordinator');
-const { createCareClosureReceipt } = require('../../api/helpers/careClosureReceipt');
 
 const root = path.resolve(__dirname, '../..');
 
 module.exports = async function careClosureReceiptHttpMongoFixture({
   mongoose,
   passed,
-  encryption
+  encryption,
+  fileMedia,
+  quotaService
 }) {
   const previousCollaboration = process.env.CARE_COLLABORATION_ENABLED;
   const previousLifecycle = process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+  const previousConfirmation = process.env.CARE_CLOSURE_CONFIRMATION_ENABLED;
   process.env.CARE_COLLABORATION_ENABLED = 'true';
   process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
 
@@ -52,6 +53,8 @@ module.exports = async function careClosureReceiptHttpMongoFixture({
         api.use(middleware.swaggerRouter({ controllers: {
           careClosureReceipt_prepareClosureReceipt: receiptController.prepareClosureReceipt,
           careClosureReceipt_inspectClosureReceipt: receiptController.inspectClosureReceipt,
+          careClosureConfirm_confirmClosure: require('../../api/controllers/careClosureConfirm').confirmClosure,
+          account_removeAccount: require('../../api/controllers/account').removeAccount,
           careClosure_previewClosure: require('../../api/controllers/careClosure').previewClosure
         }, ignoreMissingHandlers: true }));
         api.use((error, req, res, next) => res.status(error.statusCode || error.status || 500)
@@ -86,6 +89,10 @@ module.exports = async function careClosureReceiptHttpMongoFixture({
     };
     const tokenA = await tokenFor(ownerAId, 'receipt-a@example.test');
     const tokenB = await tokenFor(ownerBId, 'receipt-b@example.test');
+    const legacyDeletion = await request(tokenB, `/account/${ownerBId}`, 'DELETE');
+    assert.equal(legacyDeletion.status, 409);
+    assert.equal(legacyDeletion.body.error.code, 'CLOSURE_CONFIRMATION_REQUIRED');
+    assert(await users.findOne({ _id: ownerB }));
 
     const anonymous = await request(null, '/care/account/closure-receipt', 'POST', {});
     assert.equal(anonymous.status, 401);
@@ -122,9 +129,36 @@ module.exports = async function careClosureReceiptHttpMongoFixture({
     assert.equal(queryCredentials.status, 404);
     passed.push('closure-receipt-http-status-no-bearer-and-strict-body');
 
-    const receiptStore = createCareClosureReceipt({ connection: mongoose.connection });
-    const coordinator = createCareClosureCoordinator({ connection: mongoose.connection, encryption, receipt: receiptStore });
-    const confirmed = await coordinator.begin(ownerAId, [], secretA);
+    const familyId = `family-http-${ownerAId}`;
+    const profileId = `profile-http-${ownerAId}`;
+    const families = mongoose.connection.collection('carefamilies');
+    const profiles = mongoose.connection.collection('careprofiles');
+    await families.insertOne({ _id: familyId, owner: ownerAId, rev: 0, sealed: encryption.seal({}, `family:${familyId}`) });
+    await profiles.insertOne({ _id: profileId, familyId, owner: ownerAId, members: [ownerAId], rev: 0,
+      sealed: encryption.seal({ grants: { [ownerAId]: ['read'] } }, `profile:${profileId}`) });
+    const confirmation = { familyIds: [familyId], secret: secretA, confirmCloudDeletion: true };
+    process.env.CARE_CLOSURE_CONFIRMATION_ENABLED = 'false';
+    assert.equal((await request(tokenA, '/care/account/closure-confirm', 'POST', confirmation)).status, 503);
+    process.env.CARE_CLOSURE_CONFIRMATION_ENABLED = 'true';
+    assert.equal((await request(null, '/care/account/closure-confirm', 'POST', confirmation)).status, 401);
+    assert.equal((await request(tokenA, '/care/account/closure-confirm', 'POST', { ...confirmation, confirmCloudDeletion: false })).status, 400);
+    assert.equal((await request(tokenA, '/care/account/closure-confirm', 'POST', { ...confirmation, familyIds: [] })).status, 409);
+    assert.equal((await request(tokenB, '/care/account/closure-confirm', 'POST', { ...confirmation, familyIds: [] })).status, 404);
+    const preview = await request(tokenA, '/care/account/closure-preview');
+    assert.deepEqual(preview.body.familyIds, [familyId]);
+    await profiles.updateOne({ _id: profileId }, { $addToSet: { members: ownerBId } });
+    assert.equal((await request(tokenA, '/care/account/closure-confirm', 'POST', confirmation)).status, 409);
+    assert.equal((await families.findOne({ _id: familyId })).closure, undefined);
+    assert.equal((await request(null, '/care/account/closure-status', 'POST', { receiptId: ownerAId, secret: secretA })).body.status, 'prepared');
+    // Synthetic member leaves; the next HTTP confirmation re-evaluates current scope.
+    await profiles.updateOne({ _id: profileId }, { $set: { members: [ownerAId] } });
+    const confirmedResponse = await request(tokenA, '/care/account/closure-confirm', 'POST', confirmation);
+    assert.equal(confirmedResponse.status, 202);
+    assert.equal(confirmedResponse.headers.get('cache-control'), 'no-store');
+    assert.equal(confirmedResponse.body.accountDeleted, false);
+    assert.equal(confirmedResponse.body.secret, undefined);
+    const confirmed = confirmedResponse.body;
+    passed.push('closure-confirm-http-explicit-self-only-revalidates-family-and-enqueues-202');
     const confirmedStatus = await request(null, '/care/account/closure-status', 'POST', {
       receiptId: ownerAId, secret: secretA
     });
@@ -137,17 +171,36 @@ module.exports = async function careClosureReceiptHttpMongoFixture({
       receiptId: ownerAId, secret: 'c'.repeat(64)
     });
     assert.equal(crossOwner.status, 404);
-    // Keep the second authenticated synthetic user and account available for
-    // the host fixture; no User or private data is deleted here.
+    // The second synthetic user must remain unaffected by the first closure.
     assert.equal((await request(tokenB, '/care/account/closure-status', 'POST', {
       receiptId: ownerAId, secret: 'd'.repeat(64)
     })).status, 404);
     passed.push('closure-receipt-http-confirmed-status-works-after-bearer-revocation');
+    const { createCareClosureRuntime } = require('../../api/helpers/careClosureRuntime');
+    const runtime = createCareClosureRuntime({ connection: mongoose.connection, encryption, media: fileMedia,
+      revokeSessions: owner => sessions.revoke(owner),
+      cleanup: args => require('../../api/controllers/account').cleanupAccountData({ ...args, quotaService })
+    });
+    let completed;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      completed = await runtime.runner.run(ownerAId, confirmed.operationId);
+      if (completed.accountDeleted) break;
+    }
+    assert.equal(completed.accountDeleted, true);
+    const completedStatus = await request(null, '/care/account/closure-status', 'POST', { receiptId: ownerAId, secret: secretA });
+    assert.equal(completedStatus.body.accountDeleted, true);
+    assert.equal(completedStatus.body.cleanupStatus, 'complete');
+    assert.equal(await users.findOne({ _id: ownerA }), null);
+    assert(await users.findOne({ _id: ownerB }));
+    assert.equal((await request(tokenA, '/care/account/closure-confirm', 'POST', confirmation)).status, 401);
+    passed.push('closure-http-confirm-to-runtime-cleanup-and-http-complete-preserves-other-user');
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
     if (previousCollaboration === undefined) delete process.env.CARE_COLLABORATION_ENABLED;
     else process.env.CARE_COLLABORATION_ENABLED = previousCollaboration;
     if (previousLifecycle === undefined) delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
     else process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = previousLifecycle;
+    if (previousConfirmation === undefined) delete process.env.CARE_CLOSURE_CONFIRMATION_ENABLED;
+    else process.env.CARE_CLOSURE_CONFIRMATION_ENABLED = previousConfirmation;
   }
 };
