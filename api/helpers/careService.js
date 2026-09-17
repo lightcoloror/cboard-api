@@ -57,10 +57,10 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
     if (state.deleted || !state.grants[user] || !state.grants[user].includes(permission)) fail(403, 'PROFILE_ACCESS_DENIED');
     return { doc, state };
   }
-  async function save(doc, state) {
+  async function save(doc, state, actor) {
     if (Buffer.byteLength(JSON.stringify(state)) > 5 * 1024 * 1024) fail(413, 'PROFILE_CAPACITY_REACHED');
     const sealed = encryption.seal(state, `profile:${doc._id}`);
-    return store.casProfile(doc._id, doc.rev, { sealed, rev: doc.rev + 1, members: Object.keys(state.grants) }, { expectedOwner: doc.owner });
+    return store.casProfile(doc._id, doc.rev, { sealed, rev: doc.rev + 1, members: Object.keys(state.grants) }, { expectedOwner: doc.owner, actor });
   }
   function audit(state, actor, action, target, revision) {
     state.audit.push({ actor, action, target, revision, at: now() });
@@ -96,7 +96,7 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
       if (!securityOnly) await checkEntitlement(doc.familyId, 'write');
       const result = await fn(state, doc);
       if (result.noWrite) return result.value;
-      if (await save(doc, state)) return result.value;
+      if (await save(doc, state, user)) return result.value;
     }
     fail(409, 'RETRY_CONCURRENT_CHANGE');
   }
@@ -329,7 +329,7 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
         if (state.grants[user]) fail(409, 'ALREADY_MEMBER');
         state.grants[user] = invite.permissions; invite.acceptedBy = user;
         audit(state, user, 'accept', invitationId, doc.rev + 1);
-        if (await save(doc, state)) return { id: profileId };
+        if (await save(doc, state, user)) return { id: profileId };
       }
       fail(409, 'RETRY_CONCURRENT_CHANGE');
     },

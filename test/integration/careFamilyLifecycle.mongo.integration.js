@@ -439,6 +439,16 @@ async function main() {
     assert.deepEqual(await createCareClosureAccountStep({ connection, encryption }).run(cleanFamily.owner, cleanJob.operationId),
       { status: 'accounts_cleaned', count: 0 });
     passed.push('account-reference-cleanup-is-atomic-resumable-and-family-scoped');
+    const openProfileBefore = await profiles.findOne({ _id: otherFamily.profileId });
+    const profileUpdate = { sealed: openProfileBefore.sealed, rev: openProfileBefore.rev + 1,
+      members: openProfileBefore.members };
+    await assert.rejects(runtimeStore.casProfile(otherFamily.profileId, openProfileBefore.rev, profileUpdate,
+      { expectedOwner: otherFamily.owner, actor: cleanFamily.owner }), error => error.code === 'ACCOUNT_CLOSING');
+    await assert.rejects(runtimeStore.casProfile(otherFamily.profileId, openProfileBefore.rev,
+      { ...profileUpdate, members: [...openProfileBefore.members, cleanFamily.owner] },
+      { expectedOwner: otherFamily.owner, actor: otherFamily.owner }), error => error.code === 'ACCOUNT_CLOSING');
+    assert.deepEqual(await profiles.findOne({ _id: otherFamily.profileId }), openProfileBefore);
+    passed.push('closing-actors-and-new-members-cannot-write-an-open-family');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

@@ -89,6 +89,25 @@ async function expectCode(promise, code) {
 }
 
 describe('care family lifecycle helper', function() {
+  it('rejects closing actors or invited accounts but permits removal of closing members', async function() {
+    for (const mode of ['actor', 'invite', 'remove']) {
+      const f = factory({ family: { _id: 'family-a', owner: 'owner-a' },
+        profile: { _id: 'profile-a', familyId: 'family-a', rev: 0,
+          members: mode === 'invite' ? ['owner-a'] : ['owner-a', 'closing-user'] } });
+      f.AccountLifecycle.findOne = async filter => ({ _id: filter._id,
+        status: filter._id === 'closing-user' ? 'closing' : 'open' });
+      const result = f.lifecycle.casProfile('profile-a', 0, { sealed: {}, rev: 1,
+        members: mode === 'remove' ? ['owner-a'] : ['owner-a', 'closing-user'] },
+      { actor: mode === 'actor' ? 'closing-user' : 'owner-a' });
+      if (mode === 'remove') expect(await result).to.equal(true);
+      else {
+        await expectCode(result, 'ACCOUNT_CLOSING');
+        expect(f.Profile.calls.updateOne).to.have.length(0);
+        expect(f.Family.calls.updateOne).to.have.length(0);
+      }
+    }
+  });
+
   it('fences both transfer owners in sorted order and writes in the same session', async function() {
     const f = factory({ family: { _id: 'family-a', owner: 'owner-z', rev: 2 } });
     expect(await f.lifecycle.casFamily('family-a', 2, { owner: 'owner-a', rev: 3 })).to.equal(true);

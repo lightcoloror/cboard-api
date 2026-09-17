@@ -357,7 +357,8 @@ function createCareFamilyLifecycle({
       Object.keys(value).some(key => !['sealed', 'rev', 'members'].includes(key)) ||
       value.rev !== rev + 1 || !Array.isArray(value.members) ||
       value.members.some(member => !validId(member)) ||
-      (context.expectedOwner !== undefined && !validId(context.expectedOwner))) {
+      (context.expectedOwner !== undefined && !validId(context.expectedOwner)) ||
+      (context.actor !== undefined && !validId(context.actor))) {
       fail(400, 'INVALID_PROFILE_UPDATE');
     }
     return transaction(async session => {
@@ -367,7 +368,13 @@ function createCareFamilyLifecycle({
       const family = await readFamily(profile.familyId, session);
       if (!validId(family.owner)) fail(409, FAMILY_CLOSE_CONFLICT);
       if (context.expectedOwner !== undefined && family.owner !== context.expectedOwner) return false;
-      await lockOpenAccount(family.owner, session);
+      // Lock the actual actor and newly added members as well as the owner.
+      // Existing closing members must still be removable by another admin.
+      const previousMembers = profile.members || [];
+      if (!Array.isArray(previousMembers) || previousMembers.some(member => !validId(member))) fail(409, FAMILY_CLOSE_CONFLICT);
+      const addedMembers = value.members.filter(member => !previousMembers.includes(member));
+      const writers = [...new Set([family.owner, ...(context.actor ? [context.actor] : []), ...addedMembers])].sort();
+      for (const writer of writers) await lockOpenAccount(writer, session);
       const familyResult = await familyCollection.updateOne({
         _id: profile.familyId,
         owner: family.owner,

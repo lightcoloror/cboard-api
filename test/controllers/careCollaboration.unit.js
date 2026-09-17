@@ -8,7 +8,7 @@ const { createCareSync } = require('../../../cboard/src/common/communicationSupp
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const newId = () => crypto.randomBytes(16).toString('hex');
 function fixture({ atomicProfile = null } = {}) {
-  const families = {}, profiles = {}, blobs = {}, accounts = {}, accountContexts = [];
+  const families = {}, profiles = {}, blobs = {}, accounts = {}, accountContexts = [], profileContexts = [];
   let profileCasContextHook = null;
   const writes = { communicator: 0, profile: 0, atomicProfile: 0 };
   const keys = { test: crypto.randomBytes(32).toString('hex') };
@@ -27,6 +27,7 @@ function fixture({ atomicProfile = null } = {}) {
     listProfiles: async u => clone(Object.values(profiles).filter(p => p.members.includes(u))),
     listProfilesByFamily: async familyId => clone(Object.values(profiles).filter(p => p.familyId === familyId)),
     casProfile: async (id, rev, update, context = {}) => {
+      profileContexts.push(clone(context));
       if (profileCasContextHook) {
         const hook = profileCasContextHook;
         profileCasContextHook = null;
@@ -48,7 +49,7 @@ function fixture({ atomicProfile = null } = {}) {
   const media = { write: async data => { const k = newId(); blobs[k] = Buffer.from(data); return k; },
     read: async k => blobs[k], remove: async k => { delete blobs[k]; } };
   const service = createCareService({ store, encryption, media });
-  return { service, profiles, families, blobs, accounts, accountContexts, encryption, store, keys, media, writes,
+  return { service, profiles, families, blobs, accounts, accountContexts, profileContexts, encryption, store, keys, media, writes,
     setProfileCasContextHook(hook) { profileCasContextHook = hook; } };
 }
 async function setup(f, user = 'familyA') {
@@ -258,6 +259,7 @@ describe('patient collaboration security and offline recovery', () => {
     const results = await Promise.all([f.service.command('familyA', profile.id, op), f.service.command('familyA', profile.id, op)]);
     assert.deepEqual(results[0], results[1]);
     assert.equal((await f.service.snapshot('familyA', profile.id)).resources.length, 1);
+    assert.equal(f.profileContexts.at(-1).actor, 'familyA');
     await assert.rejects(f.service.command('familyA', profile.id, { ...op, value: { label: '不同' } }), e => e.status === 409);
     const conflict = await f.service.command('familyA', profile.id, command()); assert(conflict.conflict);
   });
