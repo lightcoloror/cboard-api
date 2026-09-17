@@ -728,8 +728,8 @@ async function main() {
       const uploadController = createCommunicationPrivateLibraryController({ PrivateLibrary,
         storageConfigured: () => true,
         blobStore: {
-          async create(_container, _name, file) {
-            const name = await fileMedia.write(file.buffer);
+          async createNamed(_container, name, file) {
+            await fileMedia.writeNamed(name, file.buffer);
             written.push(name);
             // Deterministic interleaving: close after storage accepted bytes,
             // before the original request publishes its Mongo metadata.
@@ -1059,6 +1059,7 @@ async function main() {
     await require('./passwordResetLifecycle.mongo.fixture')({ mongoose, coordinator, passed });
     await require('./userProfileLifecycle.mongo.fixture')({ mongoose, passed });
     await require('./legacyQuotaLifecycle.mongo.fixture')({ mongoose, coordinator, passed });
+    await require('./privateArchiveJournal.mongo.fixture')({ mongoose, passed, fileMedia, coordinator });
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

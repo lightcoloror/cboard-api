@@ -76,6 +76,9 @@ function createHarness(initial = null, options = {}) {
   const removed = [];
   const uploaded = [];
   const metadataUpdates = [];
+  const journalCalls = [];
+  const journalJobs = new Map();
+  let nextJournal = 1;
   let downloadBuffer = initial
     ? createEncryptedArchiveBuffer('existing')
     : null;
@@ -84,8 +87,9 @@ function createHarness(initial = null, options = {}) {
     findOne(filter) {
       return createQuery(stored && stored.user === filter.user ? stored : null);
     },
-    findOneAndUpdate(filter, update, options) {
-      metadataUpdates.push({ filter, update, options });
+    findOneAndUpdate(filter, update, queryOptions) {
+      if (options.publishMetadataError) throw options.publishMetadataError;
+      metadataUpdates.push({ filter, update, options: queryOptions });
       const previous =
         stored && stored.user === filter.user ? { ...stored } : null;
       stored = {
@@ -129,6 +133,18 @@ function createHarness(initial = null, options = {}) {
       downloadBuffer = Buffer.from(file.buffer);
       return [{ name }, 'https://must-not-be-returned.example/private.zip'];
     },
+    async createNamed(containerName, blobName, file, contentSettings) {
+      uploaded.push({
+        containerName,
+        blobName,
+        file,
+        contentSettings,
+        name: blobName
+      });
+      downloadBuffer = Buffer.from(file.buffer);
+      if (options.createNamedError) throw options.createNamedError;
+      return [{ name: blobName }, 'https://must-not-be-returned.example/private.zip'];
+    },
     async read() {
       return Buffer.from(downloadBuffer || []);
     },
@@ -136,6 +152,39 @@ function createHarness(initial = null, options = {}) {
       removed.push({ containerName, blobName });
       return true;
     }
+  };
+  const uploadJournal = options.uploadJournal || {
+    async prepare(owner) {
+      const id = `journal-${nextJournal++}`;
+      const job = { _id: id, owner, blobName: `${id}.bin` };
+      journalCalls.push({ method: 'prepare', owner });
+      journalJobs.set(id, job);
+      return job;
+    },
+    async publish(owner, id, publishMetadataCallback) {
+      journalCalls.push({ method: 'publish', owner, id });
+      const session = { id: 'journal-session' };
+      const previous = options.lifecycle
+        ? await options.lifecycle.withOpenAccount(owner, publishMetadataCallback)
+        : await publishMetadataCallback(session);
+      journalJobs.get(id).status = 'published';
+      journalJobs.get(id).previousBlobName = previous && previous.blobName;
+      return previous;
+    },
+    async failedPublish(owner, id) {
+      journalCalls.push({ method: 'failedPublish', owner, id });
+      journalJobs.get(id).status = 'failed';
+    },
+    async cleanup(owner, id) {
+      journalCalls.push({ method: 'cleanup', owner, id });
+      if (options.cleanupError) throw options.cleanupError;
+      const job = journalJobs.get(id);
+      if (job && job.status === 'failed') {
+        await blobStore.remove('private-test', job.blobName);
+      }
+      journalJobs.delete(id);
+    },
+    async drain() {}
   };
   const controller = createCommunicationPrivateLibraryController({
     PrivateLibrary,
@@ -153,6 +202,7 @@ function createHarness(initial = null, options = {}) {
     legacyArchiveMessage: options.legacyArchiveMessage,
     storageConfigured: () => options.storageConfigured !== false,
     lifecycle: options.lifecycle,
+    uploadJournal,
     lifecycleEnabled: options.lifecycleEnabled || (() => false),
     now: () => 1700000000000
   });
@@ -167,6 +217,8 @@ function createHarness(initial = null, options = {}) {
     },
     uploaded,
     metadataUpdates
+    ,journalCalls
+    ,journalJobs
   };
 }
 
@@ -330,17 +382,112 @@ describe('Private picture library controller', function() {
     expect(harness.removed).to.deep.equal([]);
   });
 
+  it('prepares a named journal object before upload and cleans a published job', async function() {
+    const harness = createHarness(null, { lifecycleEnabled: () => true });
+    const response = createResponse();
+
+    await harness.controller.uploadPrivateLibrary(
+      createRequest({ buffer: createEncryptedArchiveBuffer('journaled') }),
+      response
+    );
+
+    expect(response.statusCode).to.equal(200);
+    expect(harness.journalCalls.map(call => call.method)).to.deep.equal([
+      'prepare', 'publish', 'cleanup'
+    ]);
+    expect(harness.uploaded[0].blobName).to.equal('journal-1.bin');
+    expect(harness.metadataUpdates[0].options.session).to.deep.equal({
+      id: 'journal-session'
+    });
+    expect(harness.journalJobs.size).to.equal(0);
+  });
+
+  it('marks a successful provider upload failed and cleans it when publication fails', async function() {
+    const harness = createHarness(null, {
+      lifecycleEnabled: () => true,
+      publishMetadataError: Object.assign(new Error('transaction aborted'), {
+        code: 'ACCOUNT_CLOSING'
+      })
+    });
+    const response = createResponse();
+
+    await harness.controller.uploadPrivateLibrary(
+      createRequest({ buffer: createEncryptedArchiveBuffer('publish-fails') }),
+      response
+    );
+
+    expect(response.statusCode).to.equal(409);
+    expect(response.body.error.code).to.equal('ACCOUNT_CLOSING');
+    expect(harness.journalCalls.map(call => call.method)).to.deep.equal([
+      'prepare', 'publish', 'failedPublish', 'cleanup'
+    ]);
+    expect(harness.removed).to.deep.equal([
+      { containerName: 'private-test', blobName: 'journal-1.bin' }
+    ]);
+    expect(harness.getStored()).to.equal(null);
+  });
+
+  it('retains an upload journal when the provider fails before completion', async function() {
+    const harness = createHarness(null, {
+      lifecycleEnabled: () => true,
+      createNamedError: new Error('provider request may still be writing')
+    });
+    const response = createResponse();
+
+    await harness.controller.uploadPrivateLibrary(
+      createRequest({ buffer: createEncryptedArchiveBuffer('provider-fails') }),
+      response
+    );
+
+    expect(response.statusCode).to.equal(500);
+    expect(harness.journalCalls.map(call => call.method)).to.deep.equal([
+      'prepare'
+    ]);
+    expect(harness.journalJobs.size).to.equal(1);
+    expect(harness.removed).to.deep.equal([]);
+  });
+
+  it('does not remove the new current blob when journal cleanup fails', async function() {
+    const old = {
+      user: 'user-1',
+      blobName: 'old-private.zip',
+      format: PRIVATE_LIBRARY_FORMAT,
+      contractVersion: PRIVATE_LIBRARY_CONTRACT_VERSION,
+      size: 1,
+      sha256: 'old',
+      createdAt: 100,
+      updatedAt: 100
+    };
+    const harness = createHarness(old, {
+      lifecycleEnabled: () => true,
+      cleanupError: Object.assign(new Error('cleanup must be retried'), {
+        code: 'PRIVATE_ARCHIVE_CLEANUP_RETRY_REQUIRED'
+      })
+    });
+    const response = createResponse();
+
+    await harness.controller.uploadPrivateLibrary(
+      createRequest({ buffer: createEncryptedArchiveBuffer('cleanup-fails') }),
+      response
+    );
+
+    expect(response.statusCode).to.equal(200);
+    expect(harness.getStored().blobName).to.equal('journal-1.bin');
+    expect(harness.removed).to.deep.equal([]);
+    expect(harness.journalCalls.map(call => call.method)).to.deep.equal([
+      'prepare', 'publish', 'cleanup'
+    ]);
+  });
+
   it('rejects metadata publication for a closing account and removes only the new blob', async function() {
     const harness = createHarness({
       user: 'user-1', blobName: 'old-private.zip', format: PRIVATE_LIBRARY_FORMAT,
       contractVersion: PRIVATE_LIBRARY_CONTRACT_VERSION, size: 1, sha256: 'old', createdAt: 100, updatedAt: 100
     }, {
       lifecycleEnabled: () => true,
-      lifecycle: {
-        async withOpenAccount() {
-          throw Object.assign(new Error('closing'), { code: 'ACCOUNT_CLOSING' });
-        }
-      }
+      publishMetadataError: Object.assign(new Error('closing'), {
+        code: 'ACCOUNT_CLOSING'
+      })
     });
     const response = createResponse();
 
@@ -352,18 +499,16 @@ describe('Private picture library controller', function() {
     expect(response.statusCode).to.equal(409);
     expect(response.body.error.code).to.equal('ACCOUNT_CLOSING');
     expect(harness.getStored().blobName).to.equal('old-private.zip');
-    expect(harness.removed).to.deep.equal([{ containerName: 'private-test', blobName: 'private-1.pijenc' }]);
+    expect(harness.removed).to.deep.equal([{ containerName: 'private-test', blobName: 'journal-1.bin' }]);
     expect(harness.metadataUpdates).to.have.length(0);
   });
 
   it('returns ACCOUNT_CLOSED for a closed account without leaking the lifecycle error', async function() {
     const harness = createHarness(null, {
       lifecycleEnabled: () => true,
-      lifecycle: {
-        async withOpenAccount() {
-          throw Object.assign(new Error('closed internals'), { code: 'ACCOUNT_CLOSED' });
-        }
-      }
+      publishMetadataError: Object.assign(new Error('closed internals'), {
+        code: 'ACCOUNT_CLOSED'
+      })
     });
     const response = createResponse();
 

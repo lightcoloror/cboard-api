@@ -4,11 +4,13 @@ const crypto = require('crypto');
 const CommunicationPrivateLibrary = require('../models/CommunicationPrivateLibrary');
 const {
   createBlockBlobFromText,
+  createBlockBlobWithName,
   deleteBlobIfExists,
   getBlobToBuffer,
   isBlobStorageConfigured
 } = require('../helpers/blob');
 const { createCareFamilyLifecycle } = require('../helpers/careFamilyLifecycle');
+const { createPrivateArchiveUploadJournal } = require('../helpers/privateArchiveUploadJournal');
 
 const PRIVATE_LIBRARY_CONTAINER_NAME =
   process.env.PRIVATE_LIBRARY_CONTAINER_NAME || 'cboard-private';
@@ -48,6 +50,7 @@ function createCommunicationPrivateLibraryController({
   PrivateLibrary = CommunicationPrivateLibrary,
   blobStore = {
     create: createBlockBlobFromText,
+    createNamed: createBlockBlobWithName,
     read: getBlobToBuffer,
     remove: deleteBlobIfExists
   },
@@ -64,9 +67,17 @@ function createCommunicationPrivateLibraryController({
   legacyArchiveMessage = `${archiveLabel} must be re-uploaded in the current encrypted format`,
   storageConfigured = isBlobStorageConfigured,
   lifecycle = null,
+  uploadJournal = null,
   lifecycleEnabled = () => process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true',
   now = Date.now
 } = {}) {
+  let journal = uploadJournal;
+  function getJournal() {
+    if (!journal) journal = createPrivateArchiveUploadJournal({
+      PrivateLibrary, blobStore, containerName, lifecycle, now
+    });
+    return journal;
+  }
   function rejectUnconfiguredStorage(res) {
     if (storageConfigured()) return null;
     return res.status(503).json({
@@ -103,6 +114,7 @@ function createCommunicationPrivateLibraryController({
   }
 
   async function removeForUser(userId) {
+    if (lifecycleEnabled()) await getJournal().drain(String(userId));
     const existing = await findForUser(userId);
     if (!existing) return false;
     if (!storageConfigured()) {
@@ -173,8 +185,19 @@ function createCommunicationPrivateLibraryController({
       .update(buffer)
       .digest('hex');
     let newBlobName = '';
+    let uploadJob = null;
+    let uploadCompleted = false;
     try {
-      const [storedBlob] = await blobStore.create(
+      if (lifecycleEnabled()) {
+        if (typeof blobStore.createNamed !== 'function') {
+          throw Object.assign(new Error('Named archive storage required'), { code: 'PRIVATE_ARCHIVE_TRACKING_UNAVAILABLE' });
+        }
+        uploadJob = await getJournal().prepare(String(req.user.id));
+      }
+      const [storedBlob] = uploadJob
+        ? await blobStore.createNamed(containerName, uploadJob.blobName,
+          { buffer, mimetype: archiveContentType }, { cacheControl: 'private, no-store' })
+        : await blobStore.create(
         containerName,
         archiveFileName,
         {
@@ -190,8 +213,12 @@ function createCommunicationPrivateLibraryController({
       if (!newBlobName) {
         throw new Error('Private blob upload did not return a blob name');
       }
+      if (uploadJob && newBlobName !== uploadJob.blobName) {
+        throw Object.assign(new Error('Archive storage name mismatch'), { code: 'PRIVATE_ARCHIVE_RECONCILIATION_REQUIRED' });
+      }
+      uploadCompleted = true;
 
-      const previous = await publishMetadataWithLifecycle(req.user.id, {
+      const update = {
         $set: {
           blobName: newBlobName,
           format: archiveFormat,
@@ -203,9 +230,16 @@ function createCommunicationPrivateLibraryController({
         $setOnInsert: {
           createdAt: timestamp
         }
-      });
+      };
+      const previous = uploadJob
+        ? await getJournal().publish(String(req.user.id), uploadJob._id,
+          session => publishMetadata(req.user.id, update, session))
+        : await publishMetadataWithLifecycle(req.user.id, update);
 
-      if (previous && previous.blobName && previous.blobName !== newBlobName) {
+      if (uploadJob) {
+        try { await getJournal().cleanup(String(req.user.id), uploadJob._id); }
+        catch (_) { console.error('Private archive cleanup remains pending'); }
+      } else if (previous && previous.blobName && previous.blobName !== newBlobName) {
         try {
           await blobStore.remove(containerName, previous.blobName);
         } catch (cleanupError) {
@@ -223,7 +257,14 @@ function createCommunicationPrivateLibraryController({
         updatedAt: timestamp
       });
     } catch (error) {
-      if (newBlobName) {
+      if (uploadJob) {
+        if (uploadCompleted) {
+          try {
+            await getJournal().failedPublish(String(req.user.id), uploadJob._id);
+            await getJournal().cleanup(String(req.user.id), uploadJob._id);
+          } catch (_) { console.error('Private archive cleanup remains pending'); }
+        }
+      } else if (newBlobName) {
         try {
           await blobStore.remove(containerName, newBlobName);
         } catch (cleanupError) {
@@ -235,6 +276,9 @@ function createCommunicationPrivateLibraryController({
       }
       if (error && error.code === 'ACCOUNT_CLOSED') {
         return res.status(403).json({ message: 'Account is closed', error: { code: 'ACCOUNT_CLOSED' } });
+      }
+      if (error && typeof error.code === 'string' && error.code.startsWith('PRIVATE_ARCHIVE_')) {
+        return res.status(503).json({ message: 'Private archive operation requires retry or recovery', error: { code: error.code } });
       }
       return res.status(500).json({
         message: `Error storing ${archiveLabel.toLowerCase()} backup`

@@ -6,12 +6,16 @@ describe('Azure Blob helper configuration', function() {
   let capturedContainerOptions;
   let capturedOptions;
   let capturedBlobNames;
+  let sdkCalls;
+  let uploadError;
   let originalConnectionString;
 
   beforeEach(function() {
     capturedContainerOptions = null;
     capturedOptions = null;
     capturedBlobNames = [];
+    sdkCalls = 0;
+    uploadError = null;
     originalConnectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
     delete process.env.AZURE_STORAGE_CONNECTION_STRING;
     mockery.enable({
@@ -27,6 +31,7 @@ describe('Azure Blob helper configuration', function() {
             optionsOrCallback,
             callback
           ) {
+            sdkCalls += 1;
             const actualCallback =
               typeof optionsOrCallback === 'function'
                 ? optionsOrCallback
@@ -44,9 +49,10 @@ describe('Azure Blob helper configuration', function() {
             options,
             callback
           ) {
+            sdkCalls += 1;
             capturedOptions = options;
             capturedBlobNames.push(blobName);
-            callback(null, { container: containerName, name: blobName });
+            callback(uploadError, { container: containerName, name: blobName });
           },
           getUrl(containerName, blobName) {
             return `https://storage.example/${containerName}/${blobName}`;
@@ -169,5 +175,51 @@ describe('Azure Blob helper configuration', function() {
       contentType: 'application/octet-stream',
       cacheControl: 'private, no-store'
     });
+  });
+
+  it('uploads a preallocated name verbatim with private no-store settings', async function() {
+    process.env.AZURE_STORAGE_CONNECTION_STRING = 'UseDevelopmentStorage=true';
+    const { createBlockBlobWithName } = require('../../api/helpers/blob');
+    const result = await createBlockBlobWithName('private', 'abc_Profile_01.bin', {
+      buffer: Buffer.from('archive'),
+      mimetype: 'application/octet-stream'
+    }, {}, { publicAccessLevel: 'off' });
+
+    expect(result[0]).to.deep.equal({ container: 'private', name: 'abc_Profile_01.bin' });
+    expect(capturedBlobNames).to.deep.equal(['abc_Profile_01.bin']);
+    expect(capturedOptions.contentSettings).to.deep.equal({
+      contentType: 'application/octet-stream',
+      cacheControl: 'private, no-store'
+    });
+    expect(capturedContainerOptions).to.deep.equal({ publicAccessLevel: 'off' });
+  });
+
+  it('rejects unsafe names before creating a service or container', async function() {
+    process.env.AZURE_STORAGE_CONNECTION_STRING = 'UseDevelopmentStorage=true';
+    const { createBlockBlobWithName } = require('../../api/helpers/blob');
+    for (const blobName of ['', '../escape', 'a..b', '.hidden', 'a/'.repeat(101)]) {
+      let error;
+      try {
+        await createBlockBlobWithName('private', blobName, { buffer: Buffer.from('x') });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).to.be.instanceOf(TypeError);
+    }
+    expect(sdkCalls).to.equal(0);
+    expect(capturedBlobNames).to.deep.equal([]);
+  });
+
+  it('propagates named upload errors', async function() {
+    process.env.AZURE_STORAGE_CONNECTION_STRING = 'UseDevelopmentStorage=true';
+    uploadError = new Error('storage unavailable');
+    const { createBlockBlobWithName } = require('../../api/helpers/blob');
+    let error;
+    try {
+      await createBlockBlobWithName('private', 'safe-name.bin', { buffer: Buffer.from('x') });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).to.equal(uploadError);
   });
 });

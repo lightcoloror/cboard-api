@@ -5,6 +5,7 @@ let blobService = null;
 
 module.exports = {
   createBlockBlobFromText,
+  createBlockBlobWithName,
   deleteBlobIfExists,
   getBlobToBuffer,
   isBlobStorageConfigured
@@ -49,6 +50,71 @@ function createContainerIfNotExists(service, shareName, containerOptions = {}) {
   });
 }
 
+function createContentOptions(file, contentSettings = {}, defaults = {}) {
+  const options = {};
+  const { mimetype } = file;
+  if (mimetype && mimetype.length) {
+    const cacheMaxAgeInSeconds = 31536000;
+    options.contentSettings = {
+      contentType: mimetype,
+      cacheControl: `max-age=${cacheMaxAgeInSeconds}`
+    };
+  }
+  if (Object.keys(defaults).length || Object.keys(contentSettings).length) {
+    options.contentSettings = {
+      ...(options.contentSettings || {}),
+      ...defaults,
+      ...contentSettings
+    };
+  }
+  return options;
+}
+
+function assertSafeBlobName(blobName) {
+  if (
+    typeof blobName !== 'string' ||
+    blobName.includes('..') ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(blobName)
+  ) {
+    throw new TypeError('Invalid blob name.');
+  }
+}
+
+async function createNamedBlob(containerName, blobName, file, contentSettings, containerOptions) {
+  assertSafeBlobName(blobName);
+  const service = getBlobService();
+  await createContainerIfNotExists(service, containerName, containerOptions);
+  const options = createContentOptions(file, contentSettings, {
+    cacheControl: 'private, no-store'
+  });
+
+  return new Promise((resolve, reject) => {
+    service.createBlockBlobFromText(
+      containerName,
+      blobName,
+      file.buffer,
+      options,
+      function(error, result) {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve([result, service.getUrl(result.container, result.name)]);
+      }
+    );
+  });
+}
+
+async function createBlockBlobWithName(
+  containerName,
+  blobName,
+  file,
+  contentSettings = {},
+  containerOptions = {}
+) {
+  return createNamedBlob(containerName, blobName, file, contentSettings, containerOptions);
+}
+
 // Returns [file:BlobResult, fileUrl:string]
 async function createBlockBlobFromText(
   containerName,
@@ -61,22 +127,8 @@ async function createBlockBlobFromText(
   const service = getBlobService();
   await createContainerIfNotExists(service, containerName, containerOptions);
 
-  const { buffer, mimetype } = file;
-
-  const options = {};
-  if (mimetype && mimetype.length) {
-    const cacheMaxAgeInSeconds = 31536000;
-    options.contentSettings = {
-      contentType: mimetype,
-      cacheControl: `max-age=${cacheMaxAgeInSeconds}`
-    };
-  }
-  if (contentSettings && Object.keys(contentSettings).length) {
-    options.contentSettings = {
-      ...(options.contentSettings || {}),
-      ...contentSettings
-    };
-  }
+  const { buffer } = file;
+  const options = createContentOptions(file, contentSettings);
 
   const ts = Math.round(new Date().getTime() / 1000);
   const finalName = `${prefix}_${ts}_${uuidv4()}_${fileName
