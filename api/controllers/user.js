@@ -573,7 +573,6 @@ async function getUser(req, res) {
 }
 
 const UPDATEABLE_FIELDS = [
-  'email',
   'name',
   'birthdate',
   'locale',
@@ -585,6 +584,13 @@ function updateUser(req, res) {
   const id = req.swagger.params.id.value;
   const access = requireSelfOrAdmin(req, id);
   if (!access.ok) return res.status(access.status).json(access.body);
+
+  if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'email')) {
+    return res.status(409).json({
+      message: 'Changing an email address requires email verification.',
+      error: { code: 'EMAIL_CHANGE_REQUIRES_VERIFICATION' }
+    });
+  }
 
   User.findById(id).exec(async function(err, user) {
     if (err) {
@@ -671,8 +677,19 @@ function sendPhoneLoginFailure(res, status = 401) {
   });
 }
 
-function loginUser(req, res) {
-  const { email, password } = req.body;
+async function loginUser(req, res) {
+  const { email, password } = req.body || {};
+
+  try {
+    await consumeAuthRequestLimits({
+      limiters: getAuthRequestLimiters('login'),
+      operation: 'login',
+      email: normalizedEmail(email),
+      ip: req.ip
+    });
+  } catch (error) {
+    return sendAuthRateLimitError(res, error, 'login');
+  }
 
   User.authenticate(email, password, async (error, user) => {
     if (error || !user) {
@@ -850,7 +867,11 @@ function sendPasswordResetFailure(res, status = 400) {
 
 function sendAuthRateLimitError(res, error, operation) {
   const codePrefix =
-    operation === 'registration' ? 'USER_REGISTRATION' : 'PASSWORD_RESET';
+    operation === 'registration'
+      ? 'USER_REGISTRATION'
+      : operation === 'login'
+        ? 'LOGIN'
+        : 'PASSWORD_RESET';
   if (error.status === 429) {
     res.set('Retry-After', String(error.retryAfter));
     return res.status(429).json({

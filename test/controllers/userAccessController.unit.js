@@ -168,9 +168,37 @@ describe('user controller access guards', function() {
     expect(databaseCalls).to.deep.equal([]);
   });
 
+  it('rejects email changes before reading or saving the user', async function() {
+    const res = response();
+    await controller.updateUser(
+      {
+        ...request('user-1', { id: 'user-1', role: 'user' }, { id: 'user-1' }),
+        body: { email: 'new@example.test', name: 'Updated name' }
+      },
+      res
+    );
+    expect(res.statusCode).to.equal(409);
+    expect(res.body).to.deep.equal({
+      message: 'Changing an email address requires email verification.',
+      error: { code: 'EMAIL_CHANGE_REQUIRES_VERIFICATION' }
+    });
+    expect(databaseCalls).to.deep.equal([]);
+  });
+
   it('declares list users as admin-only in the Swagger contract', function() {
     const spec = YAML.load('api/swagger/swagger.yaml');
     const listOperation = spec.paths['/user'].get;
     expect(listOperation['x-security-scopes']).to.deep.equal(['admin']);
+  });
+
+  it('declares email-change rejection and excludes email from UserUpdate', function() {
+    const spec = YAML.load('api/swagger/swagger.yaml');
+    const updateOperation = spec.paths['/user/{id}'].put;
+    expect(updateOperation.responses['409'].schema.required).to.deep.equal([
+      'message',
+      'error'
+    ]);
+    expect(spec.definitions.UserUpdate.properties).to.not.have.property('email');
+    expect(updateOperation.responses['409'].schema.properties.error.properties.code.type).to.equal('string');
   });
 });

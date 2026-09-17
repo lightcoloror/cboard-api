@@ -18,7 +18,9 @@ describe('authentication request rate limits', function() {
       USER_REGISTRATION_RATE_LIMIT_EMAIL_HOURLY_LIMIT: '4',
       USER_REGISTRATION_RATE_LIMIT_IP_HOURLY_LIMIT: '31',
       PASSWORD_RESET_RATE_LIMIT_EMAIL_HOURLY_LIMIT: '5',
-      PASSWORD_RESET_RATE_LIMIT_IP_HOURLY_LIMIT: '41'
+      PASSWORD_RESET_RATE_LIMIT_IP_HOURLY_LIMIT: '41',
+      LOGIN_RATE_LIMIT_EMAIL_HOURLY_LIMIT: '21',
+      LOGIN_RATE_LIMIT_IP_HOURLY_LIMIT: '101'
     });
     const configurations = [];
     class FakeLimiter {
@@ -38,17 +40,25 @@ describe('authentication request rate limits', function() {
       config,
       RateLimiterClass: FakeLimiter
     });
+    createAuthRequestMongoLimiters({
+      storeClient: {},
+      operation: 'login',
+      config,
+      RateLimiterClass: FakeLimiter
+    });
     expect(configurations.map(value => value.points)).to.deep.equal([
       4,
       31,
       5,
-      41
+      41,
+      21,
+      101
     ]);
     expect(new Set(configurations.map(value => value.tableName)).size).to.equal(
-      4
+      6
     );
     expect(new Set(configurations.map(value => value.keyPrefix)).size).to.equal(
-      4
+      6
     );
     const fallback = resolveAuthRequestRateLimitConfig({
       USER_REGISTRATION_RATE_LIMIT_EMAIL_HOURLY_LIMIT: '0',
@@ -58,6 +68,8 @@ describe('authentication request rate limits', function() {
     expect(fallback.registration.emailHourlyLimit).to.equal(3);
     expect(fallback.registration.ipHourlyLimit).to.equal(20);
     expect(fallback.passwordReset.emailHourlyLimit).to.equal(3);
+    expect(fallback.login.emailHourlyLimit).to.equal(20);
+    expect(fallback.login.ipHourlyLimit).to.equal(100);
   });
 
   it('hashes normalized identities and consumes IP before email', async function() {
@@ -165,5 +177,7 @@ describe('authentication request rate limits', function() {
     expect(constructions).to.equal(2);
     runtime.getLimiters('passwordReset');
     expect(constructions).to.equal(4);
+    runtime.getLimiters('login');
+    expect(constructions).to.equal(6);
   });
 });

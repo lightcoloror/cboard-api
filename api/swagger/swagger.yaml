@@ -2118,6 +2118,18 @@ paths:
           description: Success
           schema:
             $ref: "#/definitions/GetUserResponse"
+        "401":
+          description: Wrong credentials
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        "429":
+          description: Login rate limit exceeded
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        "503":
+          description: Login rate limiter unavailable
+          schema:
+            $ref: "#/definitions/ErrorResponse"
         default:
           description: Error
           schema:
@@ -2241,6 +2253,23 @@ paths:
           description: Success
           schema:
             $ref: "#/definitions/GetUserResponse"
+        "409":
+          description: Email changes require a separate verification flow
+          schema:
+            type: object
+            required:
+              - message
+              - error
+            properties:
+              message:
+                type: string
+              error:
+                type: object
+                required:
+                  - code
+                properties:
+                  code:
+                    type: string
         default:
           description: Error
           schema:
@@ -4012,10 +4041,6 @@ definitions:
       name:
         type: string
         example: Alice
-      email:
-        type: string
-        format: email
-        example: alice@example.com
       birthdate:
         type: string
         format: date

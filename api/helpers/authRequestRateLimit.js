@@ -24,6 +24,16 @@ const OPERATIONS = Object.freeze({
     ipEnv: 'PASSWORD_RESET_RATE_LIMIT_IP_HOURLY_LIMIT',
     emailDefault: 3,
     ipDefault: 20
+  }),
+  login: Object.freeze({
+    codePrefix: 'LOGIN',
+    keyPrefix: 'login',
+    emailTable: 'loginEmailHourlyLimits',
+    ipTable: 'loginIpHourlyLimits',
+    emailEnv: 'LOGIN_RATE_LIMIT_EMAIL_HOURLY_LIMIT',
+    ipEnv: 'LOGIN_RATE_LIMIT_IP_HOURLY_LIMIT',
+    emailDefault: 20,
+    ipDefault: 100
   })
 });
 

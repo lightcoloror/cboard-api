@@ -31,6 +31,9 @@ const {
 const {
   createCommunicationAiTokenQuotaMiddleware
 } = require('./api/helpers/communicationAiTokenQuota');
+const {
+  configureApplicationInsights
+} = require('./api/helpers/applicationInsightsPrivacy');
 const { createTrustedProxyTrust } = require('./api/helpers/trustedProxy');
 
 const app = express();
@@ -42,17 +45,7 @@ const authenticateBearer = require('./api/helpers/authenticateBearer').createBea
 });
 
 if (config.appInsightConnectionString && config.env === 'production') {
-  appInsights
-    .setup()
-    .setAutoDependencyCorrelation(true)
-    .setAutoCollectRequests(true)
-    .setAutoCollectPerformance(true,true)
-    .setAutoCollectExceptions(true)
-    .setAutoCollectDependencies(true)
-    .setAutoCollectConsole(true, false)
-    .setUseDiskRetryCaching(true)
-    .setDistributedTracingMode(appInsights.DistributedTracingModes.AI_AND_W3C)
-    .setSendLiveMetrics(true)
+  configureApplicationInsights(appInsights);
 
   appInsights.defaultClient.context.tags[appInsights.defaultClient.context.keys.cloudRole] = "Cboard API";
   appInsights.start()
