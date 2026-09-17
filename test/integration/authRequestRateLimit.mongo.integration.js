@@ -16,7 +16,8 @@ if (!uriPattern.test(uri)) {
 
 const config = {
   registration: { emailHourlyLimit: 3, ipHourlyLimit: 20 },
-  passwordReset: { emailHourlyLimit: 3, ipHourlyLimit: 20 }
+  passwordReset: { emailHourlyLimit: 3, ipHourlyLimit: 20 },
+  login: { emailHourlyLimit: 3, ipHourlyLimit: 4 }
 };
 async function connect() {
   const connection = mongoose.createConnection();
@@ -85,10 +86,18 @@ async function main() {
     assert.strictEqual(results.at(-1).accepted, 3);
     assert.strictEqual(results.at(-1).rejected429, 2);
 
+    // Login has its own Mongo tables and is exercised from both connections
+    // before indexes are explicitly prepared.
+    const coldLoginAttempts = await Promise.all(Array.from({ length: 5 }, (_, i) =>
+      attempt(i % 2 ? coldTwo : coldOne, 'login', 'cold-login@example.test', `203.0.115.${i + 1}`)));
+    results.push({ name: 'cold_concurrent_login_email_cap', accepted: coldLoginAttempts.filter(x => x.outcome === 'accepted').length, rejected429: coldLoginAttempts.filter(x => x.status === 429).length });
+    assert.strictEqual(results.at(-1).accepted, 3);
+    assert.strictEqual(results.at(-1).rejected429, 2);
+
     const runtimeOne = makeRuntime(first);
     const runtimeTwo = makeRuntime(second);
-    await Promise.all(['registration', 'passwordReset'].map(operation => ready(runtimeOne, operation)));
-    await Promise.all(['registration', 'passwordReset'].map(operation => ready(runtimeTwo, operation)));
+    await Promise.all(['registration', 'passwordReset', 'login'].map(operation => ready(runtimeOne, operation)));
+    await Promise.all(['registration', 'passwordReset', 'login'].map(operation => ready(runtimeTwo, operation)));
 
     const normalized = await Promise.all([
       attempt(runtimeOne, 'registration', '  MIXED@Example.Test ', '203.0.114.1'),
@@ -105,10 +114,34 @@ async function main() {
     results.push({ name: 'registration_reset_isolated', registrationConsumed: 3, resetAccepted: reset.filter(x => x.outcome === 'accepted').length });
     assert.strictEqual(results.at(-1).resetAccepted, 3);
 
+    const loginIsolation = await attempt(runtimeOne, 'login', ' mixed@example.test ', '203.0.114.1');
+    assert.strictEqual(loginIsolation.outcome, 'accepted');
+    results.push({ name: 'login_registration_reset_isolated', loginAccepted: 1, registrationConsumed: 3, resetAccepted: 3 });
+
+    const normalizedLogin = await Promise.all([
+      attempt(runtimeOne, 'login', '  LOGIN@Example.Test ', '203.0.120.1'),
+      attempt(runtimeTwo, 'login', 'login@example.test', '203.0.120.2'),
+      attempt(runtimeOne, 'login', ' Login@example.test ', '203.0.120.3'),
+      attempt(runtimeTwo, 'login', 'login@EXAMPLE.TEST ', '203.0.120.4')
+    ]);
+    results.push({ name: 'normalized_login_mailbox_combined', accepted: normalizedLogin.filter(x => x.outcome === 'accepted').length, rejected429: normalizedLogin.filter(x => x.status === 429).length });
+    assert.strictEqual(results.at(-1).accepted, 3);
+    assert.strictEqual(results.at(-1).rejected429, 1);
+
+    const loginIpAttempts = await Promise.all(Array.from({ length: 5 }, (_, i) =>
+      attempt(i % 2 ? runtimeTwo : runtimeOne, 'login', `login-ip-${i}@example.test`, '203.0.121.9')));
+    results.push({ name: 'login_ip_cap_combined', accepted: loginIpAttempts.filter(x => x.outcome === 'accepted').length, rejected429: loginIpAttempts.filter(x => x.status === 429).length });
+    assert.strictEqual(results.at(-1).accepted, 4);
+    assert.strictEqual(results.at(-1).rejected429, 1);
+
     const freshRuntime = makeRuntime(second);
     const fresh = await attempt(freshRuntime, 'registration', 'cold@example.test', '203.0.116.1');
     results.push({ name: 'fresh_runtime_preserves_count', outcome: fresh.outcome, status: fresh.status });
     assert.strictEqual(fresh.status, 429);
+
+    const freshLogin = await attempt(freshRuntime, 'login', 'cold-login@example.test', '203.0.116.2');
+    results.push({ name: 'fresh_runtime_preserves_login_count', outcome: freshLogin.outcome, status: freshLogin.status });
+    assert.strictEqual(freshLogin.status, 429);
 
     const ipRuntime = makeRuntime(first);
     await ready(ipRuntime, 'passwordReset');
@@ -125,12 +158,17 @@ async function main() {
 
     const closedRuntime = makeRuntime(second);
     await ready(closedRuntime, 'registration');
+    await ready(closedRuntime, 'login');
     await second.close();
     second = null;
     const unavailable = await attempt(closedRuntime, 'registration', 'backend@example.test', '203.0.118.1');
     results.push({ name: 'backend_disconnect_fail_closed', outcome: unavailable.outcome, status: unavailable.status, code: unavailable.code });
     assert.strictEqual(unavailable.status, 503);
     assert.strictEqual(unavailable.code, 'USER_REGISTRATION_RATE_LIMIT_UNAVAILABLE');
+    const loginUnavailable = await attempt(closedRuntime, 'login', 'backend-login@example.test', '203.0.118.2');
+    results.push({ name: 'backend_disconnect_login_fail_closed', outcome: loginUnavailable.outcome, status: loginUnavailable.status, code: loginUnavailable.code });
+    assert.strictEqual(loginUnavailable.status, 503);
+    assert.strictEqual(loginUnavailable.code, 'LOGIN_RATE_LIMIT_UNAVAILABLE');
   } catch (error) {
     primaryError = error;
   } finally {
@@ -146,7 +184,13 @@ async function main() {
   const report = { result: primaryError || cleanupError ? 'failed' : 'passed', database, runtimes: 2, cases: results };
   if (primaryError) report.primary_error = { name: primaryError.name, message: primaryError.message };
   if (cleanupError) report.cleanup_error = { name: cleanupError.name, message: cleanupError.message };
-  (primaryError || cleanupError ? console.error : console.log)(JSON.stringify(report, null, 2));
+  const serializedReport = JSON.stringify(report);
+  if (serializedReport.length >= 3000) {
+    console.error(JSON.stringify({ result: 'failed', error: 'integration report exceeds runner output cap', length: serializedReport.length }));
+    process.exitCode = 1;
+    return;
+  }
+  (primaryError || cleanupError ? console.error : console.log)(serializedReport);
   if (primaryError || cleanupError) process.exitCode = 1;
 }
 
