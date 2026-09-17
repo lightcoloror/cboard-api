@@ -595,11 +595,54 @@ async function main() {
     await runner.run(finalOwner, finalClosure.operationId);
     assert.equal((await runner.run(finalOwner, finalClosure.operationId)).cleanupStatus, 'access_revoked');
     const { createCareClosureFinalize } = require('../../api/helpers/careClosureFinalize');
+    const { cleanupAccountData } = require('../../api/controllers/account');
+    const { createCommunicationPrivateLibraryController } = require('../../api/controllers/communicationPrivateLibrary');
+    const archiveModels = ['CommunicationPrivateLibrary', 'CommunicationPrivateDeviceData']
+      .map(name => require(`../../api/models/${name}`));
+    const legacyModels = ['CommunicationReceiverRecord', 'CommunicationSavedPhrase', 'CommunicationAiUsage']
+      .map(name => require(`../../api/models/${name}`));
+    // Native seeds avoid account/payment creation hooks; deletion runs the real models.
+    for (const Model of legacyModels) {
+      await Model.collection.insertMany([{ user: finalUserId }, { user: loginUser }]);
+    }
+    const Board = require('../../api/models/Board');
+    const Subscribers = require('../../api/models/Subscribers');
+    await Board.collection.insertMany([
+      { email: 'synthetic-finalize@example.test' }, { email: 'synthetic-control@example.test' }
+    ]);
+    await Subscribers.collection.insertMany([{ userId: finalOwner }, { userId: String(loginUser) }]);
+    await communicatorCollection.insertMany([
+      { _id: 'final-legacy-marker', email: 'synthetic-finalize@example.test' },
+      { _id: 'final-shared-marker', email: 'synthetic-finalize@example.test', careProfileId: otherFamily.profileId }
+    ]);
+    const archiveBlobs = [];
+    for (const Model of archiveModels) {
+      const targetBlob = await fileMedia.write(ciphertext);
+      const controlBlob = await fileMedia.write(ciphertext);
+      archiveBlobs.push({ targetBlob, controlBlob });
+      await Model.collection.insertMany([
+        { user: finalUserId, blobName: targetBlob }, { user: loginUser, blobName: controlBlob }
+      ]);
+    }
+    const archiveCleaners = archiveModels.map(PrivateLibrary => createCommunicationPrivateLibraryController({
+      PrivateLibrary, storageConfigured: () => true,
+      blobStore: { remove: (_container, blob) => fileMedia.remove(blob) }
+    }).deletePrivateLibraryForUser);
+    const { createCommunicationAiTokenQuotaService, createCommunicationAiTokenQuotaLimiter } =
+      require('../../api/helpers/communicationAiTokenQuota');
+    const quotaConfig = { enabled: true, monthlyTokens: 100, textReservationTokens: 10, imageReservationTokens: 20 };
+    const quotaLimiter = createCommunicationAiTokenQuotaLimiter({ storeClient: connection, config: quotaConfig });
+    await quotaLimiter.createIndexes();
+    const legacyQuota = createCommunicationAiTokenQuotaService({ config: quotaConfig, limiter: quotaLimiter });
+    for (const userId of [finalOwner, String(loginUser)]) {
+      await legacyQuota.reserve({ userId, operationId: 'generateCommunicationSentences' });
+      assert.equal((await legacyQuota.getStatus({ userId })).consumedTokens, 10);
+    }
     const finalizeAdapters = { connection, encryption, revokeSessions: owner => deviceSessions.revoke(owner),
       async cleanup({ id, userEmail }) {
         assert.equal(id, finalOwner); assert.equal(userEmail, 'synthetic-finalize@example.test');
-        await settingsCollection.deleteMany({ user: finalUserId });
-        await careAccounts.deleteOne({ _id: id });
+        return cleanupAccountData({ id, userEmail, quotaService: legacyQuota,
+          privateLibraryCleanup: archiveCleaners[0], privateDeviceCleanup: archiveCleaners[1] });
       } };
     const failedFinalConnection = {
       startSession: () => connection.startSession(),
@@ -636,10 +679,28 @@ async function main() {
     assert.equal(completeJob.accountCleanup, undefined);
     assert.equal(completeJob.cleanupClaim, undefined);
     assert.equal(await settingsCollection.countDocuments({ user: loginUser }), 1);
+    assert.equal(await settingsCollection.countDocuments({ user: finalUserId }), 0);
+    for (const Model of [...legacyModels, ...archiveModels]) {
+      assert.equal(await Model.collection.countDocuments({ user: finalUserId }), 0);
+      assert.equal(await Model.collection.countDocuments({ user: loginUser }), 1);
+    }
+    for (const { targetBlob, controlBlob } of archiveBlobs) {
+      await assert.rejects(fileMedia.read(targetBlob), error => error.code === 'MEDIA_FILE_DELETED');
+      assert.deepEqual(await fileMedia.read(controlBlob), ciphertext);
+    }
+    assert.equal(await Board.collection.countDocuments({ email: 'synthetic-finalize@example.test' }), 0);
+    assert.equal(await Board.collection.countDocuments({ email: 'synthetic-control@example.test' }), 1);
+    assert.equal(await Subscribers.collection.countDocuments({ userId: finalOwner }), 0);
+    assert.equal(await Subscribers.collection.countDocuments({ userId: String(loginUser) }), 1);
+    assert.equal(await communicatorCollection.findOne({ _id: 'final-legacy-marker' }), null);
+    assert(await communicatorCollection.findOne({ _id: 'final-shared-marker' }));
+    assert.equal((await legacyQuota.getStatus({ userId: finalOwner })).consumedTokens, 0);
+    assert.equal((await legacyQuota.getStatus({ userId: String(loginUser) })).consumedTokens, 10);
     assert.deepEqual(await createCareClosureFinalize({ ...finalizeAdapters,
       async cleanup() { throw new Error('must not repeat completed cleanup'); }
     }).run(finalOwner, finalClosure.operationId), { status: 'complete', accountDeleted: true });
     passed.push('final-user-delete-is-atomic-and-interrupted-cleanup-requires-reconciliation');
+    passed.push('real-account-cleanup-removes-private-files-legacy-records-and-current-month-quota-with-isolation');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

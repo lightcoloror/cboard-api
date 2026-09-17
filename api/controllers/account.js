@@ -32,11 +32,17 @@ function cleanupFailure(message, code) {
   return error;
 }
 
-async function cleanupAccountData({ id, userEmail, quotaService }) {
+async function cleanupAccountData({
+  id,
+  userEmail,
+  quotaService,
+  privateLibraryCleanup = deletePrivateLibraryForUser,
+  privateDeviceCleanup = deletePrivateDeviceDataForUser
+}) {
   const response = {};
   try {
-    response.deletedCommunicationPrivateLibrary = await deletePrivateLibraryForUser(id);
-    response.deletedCommunicationPrivateDeviceData = await deletePrivateDeviceDataForUser(id);
+    response.deletedCommunicationPrivateLibrary = await privateLibraryCleanup(id);
+    response.deletedCommunicationPrivateDeviceData = await privateDeviceCleanup(id);
   } catch (_) {
     throw cleanupFailure('Error deleting private account archive backup');
   }

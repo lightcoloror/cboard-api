@@ -221,6 +221,40 @@ describe('Account deletion controller', function() {
     expect(deletedFilters.sessionRevoke).to.not.exist;
   });
 
+  it('accepts private cleanup adapters only through the internal helper', async function() {
+    const calls = [];
+    const result = await controller.cleanupAccountData({
+      id: 'user-1',
+      userEmail: 'care@example.test',
+      privateLibraryCleanup: async id => { calls.push(['library', id]); return 'library-result'; },
+      privateDeviceCleanup: async id => { calls.push(['device', id]); return 'device-result'; }
+    });
+
+    expect(calls).to.deep.equal([['library', 'user-1'], ['device', 'user-1']]);
+    expect(result.deletedCommunicationPrivateLibrary).to.equal('library-result');
+    expect(result.deletedCommunicationPrivateDeviceData).to.equal('device-result');
+    expect(deletedFilters.privateLibrary).to.not.exist;
+    expect(deletedFilters.privateDeviceData).to.not.exist;
+  });
+
+  it('keeps the User untouched when an injected private cleanup fails', async function() {
+    try {
+      await controller.cleanupAccountData({
+        id: 'user-1',
+        userEmail: 'care@example.test',
+        privateLibraryCleanup: async () => { throw new Error('private storage unavailable'); },
+        privateDeviceCleanup: async () => { throw new Error('must not run'); }
+      });
+      throw new Error('expected cleanup failure');
+    } catch (error) {
+      expect(error.status).to.equal(500);
+      expect(error.message).to.equal('Error deleting private account archive backup');
+      expect(error.message).not.to.include('private storage unavailable');
+    }
+    expect(deletedFilters.user).to.not.exist;
+    expect(deletedFilters.userLookup).to.not.exist;
+  });
+
   it('wraps cleanup failures without exposing the underlying error', async function() {
     settingsFailure = true;
     try {
