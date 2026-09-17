@@ -804,6 +804,46 @@ async function main() {
     assert.equal(await Usage.collection.countDocuments({ user: finalUserId }), 0);
     assert.equal(await Usage.collection.countDocuments({ user: loginUser }), 1);
     passed.push('late-ai-usage-cannot-update-or-recreate-closing-and-closed-account-records');
+    const phraseController = require('../../api/controllers/communicationSavedPhrases');
+    const Phrase = require('../../api/models/CommunicationSavedPhrase');
+    const phraseUserId = new mongoose.Types.ObjectId();
+    const phraseOwner = String(phraseUserId);
+    const phraseUser = { id: phraseOwner };
+    const phrase = { id: 'synthetic-phrase', sentence: 'Synthetic water', output: [],
+      createdAt: 1000, updatedAt: 1000, lastUsedAt: 1000, baseVersion: 0 };
+    const callPhrase = async (method, user, body) => {
+      const response = settingsResponse();
+      await phraseController[method]({ user, body }, response);
+      return response;
+    };
+    const firstPhrase = await callPhrase('syncCommunicationSavedPhrases', phraseUser, { phrases: [phrase] });
+    assert.equal(firstPhrase.code, 200);
+    assert.equal(firstPhrase.body.acceptedCount, 1);
+    const conflictPhrase = await callPhrase('syncCommunicationSavedPhrases', phraseUser,
+      { phrases: [{ ...phrase, sentence: 'Stale change', updatedAt: 2000 }] });
+    assert.equal(conflictPhrase.body.conflictCount, 1);
+    assert.equal((await Phrase.collection.findOne({ user: phraseUserId })).sentence, phrase.sentence);
+    const deletedPhrase = await callPhrase('deleteCommunicationSavedPhrases', phraseUser,
+      { phraseIds: [phrase.id, 'synthetic-never-synced'] });
+    assert.equal(deletedPhrase.code, 200);
+    assert.equal(deletedPhrase.body.deletedPhrases.length, 2);
+    const phraseBeforeClose = await Phrase.collection.find({ user: phraseUserId }).sort({ clientPhraseId: 1 }).toArray();
+    await coordinator.begin(phraseOwner, []);
+    for (const [method, body] of [
+      ['syncCommunicationSavedPhrases', { phrases: [phrase] }],
+      ['deleteCommunicationSavedPhrases', { phraseIds: ['late-tombstone'] }]
+    ]) {
+      const refused = await callPhrase(method, phraseUser, body);
+      assert.equal(refused.code, 409);
+      assert.equal(refused.body.error.code, 'ACCOUNT_CLOSING');
+      assert.deepEqual(await Phrase.collection.find({ user: phraseUserId }).sort({ clientPhraseId: 1 }).toArray(), phraseBeforeClose);
+      const closed = await callPhrase(method, { id: finalOwner }, body);
+      assert.equal(closed.code, 403);
+      assert.equal(closed.body.error.code, 'ACCOUNT_CLOSED');
+    }
+    assert.equal(await Phrase.collection.countDocuments({ user: finalUserId }), 0);
+    assert.equal(await Phrase.collection.countDocuments({ user: loginUser }), 1);
+    passed.push('legacy-favorite-sync-and-tombstones-share-account-closure-transaction');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

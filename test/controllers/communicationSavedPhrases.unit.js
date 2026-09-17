@@ -12,15 +12,28 @@ describe('Communication saved phrases controller', function() {
   let findResults;
   let operations;
   let previousCareFlag;
+  let previousLifecycleFlag;
   let reads;
+  let lifecycleMode;
+  let lifecycleCalls;
+  let sessions;
 
   beforeEach(function() {
     previousCareFlag = process.env.CARE_NEXT_ENABLED;
+    previousLifecycleFlag = process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
     delete process.env.CARE_NEXT_ENABLED;
+    delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
     reads = 0;
     findResults = [];
     operations = [];
+    lifecycleMode = 'open';
+    lifecycleCalls = [];
+    sessions = [];
     const createQuery = records => ({
+      session(value) {
+        sessions.push(value);
+        return this;
+      },
       sort() {
         return this;
       },
@@ -35,8 +48,9 @@ describe('Communication saved phrases controller', function() {
       }
     });
     const model = {
-      async bulkWrite(nextOperations) {
+      async bulkWrite(nextOperations, options) {
         operations.push(...nextOperations);
+        if (options && options.session) sessions.push(options.session);
       },
       find() {
         reads++;
@@ -50,12 +64,35 @@ describe('Communication saved phrases controller', function() {
       useCleanCache: true
     });
     mockery.registerMock('../models/CommunicationSavedPhrase', model);
+    mockery.registerMock('../helpers/careFamilyLifecycle', {
+      createCareFamilyLifecycle() {
+        return {
+          async withOpenAccount(id, callback) {
+            lifecycleCalls.push(id);
+            if (lifecycleMode === 'closing') {
+              throw Object.assign(new Error('closing'), {
+                code: 'ACCOUNT_CLOSING',
+                status: 409
+              });
+            }
+            const session = { id: 'saved-phrases-session' };
+            const result = await callback(session);
+            if (lifecycleMode === 'commit-fail') {
+              throw new Error('commit failed');
+            }
+            return result;
+          }
+        };
+      }
+    });
     controller = require('../../api/controllers/communicationSavedPhrases');
   });
 
   afterEach(function() {
     if (previousCareFlag === undefined) delete process.env.CARE_NEXT_ENABLED;
     else process.env.CARE_NEXT_ENABLED = previousCareFlag;
+    if (previousLifecycleFlag === undefined) delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    else process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = previousLifecycleFlag;
     mockery.deregisterAll();
     mockery.disable();
   });
@@ -428,5 +465,56 @@ describe('Communication saved phrases controller', function() {
     expect(res.statusCode).to.equal(200);
     expect(res.body.deletedCount).to.equal(0);
     expect(res.body.deletedPhrases[0].serverVersion).to.equal(3);
+  });
+
+  it('passes one account session to sync reads and bulk writes before sending 200', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    const existing = createStoredPhrase();
+    findResults = [[], [existing]];
+    const res = createResponse();
+
+    await controller.syncCommunicationSavedPhrases(
+      { user: { id: 'user-1' }, body: { phrases: [createPhrase()] } },
+      res
+    );
+
+    expect(lifecycleCalls).to.deep.equal(['user-1']);
+    expect(sessions).to.deep.equal([
+      { id: 'saved-phrases-session' },
+      { id: 'saved-phrases-session' },
+      { id: 'saved-phrases-session' }
+    ]);
+    expect(res.statusCode).to.equal(200);
+  });
+
+  it('rejects a closing account before legacy sync writes', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'closing';
+    const res = createResponse();
+
+    await controller.syncCommunicationSavedPhrases(
+      { user: { id: 'user-1' }, body: { phrases: [createPhrase()] } },
+      res
+    );
+
+    expect(res.statusCode).to.equal(409);
+    expect(res.body.error.code).to.equal('ACCOUNT_CLOSING');
+    expect(reads).to.equal(0);
+    expect(operations).to.deep.equal([]);
+  });
+
+  it('does not send a successful delete response when the transaction commit fails', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'commit-fail';
+    const res = createResponse();
+
+    await controller.deleteCommunicationSavedPhrases(
+      { user: { id: 'user-1' }, body: { phraseIds: ['phrase-water'] } },
+      res
+    );
+
+    expect(res.statusCode).to.equal(409);
+    expect(res.body.message).to.equal('Error deleting communication saved phrases');
+    expect(res.body).not.to.have.property('deletedCount');
   });
 });

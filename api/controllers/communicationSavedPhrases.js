@@ -5,9 +5,26 @@ const {
   normalizeHttpsUrl,
   normalizePublicPictogramAttribution
 } = require('../helpers/pictogramAttribution');
+const { createCareFamilyLifecycle } = require('../helpers/careFamilyLifecycle');
 
 const MAX_SYNC_PHRASES = 100;
 const MAX_OUTPUT_ITEMS = 50;
+const lifecycleEnabled = () =>
+  process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true';
+
+function queryWithSession(query, session) {
+  if (!session) return query;
+  if (!query || typeof query.session !== 'function') {
+    throw new Error('Saved phrase query does not support transaction sessions');
+  }
+  return query.session(session);
+}
+
+function withOpenAccount(userId, callback) {
+  if (!lifecycleEnabled()) return callback(null);
+  return createCareFamilyLifecycle().withOpenAccount(String(userId), callback);
+}
+
 module.exports = {
   deleteCommunicationSavedPhrases,
   syncCommunicationSavedPhrases
@@ -222,12 +239,13 @@ async function syncCommunicationSavedPhrases(req, res) {
   }
 
   try {
+    const result = await withOpenAccount(req.user.id, async session => {
     const requestedIds = normalized.map(phrase => phrase.clientPhraseId);
     const existing = requestedIds.length
-      ? await CommunicationSavedPhrase.find({
+      ? await queryWithSession(CommunicationSavedPhrase.find({
           user: req.user.id,
           clientPhraseId: { $in: requestedIds }
-        })
+        }), session)
           .lean()
           .exec()
       : [];
@@ -295,12 +313,15 @@ async function syncCommunicationSavedPhrases(req, res) {
     });
 
     if (operations.length) {
-      await CommunicationSavedPhrase.bulkWrite(operations);
+      await CommunicationSavedPhrase.bulkWrite(
+        operations,
+        session ? { session } : undefined
+      );
     }
 
-    const stored = await CommunicationSavedPhrase.find({
+    const stored = await queryWithSession(CommunicationSavedPhrase.find({
       user: req.user.id
-    })
+    }), session)
       .sort({ updatedAt: -1 })
       .limit(MAX_SYNC_PHRASES * 2)
       .lean()
@@ -329,20 +350,31 @@ async function syncCommunicationSavedPhrases(req, res) {
       }
     });
 
-    return res.status(200).json({
-      acceptedCount: normalized.length - conflictedPhraseIds.size,
-      conflictCount: conflictedPhraseIds.size,
-      conflictedPhraseIds: [...conflictedPhraseIds],
-      phrases: activePhrases.map(phrase =>
-        serializeSavedPhrase(
-          phrase,
-          conflictedPhraseIds.has(phrase.clientPhraseId)
-        )
-      ),
-      deletedPhraseIds: deletedPhrases.map(phrase => phrase.id),
-      deletedPhrases
+    return {
+      status: 200,
+      body: {
+        acceptedCount: normalized.length - conflictedPhraseIds.size,
+        conflictCount: conflictedPhraseIds.size,
+        conflictedPhraseIds: [...conflictedPhraseIds],
+        phrases: activePhrases.map(phrase =>
+          serializeSavedPhrase(
+            phrase,
+            conflictedPhraseIds.has(phrase.clientPhraseId)
+          )
+        ),
+        deletedPhraseIds: deletedPhrases.map(phrase => phrase.id),
+        deletedPhrases
+      }
+    };
     });
+    return res.status(result.status).json(result.body);
   } catch (error) {
+    if (error && (error.code === 'ACCOUNT_CLOSING' || error.code === 'ACCOUNT_CLOSED')) {
+      return res.status(error.code === 'ACCOUNT_CLOSING' ? 409 : 403).json({
+        message: error.code === 'ACCOUNT_CLOSING' ? 'Account is closing' : 'Account is closed',
+        error: { code: error.code }
+      });
+    }
     return res.status(409).json({
       message: 'Error syncing communication saved phrases',
       error: error.message
@@ -382,13 +414,14 @@ async function deleteCommunicationSavedPhrases(req, res) {
   }
 
   try {
+    const result = await withOpenAccount(req.user.id, async session => {
     const lookup = deleteAll
       ? { user: req.user.id, deletedAt: null }
       : {
           user: req.user.id,
           clientPhraseId: { $in: phraseIds }
         };
-    const existing = await CommunicationSavedPhrase.find(lookup)
+    const existing = await queryWithSession(CommunicationSavedPhrase.find(lookup), session)
       .sort({ updatedAt: -1 })
       .limit(MAX_SYNC_PHRASES)
       .lean()
@@ -446,14 +479,17 @@ async function deleteCommunicationSavedPhrases(req, res) {
     });
 
     if (operations.length) {
-      await CommunicationSavedPhrase.bulkWrite(operations);
+      await CommunicationSavedPhrase.bulkWrite(
+        operations,
+        session ? { session } : undefined
+      );
     }
 
     const stored = targetIds.length
-      ? await CommunicationSavedPhrase.find({
+      ? await queryWithSession(CommunicationSavedPhrase.find({
           user: req.user.id,
           clientPhraseId: { $in: targetIds }
-        })
+        }), session)
           .lean()
           .exec()
       : [];
@@ -464,19 +500,33 @@ async function deleteCommunicationSavedPhrases(req, res) {
     const deletedIds = new Set(deletedPhrases.map(phrase => phrase.id));
     const conflictedPhraseIds = targetIds.filter(id => !deletedIds.has(id));
     if (conflictedPhraseIds.length) {
-      return res.status(409).json({
-        message: 'Saved phrase deletion lost a concurrent update',
-        conflictedPhraseIds,
-        deletedPhrases
-      });
+      return {
+        status: 409,
+        body: {
+          message: 'Saved phrase deletion lost a concurrent update',
+          conflictedPhraseIds,
+          deletedPhrases
+        }
+      };
     }
 
-    return res.status(200).json({
-      deletedCount: changedIds.size,
-      deletedPhraseIds: targetIds,
-      deletedPhrases
+    return {
+      status: 200,
+      body: {
+        deletedCount: changedIds.size,
+        deletedPhraseIds: targetIds,
+        deletedPhrases
+      }
+    };
     });
+    return res.status(result.status).json(result.body);
   } catch (error) {
+    if (error && (error.code === 'ACCOUNT_CLOSING' || error.code === 'ACCOUNT_CLOSED')) {
+      return res.status(error.code === 'ACCOUNT_CLOSING' ? 409 : 403).json({
+        message: error.code === 'ACCOUNT_CLOSING' ? 'Account is closing' : 'Account is closed',
+        error: { code: error.code }
+      });
+    }
     return res.status(409).json({
       message: 'Error deleting communication saved phrases',
       error: error.message
