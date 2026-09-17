@@ -748,6 +748,40 @@ async function main() {
       assert.equal(await PrivateLibrary.collection.countDocuments({ user: uploadUser }), 0);
     }
     passed.push('private-archive-publication-fenced-against-account-close-after-file-upload');
+    const Settings = require('../../api/models/Settings');
+    const settingsController = require('../../api/controllers/settings');
+    const settingsUserId = new mongoose.Types.ObjectId();
+    const settingsOwner = String(settingsUserId);
+    const settingsUser = { id: settingsOwner };
+    const settingsResponse = () => ({ status(code) { this.code = code; return this; },
+      json(body) { this.body = body; return this; } });
+    const initialSettings = await Settings.getOrCreate(settingsUser);
+    assert.equal(String(initialSettings.user), settingsOwner);
+    const savedSettings = settingsResponse();
+    await settingsController.updateSettings({ user: settingsUser, body: { language: { lang: 'zh-CN' } } }, savedSettings);
+    assert.equal(savedSettings.code, 200);
+    const settingsBeforeClose = await Settings.collection.findOne({ user: settingsUserId });
+    await coordinator.begin(settingsOwner, []);
+    const rejectedSettings = settingsResponse();
+    await settingsController.updateSettings({ user: settingsUser, body: { language: { lang: 'en-US' } } }, rejectedSettings);
+    assert.equal(rejectedSettings.code, 409);
+    assert.equal(rejectedSettings.body.error.code, 'ACCOUNT_CLOSING');
+    assert.deepEqual(await Settings.collection.findOne({ user: settingsUserId }), settingsBeforeClose);
+    await Settings.collection.deleteOne({ user: settingsUserId });
+    await assert.rejects(Settings.getOrCreate(settingsUser), error => error.code === 'ACCOUNT_CLOSING');
+    const lateSettingsRead = settingsResponse();
+    await settingsController.getSettings({ user: settingsUser }, lateSettingsRead);
+    assert.equal(lateSettingsRead.code, 409);
+    assert.equal(lateSettingsRead.body.error.code, 'ACCOUNT_CLOSING');
+    assert.equal(await Settings.collection.countDocuments({ user: settingsUserId }), 0);
+    const closedSettingsWrite = settingsResponse();
+    await settingsController.updateSettings({ user: { id: finalOwner }, body: { language: {} } }, closedSettingsWrite);
+    assert.equal(closedSettingsWrite.code, 403);
+    assert.equal(closedSettingsWrite.body.error.code, 'ACCOUNT_CLOSED');
+    await assert.rejects(Settings.getOrCreate({ id: finalOwner }), error => error.code === 'ACCOUNT_CLOSED');
+    assert.equal(await Settings.collection.countDocuments({ user: finalUserId }), 0);
+    assert.equal(await Settings.collection.countDocuments({ user: loginUser }), 1);
+    passed.push('settings-write-and-read-time-create-cannot-recreate-closing-or-closed-account-data');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

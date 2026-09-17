@@ -1,4 +1,5 @@
 const Settings = require('../models/Settings');
+const { createCareFamilyLifecycle } = require('../helpers/careFamilyLifecycle');
 
 const MUTABLE_SETTINGS_FIELDS = Object.freeze([
   'language',
@@ -9,6 +10,19 @@ const MUTABLE_SETTINGS_FIELDS = Object.freeze([
   'communicationSupport',
   'tuyujia'
 ]);
+
+const lifecycleEnabled = () =>
+  process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true';
+
+function lifecycleResponse(error, res, fallbackMessage) {
+  if (error && error.code === 'ACCOUNT_CLOSING') {
+    return res.status(409).json({ message: 'Account is closing', error: { code: 'ACCOUNT_CLOSING' } });
+  }
+  if (error && error.code === 'ACCOUNT_CLOSED') {
+    return res.status(403).json({ message: 'Account is closed', error: { code: 'ACCOUNT_CLOSED' } });
+  }
+  return res.status(500).json({ message: fallbackMessage, error: error.message });
+}
 
 module.exports = {
   updateSettings: updateSettings,
@@ -40,7 +54,7 @@ async function updateSettings(req, res) {
   }, {});
 
   try {
-    const settings = await Settings.findOneAndUpdate(
+    const write = session => Settings.findOneAndUpdate(
       { user: req.user.id },
       {
         $set: patch,
@@ -50,18 +64,22 @@ async function updateSettings(req, res) {
         new: true,
         runValidators: true,
         setDefaultsOnInsert: true,
-        upsert: true
+        upsert: true,
+        ...(session ? { session } : {})
       }
     ).exec();
+    const settings = lifecycleEnabled()
+      ? await createCareFamilyLifecycle().withOpenAccount(String(req.user.id), write)
+      : await write();
     if (!settings) {
       throw new Error('Settings update returned no record');
     }
     return res.status(200).json(settings.toJSON());
   } catch (err) {
-    return res.status(409).json({
-      message: 'Error saving settings',
-      error: err.message
-    });
+    if (err && (err.code === 'ACCOUNT_CLOSING' || err.code === 'ACCOUNT_CLOSED')) {
+      return lifecycleResponse(err, res, 'Error saving settings');
+    }
+    return res.status(409).json({ message: 'Error saving settings', error: err.message });
   }
 }
 
@@ -79,9 +97,9 @@ async function getSettings(req, res) {
     }
     return res.status(200).json(response);
   } catch (err) {
-    return res.status(500).json({
-      message: 'Error loading settings',
-      error: err.message
-    });
+    if (err && (err.code === 'ACCOUNT_CLOSING' || err.code === 'ACCOUNT_CLOSED')) {
+      return lifecycleResponse(err, res, 'Error loading settings');
+    }
+    return res.status(500).json({ message: 'Error loading settings', error: err.message });
   }
 }

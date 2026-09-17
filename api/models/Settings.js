@@ -1,5 +1,9 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
+const { createCareFamilyLifecycle } = require('../helpers/careFamilyLifecycle');
+
+const lifecycleEnabled = () =>
+  process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true';
 
 const SETTINGS_SCHEMA_DEFINITION = {
   language: {},
@@ -43,16 +47,23 @@ settingsSchema.statics = {
       throw new Error('A user id is required to load settings');
     }
 
-    const settings = await this.findOneAndUpdate(
-      { user: user.id },
-      { $setOnInsert: { user: user.id } },
-      {
+    const write = session => {
+      const options = {
         new: true,
         runValidators: true,
         setDefaultsOnInsert: true,
-        upsert: true
-      }
-    ).exec();
+        upsert: true,
+        ...(session ? { session } : {})
+      };
+      return this.findOneAndUpdate(
+        { user: user.id },
+        { $setOnInsert: { user: user.id } },
+        options
+      ).exec();
+    };
+    const settings = lifecycleEnabled()
+      ? await createCareFamilyLifecycle().withOpenAccount(String(user.id), write)
+      : await write();
 
     return settings ? settings.toJSON() : null;
   }

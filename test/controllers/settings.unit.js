@@ -10,9 +10,18 @@ describe('Settings controller unit', function() {
   let controller;
   let lastSettingsUpdate;
   let mockSettingsModel;
+  let lifecycleCalls;
+  let lifecycleError;
+  let lifecycleSession;
+  let previousLifecycleFlag;
 
   beforeEach(function() {
     lastSettingsUpdate = null;
+    lifecycleCalls = [];
+    lifecycleError = null;
+    lifecycleSession = { id: 'settings-session' };
+    previousLifecycleFlag = process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
     mockSettingsModel = {
       getOrCreate: async user => ({
         id: 'settings-1',
@@ -41,10 +50,23 @@ describe('Settings controller unit', function() {
       useCleanCache: true
     });
     mockery.registerMock('../models/Settings', mockSettingsModel);
+    mockery.registerMock('../helpers/careFamilyLifecycle', {
+      createCareFamilyLifecycle() {
+        return {
+          async withOpenAccount(id, callback) {
+            lifecycleCalls.push(id);
+            if (lifecycleError) throw lifecycleError;
+            return callback(lifecycleSession);
+          }
+        };
+      }
+    });
     controller = require('../../api/controllers/settings');
   });
 
   afterEach(function() {
+    if (previousLifecycleFlag === undefined) delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    else process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = previousLifecycleFlag;
     mockery.deregisterAll();
     mockery.disable();
   });
@@ -139,6 +161,30 @@ describe('Settings controller unit', function() {
     });
   });
 
+  it('publishes settings through the account lifecycle session when enabled', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    const res = createResponse();
+
+    await controller.updateSettings({ user: { id: 'user-1' }, body: { display: { highContrast: true } } }, res);
+
+    expect(res.statusCode).to.equal(200);
+    expect(lifecycleCalls).to.deep.equal(['user-1']);
+    expect(lastSettingsUpdate.options.session).to.equal(lifecycleSession);
+  });
+
+  it('maps account closing and closed lifecycle errors to stable responses', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    for (const [code, status] of [['ACCOUNT_CLOSING', 409], ['ACCOUNT_CLOSED', 403]]) {
+      lifecycleError = Object.assign(new Error('private lifecycle details'), { code });
+      const res = createResponse();
+      await controller.updateSettings({ user: { id: 'user-1' }, body: { display: {} } }, res);
+      expect(res.statusCode).to.equal(status);
+      expect(res.body.error.code).to.equal(code);
+      expect(res.body.message).to.equal(code === 'ACCOUNT_CLOSING' ? 'Account is closing' : 'Account is closed');
+      expect(res.body.message).not.to.include('private lifecycle details');
+    }
+  });
+
   it('rejects a non-object settings payload', async function() {
     const req = {
       user: { id: 'user-1' },
@@ -186,6 +232,14 @@ describe('Settings controller unit', function() {
       savedPhrases: [],
       history: []
     });
+  });
+
+  it('does not wrap getSettings in a second controller transaction', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    const res = createResponse();
+    await controller.getSettings({ user: { id: 'user-1' } }, res);
+    expect(res.statusCode).to.equal(200);
+    expect(lifecycleCalls).to.deep.equal([]);
   });
 
   it('reports a settings storage failure instead of returning an empty success', async function() {
