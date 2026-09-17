@@ -119,6 +119,20 @@ module.exports = async function userProfileLifecycleFixture({ mongoose, passed }
     assert.equal((await users.findOne({ _id: loginId })).location, undefined);
     assert.equal(locationCalls, 4);
     passed.push('login-location-save-fences-closure-and-preserves-concurrent-location');
+    const roleId = new mongoose.Types.ObjectId();
+    await users.insertOne({ _id: roleId, email: `role-${roleId}@example.test`,
+      name: 'Synthetic role user', password: syntheticPassword, role: null });
+    const staleRoleUser = await User.findById(roleId).exec();
+    const defaulted = await User.ensureBearerRole(staleRoleUser);
+    assert.equal(defaulted.role, 'user');
+    assert.equal((await users.findOne({ _id: roleId })).role, 'user');
+    await users.updateOne({ _id: roleId }, { $set: { role: 'admin' } });
+    const preserved = await User.ensureBearerRole(staleRoleUser);
+    assert.equal(preserved.role, 'admin');
+    await accounts.updateOne({ _id: String(roleId) }, { $set: { status: 'closing' } });
+    await assert.rejects(User.ensureBearerRole(staleRoleUser), error => error.code === 'ACCOUNT_CLOSING');
+    assert.equal((await users.findOne({ _id: roleId })).role, 'admin');
+    passed.push('bearer-role-default-rereads-concurrent-role-and-fences-closure');
   } finally {
     delete require.cache[controllerPath];
     if (previousController) require.cache[controllerPath] = previousController;

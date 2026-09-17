@@ -93,14 +93,21 @@ swaggerTools.initializeMiddleware(swaggerConfig, async function (middleware) {
           const user = req.user;
             // For previous users that doesn't have any role selected.
             if (!user.role) {
-              user.role = 'user';
-              await User.updateUser(user);
+              const refreshedUser = await User.ensureBearerRole(user);
+              if (!refreshedUser) {
+                const unavailable = new Error('Authentication storage unavailable');
+                unavailable.statusCode = 503;
+                return cb(unavailable);
+              }
+              req.user = refreshedUser.toJSON
+                ? refreshedUser.toJSON()
+                : refreshedUser;
             }
 
-            req.user = user;
+            const authorizedUser = req.user;
 
             errorMessage = 'Not authorized';
-            isRequestValid = auth.authorizeRequest(req, user);
+            isRequestValid = auth.authorizeRequest(req, authorizedUser);
         }
 
         } catch (_) {

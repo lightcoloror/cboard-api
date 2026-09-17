@@ -1122,6 +1122,7 @@ async function main() {
     assert.equal((await accounts.findOne({ _id: expiringOwner })).status, 'open');
     assert.equal(await connection.collection('careclosurejobs').countDocuments({ owner: expiringOwner }), 0);
     passed.push('closure-receipt-atomic-binding-secret-rotation-expiry-and-lost-response-recovery');
+    await require('./careClosureReceiptHttp.mongo.fixture')({ mongoose, passed, encryption });
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

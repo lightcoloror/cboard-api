@@ -298,15 +298,44 @@ userSchema.statics = {
       .catch(error => callback(error));
   },
 
-  updateUser: async function(user) {
-    let success = false;
-
+  updateUser: async function(user, options = {}) {
     try {
-      await user.save().exec();
-      success = true;
-    } catch (e) {}
+      return await user.save(options);
+    } catch (e) {
+      // Preserve Mongo transaction labels so the lifecycle can retry conflicts.
+      if (options.session) throw e;
+      return null;
+    }
+  },
 
-    return success;
+  ensureBearerRole: async function(user, options = {}) {
+    const owner = user && (user.id || user._id);
+    if (!owner) return null;
+    const lifecycleEnabled = options.lifecycleEnabled ||
+      (() => process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true');
+    const readCurrent = async session => {
+      const query = this.findOne({ _id: owner });
+      if (session) query.session(session);
+      return query.exec();
+    };
+    const apply = async session => {
+      const current = await readCurrent(session);
+      if (!current) return null;
+      if (current.role) return current;
+      current.role = 'user';
+      const saved = await this.updateUser(current, session ? { session } : {});
+      if (!saved) {
+        const error = new Error('Unable to establish user role');
+        error.status = 503;
+        error.code = 'USER_ROLE_UNAVAILABLE';
+        throw error;
+      }
+      return saved;
+    };
+    if (!lifecycleEnabled()) return apply(null);
+    const { createCareFamilyLifecycle } = require('../helpers/careFamilyLifecycle');
+    const lifecycle = options.lifecycle || createCareFamilyLifecycle();
+    return lifecycle.withOpenAccount(String(owner), apply);
   },
 
   getById: async function(id) {
