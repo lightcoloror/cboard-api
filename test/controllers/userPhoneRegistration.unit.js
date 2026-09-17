@@ -1,5 +1,8 @@
 const chai = require('chai');
 const mockery = require('mockery');
+const path = require('path');
+const YAML = require('yamljs');
+const ZSchema = require('z-schema');
 
 const expect = chai.expect;
 
@@ -152,6 +155,17 @@ describe('user phone registration controller', function() {
       ip: '127.0.0.1'
     };
   }
+
+  it('keeps TempUserResponse aligned with the POST /user response contract', function() {
+    const spec = YAML.load(path.resolve(__dirname, '../../api/swagger/swagger.yaml'));
+    const schema = spec.definitions.TempUserResponse;
+    const validator = new ZSchema();
+
+    expect(schema.properties).not.to.have.property('url');
+    expect(schema.required).to.deep.equal(['success', 'message']);
+    expect(validator.validate({ success: 1, message: 'ok' }, schema)).to.equal(true);
+    expect(validator.validate({ success: 1 }, schema)).to.equal(false);
+  });
 
   it('rejects an invalid phone before creating a temporary user', async function() {
     const response = createResponse();

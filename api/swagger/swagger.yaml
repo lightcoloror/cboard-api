@@ -4227,15 +4227,11 @@ definitions:
       success:
         type: number
         description: returns 1 if successful
-      url:
-        type: string
-        description: generated verifying url
       message:
         type: string 
         description: a short comment
     required:
       - success
-      - url
       - message
   ErrorResponse:
     required:
