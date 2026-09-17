@@ -3,6 +3,12 @@ const assert = require('assert').strict;
 const YAML = require('yamljs');
 const path = require('path');
 describe('care Swagger contract', () => {
+  it('documents the creator usage role independently of permissions', () => {
+    const spec = YAML.load(path.join(__dirname, '../../api/swagger/swagger.yaml'));
+    const schema = spec.paths['/care/profiles'].post.parameters.find(p => p.in === 'body').schema;
+    assert.deepEqual(schema.properties.role.enum, ['patient', 'relative', 'professional']);
+    assert.equal(schema.properties.role.type, 'string');
+  });
   it('documents both deletion routes without a user-content response', () => {
     const spec = YAML.load(path.join(__dirname, '../../api/swagger/swagger.yaml'));
     for (const route of ['/user/{id}', '/account/{id}']) {

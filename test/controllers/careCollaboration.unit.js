@@ -156,6 +156,16 @@ describe('patient collaboration security and offline recovery', () => {
     const other = await setup(f, 'familyB');
     await assert.rejects(f.service.favoriteOriginal('familyB', other.profile.id, sourceUpdate), e => e.code === 'FAVORITE_SOURCE_NOT_FOUND');
   });
+  it('preserves the creator role and default entry without changing the owner grant', async () => {
+    const f = fixture();
+    const family = await f.service.createFamily('creator', { name: 'Synthetic family' });
+    for (const role of ['patient', 'relative', 'professional']) {
+      const profile = await f.service.createProfile('creator', { familyId: family.id, name: role, role });
+      const listed = (await f.service.profiles('creator')).find(p => p.id === profile.id);
+      assert.deepEqual(listed.relationship, { role, defaultMode: role === 'patient' ? 'expression' : 'receiver' });
+      assert.deepEqual(listed.permissions, ['read', 'library.edit', 'preferences.edit', 'members.manage']);
+    }
+  });
   it('persists account selection without granting access and separates role from permission', async () => {
     const f = fixture(); const { profile } = await setup(f);
     await invite(f, profile.id, 'reader', ['read']);

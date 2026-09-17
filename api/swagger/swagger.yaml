@@ -729,6 +729,15 @@ paths:
           required: true
           schema:
             type: object
+            properties:
+              familyId:
+                type: string
+              name:
+                type: string
+              role:
+                type: string
+                enum: [patient, relative, professional]
+                description: Creator usage relationship; patient defaults to expression, others to reception. Does not grant permissions. Omitted values retain the legacy relative default.
       responses:
         '200':
           description: Authorized result
