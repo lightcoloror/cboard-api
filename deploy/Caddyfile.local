@@ -1,5 +1,23 @@
 {
 	admin off
+
+	log default {
+		output stdout
+		format filter {
+			wrap json {
+				message_key ""
+			}
+			fields {
+				request delete
+				resp_headers delete
+				user_id delete
+				err delete
+				error delete
+				err_id delete
+				err_trace delete
+			}
+		}
+	}
 }
 
 https://localhost {
