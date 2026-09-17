@@ -1173,6 +1173,40 @@ async function main() {
     assert.equal((await createCareClosureRuntime(runtimeOptions).runner.run(runtimeOwner, runtimeJob.operationId)).accountDeleted, true);
     assert.equal(runtimeCleanupCalls, 1);
     passed.push('composed-runtime-resumes-bounded-family-media-to-real-user-deletion-and-receipt-complete');
+
+    const workerJobs = connection.collection('syntheticclosureworkerjobs');
+    let workerTime = Date.now();
+    await workerJobs.insertMany([
+      { _id: 'batch-success', owner: 'synthetic-worker', status: 'prepared', updatedAt: 1 },
+      { _id: 'batch-unknown-upload', owner: 'synthetic-worker', status: 'prepared', updatedAt: 2 },
+      { _id: 'batch-future', owner: 'synthetic-worker', status: 'prepared', updatedAt: 3, nextAttemptAt: workerTime + 10000 },
+      { _id: 'batch-complete', owner: 'synthetic-worker', status: 'complete', updatedAt: 4 }
+    ]);
+    const workerCalls = [];
+    const workerOptions = { connection: { collection(name) { assert.equal(name, 'careclosurejobs'); return workerJobs; } },
+      now: () => workerTime, retryMs: 1000, maxJobs: 2,
+      runner: { async run(owner, id) {
+        assert.equal(owner, 'synthetic-worker'); workerCalls.push(id);
+        if (id === 'batch-unknown-upload') throw Object.assign(new Error('secret must not be stored'), { code: 'PRIVATE_ARCHIVE_UPLOAD_PENDING' });
+        await workerJobs.updateOne({ _id: id }, { $set: { status: 'complete' } });
+      } }
+    };
+    const { createCareClosureWorker } = require('../../api/helpers/careClosureWorker');
+    const batch = await createCareClosureWorker(workerOptions).runBatch();
+    assert.equal(batch.completed, 1); assert.equal(batch.failed, 1); assert.equal(batch.needsAttention, 1);
+    assert.deepEqual(workerCalls, ['batch-success', 'batch-unknown-upload']);
+    const pendingBatch = await workerJobs.findOne({ _id: 'batch-unknown-upload' });
+    assert.equal(pendingBatch.status, 'prepared');
+    assert.equal(pendingBatch.nextAttemptAt, workerTime + 1000);
+    assert.equal(JSON.stringify(pendingBatch).includes('secret must not be stored'), false);
+    assert.equal((await createCareClosureWorker(workerOptions).runBatch()).attempted, 0);
+    workerTime += 1000;
+    assert.equal((await createCareClosureWorker(workerOptions).runBatch()).attempted, 1);
+    await workerJobs.updateOne({ _id: 'batch-unknown-upload' }, { $set: { nextAttemptAt: workerTime } });
+    await workerJobs.insertOne({ _id: 'batch-new', owner: 'synthetic-worker', status: 'prepared', updatedAt: 999 });
+    assert.equal((await createCareClosureWorker({ ...workerOptions, maxJobs: 1 }).runBatch()).completed, 1);
+    assert.equal(workerCalls[workerCalls.length - 1], 'batch-new', 'old blocked jobs must not starve new work');
+    passed.push('closure-worker-persists-retry-attention-and-skips-future-complete-after-restart');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

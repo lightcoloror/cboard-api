@@ -128,11 +128,14 @@ const media = {
   read: name => blob.getBlobToBuffer(container(), name),
   remove: name => blob.deleteBlobIfExists(container(), name)
 };
+const getMediaAdapter = () => process.env.CARE_MEDIA_ROOT
+  ? require('./careFileMedia').createCareFileMedia(process.env.CARE_MEDIA_ROOT) : media;
+exports.getMediaAdapter = getMediaAdapter;
 exports.createRuntime = () => {
   const encryption = require('./careCrypto').fromEnvironment();
   return createCareService({ store,
     enforceEntitlements: process.env.CARE_NEXT_ENABLED === 'true',
-    media: process.env.CARE_MEDIA_ROOT ? require('./careFileMedia').createCareFileMedia(process.env.CARE_MEDIA_ROOT) : media,
+    media: getMediaAdapter(),
     mediaQuota: createCareMediaQuota({
       store,
       encryption,
