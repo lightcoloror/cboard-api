@@ -105,8 +105,23 @@ describe('care budget runtime lifecycle adapter', () => {
 
   it('requires the current family owner for delegate CAS', async () => {
     process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
-    await assert.rejects(store.cas('funding-a', 0, { rev: 1 }, { mode: 'delegate', actor: 'reader-a' }), e => e.code === 'FUNDING_ADMIN_REQUIRED');
+    await assert.rejects(store.cas('funding-a', 0, { rev: 1 }, { mode: 'delegate', actor: 'reader-a', targetMember: 'target-a', revoke: false }), e => e.code === 'FUNDING_ADMIN_REQUIRED');
     assert.equal(calls.some(c => c.op === 'collectionUpdateOne'), false);
+  });
+
+  it('locks the delegate target during grant and leaves it unlocked during revoke', async () => {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    await store.cas('funding-a', 0, { rev: 1 }, { mode: 'delegate', actor: 'owner-a', targetMember: 'target-a', revoke: false });
+    assert.deepEqual(calls.find(c => c.op === 'withOpenFamilyAccounts').accountIds, ['owner-a', 'owner-a', 'target-a']);
+    calls.length = 0;
+    await store.cas('funding-a', 0, { rev: 1 }, { mode: 'delegate', actor: 'owner-a', targetMember: 'target-a', revoke: true });
+    assert.deepEqual(calls.find(c => c.op === 'withOpenFamilyAccounts').accountIds, ['owner-a', 'owner-a']);
+  });
+
+  it('rejects a non-revoke delegate without a valid target member', async () => {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    await assert.rejects(store.cas('funding-a', 0, { rev: 1 }, { mode: 'delegate', actor: 'owner-a', revoke: false }), e => e.code === 'INVALID_MEMBER');
+    assert.equal(calls.some(c => c.op === 'withOpenFamilyAccounts'), false);
   });
 
   it('preserves institution CAS and all paths when the flag is disabled', async () => {

@@ -93,7 +93,7 @@ function createCareBudget({ store, encryption, now = Date.now }) {
         if (state.owner !== actor || body.member === state.owner) fail(403, 'FUNDING_ADMIN_REQUIRED');
         state.grants[body.member] = { limit: body.limit, profileIds: [...new Set(body.profileIds)], revoked: body.revoked === true };
         return { value: { ok: true } };
-      }, { mode: 'delegate', actor });
+      }, { mode: 'delegate', actor, targetMember: body.member, revoke: body.revoked === true });
     },
     async snapshot(id, actor, profileId) {
       const { state } = await load(id); const g = grant(state, actor, profileId); const w = week(state);

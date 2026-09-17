@@ -24,7 +24,7 @@ async function setup(f) {
 describe('durable family and institutional weekly AI budget', () => {
   it('passes operation-specific internal CAS contexts without mixing reserve and settlement', async () => {
     const f = fixture(); await setup(f);
-    assert.deepEqual(f.casContexts[0], { mode: 'delegate', actor: 'owner' });
+    assert.deepEqual(f.casContexts[0], { mode: 'delegate', actor: 'owner', targetMember: 'therapist', revoke: false });
 
     await f.service.reserve('family', request('context-check'));
     assert.deepEqual(f.casContexts.at(-1), { mode: 'reserve', actor: 'therapist', profileId: 'patient' });
@@ -73,6 +73,7 @@ describe('durable family and institutional weekly AI budget', () => {
     const f = fixture(); await setup(f); await f.service.reserve('family', request('one'));
     await assert.rejects(f.service.reserve('family', { ...request('two'), profileId: 'other' }), e => e.code === 'FUNDING_ACCESS_DENIED');
     await f.service.delegate('family', 'owner', { member: 'therapist', limit: 30, profileIds: ['patient'], revoked: true });
+    assert.deepEqual(f.casContexts.at(-1), { mode: 'delegate', actor: 'owner', targetMember: 'therapist', revoke: true });
     await assert.rejects(f.service.reserve('family', request('one')), e => e.code === 'FUNDING_ACCESS_DENIED');
     await assert.rejects(f.service.reserve('unknown', request('one')), e => e.code === 'FUNDING_ACCESS_DENIED');
   });

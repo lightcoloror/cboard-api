@@ -45,6 +45,8 @@ function createCareClosureCoordinator({
       // Transfer institution administration before freezing the account;
       // deleting one account must never strand a shared institution balance.
       if (plan.institutionAdminIds.length) fail(409, 'INSTITUTION_TRANSFER_REQUIRED');
+      if (fundingDocs.some(funding => funding.owner === closure.owner &&
+        !(funding.kind === 'family' && closure.familyIds.includes(funding.familyId)))) fail(409, 'FUNDING_TRANSFER_REQUIRED');
       await jobs.insertOne({ _id: closure.operationId, owner: closure.owner, rev: 0,
         status: 'prepared', createdAt: closure.at, updatedAt: closure.at,
         sealed: encryption.seal(plan, `closure:${closure.operationId}`) }, { session });

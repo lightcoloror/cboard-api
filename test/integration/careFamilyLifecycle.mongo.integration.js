@@ -249,6 +249,8 @@ async function main() {
     const usage = { actor: budgetFamily.owner, profileId: budgetFamily.profileId, requestId: 'before-close',
       units: 10, fingerprint: 'a'.repeat(64) };
     await budget.reserve('budget-family-funding', usage);
+    await budget.provision('institution-funding', { owner: 'institution-owner', kind: 'institution', startsAt, expiresAt, weeklyLimit: 100 });
+    await budget.delegate('institution-funding', 'institution-owner', { member: budgetFamily.owner, limit: 20, profileIds: [budgetFamily.profileId] });
     await service.beginClose(budgetFamily.owner, [budgetFamily.familyId]);
     await assert.rejects(budget.reserve('budget-family-funding', { ...usage, requestId: 'after-close' }),
       error => error.code === 'FAMILY_CLOSING');
@@ -262,8 +264,6 @@ async function main() {
       error => error.code === 'FAMILY_CLOSING');
     passed.push('family-close-blocks-new-budget-writes-but-preserves-settlement');
 
-    await budget.provision('institution-funding', { owner: 'institution-owner', kind: 'institution', startsAt, expiresAt, weeklyLimit: 100 });
-    await budget.delegate('institution-funding', 'institution-owner', { member: budgetFamily.owner, limit: 20, profileIds: [budgetFamily.profileId] });
     await assert.rejects(budget.reserve('institution-funding', { ...usage, requestId: 'institution-closed-profile' }),
       error => error.code === 'FAMILY_CLOSING');
     const otherFamily = await seed('other-budget');
@@ -514,15 +514,26 @@ async function main() {
     const noFamilyOwner = 'collaborator-without-family';
     await careAccounts.insertOne({ _id: noFamilyOwner, rev: 0,
       sealed: encryption.seal({ selectedProfileId: otherFamily.profileId }, `account:${noFamilyOwner}`) });
+    const sharedBeforeJoin = await profiles.findOne({ _id: otherFamily.profileId });
+    const sharedBeforeState = encryption.open(sharedBeforeJoin.sealed, `profile:${otherFamily.profileId}`);
+    sharedBeforeState.grants[noFamilyOwner] = ['read'];
+    sharedBeforeState.relationships = { [noFamilyOwner]: { role: 'therapist' }, [otherFamily.owner]: { role: 'relative' } };
+    sharedBeforeState.invites = { accepted: { acceptedBy: noFamilyOwner }, untouched: { acceptedBy: otherFamily.owner } };
+    await runtimeStore.casProfile(otherFamily.profileId, sharedBeforeJoin.rev, { rev: sharedBeforeJoin.rev + 1,
+      members: [...sharedBeforeJoin.members, noFamilyOwner], sealed: encryption.seal(sharedBeforeState, `profile:${otherFamily.profileId}`)
+    }, { actor: otherFamily.owner, expectedOwner: otherFamily.owner });
+    await budget.delegate('institution-funding', 'institution-owner', { member: noFamilyOwner, limit: 7, profileIds: [otherFamily.profileId] });
     const otherProfileBeforeRunner = await profiles.findOne({ _id: otherFamily.profileId });
     const noFamilyClosure = await coordinator.begin(noFamilyOwner, []);
     assert.deepEqual(noFamilyClosure.familyIds, []);
     assert.equal((await coordinator.begin(noFamilyOwner, [])).operationId, noFamilyClosure.operationId);
     const { createCareClosureRunner } = require('../../api/helpers/careClosureRunner');
-    const runner = createCareClosureRunner({ coordinator,
+    const { createCareClosureAccessStep } = require('../../api/helpers/careClosureAccessStep');
+    const runner = createCareClosureRunner({ coordinator, maxStages: 3,
       mediaStep: createCareClosureMediaStep({ connection, encryption, media: fileMedia }),
       accountStep: createCareClosureAccountStep({ connection, encryption }),
-      dataStep: createCareClosureDataStep({ connection, encryption }) });
+      dataStep: createCareClosureDataStep({ connection, encryption }),
+      accessStep: createCareClosureAccessStep({ connection, encryption }) });
     assert.deepEqual(await runner.run(noFamilyOwner, noFamilyClosure.operationId), {
       operationId: noFamilyClosure.operationId, cleanupStatus: 'family_data_cleaned', waiting: false, accountDeleted: false
     });
@@ -531,13 +542,47 @@ async function main() {
     assert.equal(encryption.open((await careAccounts.findOne({ _id: noFamilyOwner })).sealed,
       `account:${noFamilyOwner}`).selectedProfileId, otherFamily.profileId);
     assert.equal((await runner.run(jobFamily.owner, prepared.operationId)).waiting, true);
-    assert.equal((await runner.run(cleanFamily.owner, cleanJob.operationId)).cleanupStatus, 'family_data_cleaned');
+    assert.equal((await runner.run(cleanFamily.owner, cleanJob.operationId)).cleanupStatus, 'access_revoked');
     passed.push('durable-stage-runner-supports-empty-owned-family-scope-and-waiting');
     const institutionAccountBefore = await accounts.findOne({ _id: 'institution-owner' });
     await assert.rejects(coordinator.begin('institution-owner', []), error => error.code === 'INSTITUTION_TRANSFER_REQUIRED');
     assert.deepEqual(await accounts.findOne({ _id: 'institution-owner' }), institutionAccountBefore);
     assert.equal(await jobs.countDocuments({ owner: 'institution-owner' }), 0);
     passed.push('institution-administration-blocks-before-freezing-account');
+    await assert.rejects(budget.delegate('institution-funding', 'institution-owner', {
+      member: noFamilyOwner, limit: 8, profileIds: [otherFamily.profileId]
+    }), error => error.code === 'ACCOUNT_CLOSING');
+    const accessFundingBefore = await fundingCollection.findOne({ _id: 'institution-funding' });
+    const accessFundingState = encryption.open(accessFundingBefore.sealed, 'funding:institution-funding');
+    const interruptedAccessConnection = {
+      startSession: () => connection.startSession(),
+      collection: name => name === 'careclosurejobs' ? {
+        findOne: (...args) => jobs.findOne(...args),
+        async updateOne() { throw new Error('synthetic access checkpoint interruption'); }
+      } : connection.collection(name)
+    };
+    await assert.rejects(createCareClosureAccessStep({ connection: interruptedAccessConnection, encryption })
+      .run(noFamilyOwner, noFamilyClosure.operationId), /synthetic access checkpoint interruption/);
+    assert.deepEqual(await profiles.findOne({ _id: otherFamily.profileId }), otherProfileBeforeRunner);
+    assert.deepEqual(await createCareClosureAccessStep({ connection, encryption }).run(noFamilyOwner, noFamilyClosure.operationId),
+      { status: 'access_revoked', count: 2 });
+    const accessProfileAfter = await profiles.findOne({ _id: otherFamily.profileId });
+    const accessStateAfter = encryption.open(accessProfileAfter.sealed, `profile:${otherFamily.profileId}`);
+    assert.equal(accessProfileAfter.members.includes(noFamilyOwner), false);
+    assert.equal(accessStateAfter.grants[noFamilyOwner], undefined);
+    assert.equal(accessStateAfter.relationships[noFamilyOwner], undefined);
+    assert.equal(accessStateAfter.invites.accepted, undefined);
+    assert.deepEqual(accessStateAfter.resources, sharedBeforeState.resources);
+    assert.deepEqual(accessStateAfter.grants[otherFamily.owner], sharedBeforeState.grants[otherFamily.owner]);
+    const accessFundingAfter = await fundingCollection.findOne({ _id: 'institution-funding' });
+    const accessFundingStateAfter = encryption.open(accessFundingAfter.sealed, 'funding:institution-funding');
+    const expectedGrants = { ...accessFundingState.grants }; delete expectedGrants[noFamilyOwner];
+    assert.deepEqual(accessFundingStateAfter, { ...accessFundingState, grants: expectedGrants });
+    assert.equal(accessFundingAfter.members.includes(noFamilyOwner), false);
+    assert.deepEqual(await createCareClosureAccessStep({ connection, encryption }).run(noFamilyOwner, noFamilyClosure.operationId),
+      { status: 'access_revoked', count: 0 });
+    assert.equal((await runner.run(noFamilyOwner, noFamilyClosure.operationId)).cleanupStatus, 'access_revoked');
+    passed.push('cross-family-access-revocation-is-atomic-and-preserves-patient-content-and-ledger');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

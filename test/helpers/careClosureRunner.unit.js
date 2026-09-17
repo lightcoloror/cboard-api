@@ -6,7 +6,7 @@ const { createCareClosureRunner } = require('../../api/helpers/careClosureRunner
 const expect = chai.expect;
 
 function factory(initial, transitions = {}) {
-  const calls = { inspect: [], media: 0, accounts: 0, data: 0 };
+  const calls = { inspect: [], media: 0, accounts: 0, data: 0, access: 0 };
   const state = { operationId: 'op-1', cleanupStatus: initial };
   const coordinator = {
     async inspect(owner, operationId) {
@@ -23,7 +23,7 @@ function factory(initial, transitions = {}) {
       return { status: state.cleanupStatus };
     } };
   }
-  const runner = createCareClosureRunner({ coordinator, mediaStep: stage('media'), accountStep: stage('accounts'), dataStep: stage('data') });
+  const runner = createCareClosureRunner({ coordinator, mediaStep: stage('media'), accountStep: stage('accounts'), dataStep: stage('data'), accessStep: stage('access') });
   return { runner, calls, state };
 }
 
@@ -32,13 +32,14 @@ async function expectCode(promise, code) {
 }
 
 describe('care closure runner', function() {
-  it('runs persisted media, account, and data stages serially', async function() {
-    const f = factory('prepared', { media: 'media_cleaned', accounts: 'accounts_cleaned', data: 'family_data_cleaned' });
+  it('runs persisted media, account, data, and access stages serially', async function() {
+    const f = factory('prepared', { media: 'media_cleaned', accounts: 'accounts_cleaned', data: 'family_data_cleaned', access: 'access_revoked' });
     const result = await f.runner.run('owner-1', 'op-1');
-    expect(result).to.deep.equal({ operationId: 'op-1', cleanupStatus: 'family_data_cleaned', waiting: false, accountDeleted: false });
+    expect(result).to.deep.equal({ operationId: 'op-1', cleanupStatus: 'access_revoked', waiting: false, accountDeleted: false });
     expect(f.calls.media).to.equal(1);
     expect(f.calls.accounts).to.equal(1);
     expect(f.calls.data).to.equal(1);
+    expect(f.calls.access).to.equal(1);
   });
 
   it('returns waiting after media reports a pending blocker without advancing', async function() {
@@ -66,19 +67,27 @@ describe('care closure runner', function() {
   });
 
   it('resumes from persisted accounts_cleaned state at the data stage', async function() {
-    const f = factory('accounts_cleaned', { data: 'family_data_cleaned' });
+    const f = factory('accounts_cleaned', { data: 'family_data_cleaned', access: 'access_revoked' });
     const result = await f.runner.run('owner-1', 'op-1');
-    expect(result.cleanupStatus).to.equal('family_data_cleaned');
+    expect(result.cleanupStatus).to.equal('access_revoked');
     expect(f.calls.media).to.equal(0);
     expect(f.calls.accounts).to.equal(0);
     expect(f.calls.data).to.equal(1);
+    expect(f.calls.access).to.equal(1);
   });
 
   it('returns a terminal response with accountDeleted false', async function() {
-    const f = factory('family_data_cleaned');
+    const f = factory('access_revoked');
     const result = await f.runner.run('owner-1', 'op-1');
-    expect(result).to.deep.equal({ operationId: 'op-1', cleanupStatus: 'family_data_cleaned', waiting: false, accountDeleted: false });
-    expect(f.calls.media + f.calls.accounts + f.calls.data).to.equal(0);
+    expect(result).to.deep.equal({ operationId: 'op-1', cleanupStatus: 'access_revoked', waiting: false, accountDeleted: false });
+    expect(f.calls.media + f.calls.accounts + f.calls.data + f.calls.access).to.equal(0);
+  });
+
+  it('returns waiting after access reports a pending blocker without advancing', async function() {
+    const f = factory('family_data_cleaned', { access: () => ({ status: 'waiting' }) });
+    const result = await f.runner.run('owner-1', 'op-1');
+    expect(result).to.deep.equal({ operationId: 'op-1', cleanupStatus: 'family_data_cleaned', waiting: true, accountDeleted: false });
+    expect(f.calls.access).to.equal(1);
   });
 
   it('fails closed on unknown status and respects maxStages', async function() {
@@ -90,6 +99,7 @@ describe('care closure runner', function() {
       mediaStep: { run: async () => { boundedStatus = 'media_cleaned'; return { status: 'media_cleaned' }; } },
       accountStep: { run: async () => ({ status: 'accounts_cleaned' }) },
       dataStep: { run: async () => ({ status: 'family_data_cleaned' }) },
+      accessStep: { run: async () => ({ status: 'access_revoked' }) },
       maxStages: 1
     });
     const result = await boundedRunner.run('owner-1', 'op-1');

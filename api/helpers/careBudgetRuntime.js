@@ -43,6 +43,10 @@ const store = {
       if (current.kind !== 'family') familyId = initialProfile.familyId;
     }
     const accountIds = [current.owner, ...(actor ? [actor] : [])];
+    if (context.mode === 'delegate' && context.revoke !== true) {
+      if (!validId(context.targetMember)) fail(400, 'INVALID_MEMBER');
+      accountIds.push(context.targetMember);
+    }
     return require('./careFamilyLifecycle').createCareFamilyLifecycle().withOpenFamilyAccounts(familyId, accountIds,
       async (session, family) => {
         if (context.mode === 'delegate' && family && actor !== family.owner) fail(403, 'FUNDING_ADMIN_REQUIRED');
