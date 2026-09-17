@@ -14,7 +14,20 @@ const communicatorRecord = (id, familyId) => ({
 });
 async function withAccountWrite(owner, context, callback) {
   const lifecycle = require('./careFamilyLifecycle').createCareFamilyLifecycle();
-  if (!context || context.mode !== 'favorite') return lifecycle.withOpenAccount(owner, callback);
+  if (!context || !['favorite', 'select-profile'].includes(context.mode)) return lifecycle.withOpenAccount(owner, callback);
+  if (context.mode === 'select-profile') {
+    const profileId = context.profileId;
+    if (!validId(owner) || !validId(profileId)) throw Object.assign(new Error('PROFILE_ACCESS_DENIED'), { status: 403, code: 'PROFILE_ACCESS_DENIED' });
+    const initial = await Profile.findById(profileId).lean().exec();
+    if (!initial) throw Object.assign(new Error('PROFILE_ACCESS_DENIED'), { status: 403, code: 'PROFILE_ACCESS_DENIED' });
+    return lifecycle.withOpenFamilyAccounts(initial.familyId, [owner], async (session, family) => {
+      const profile = await Profile.collection.findOne({ _id: profileId }, { session });
+      if (!profile || profile.familyId !== initial.familyId) throw Object.assign(new Error('PROFILE_ACCESS_DENIED'), { status: 403, code: 'PROFILE_ACCESS_DENIED' });
+      const state = require('./careCrypto').fromEnvironment().open(profile.sealed, `profile:${profileId}`);
+      if (state.deleted || owner !== family.owner && !((state.grants || {})[owner] || []).includes('read')) throw Object.assign(new Error('PROFILE_ACCESS_DENIED'), { status: 403, code: 'PROFILE_ACCESS_DENIED' });
+      return callback(session);
+    });
+  }
   const { actor, profileId, resourceId, sharedId, sharedVersion } = context;
   if (!validId(owner) || !validId(actor) || !validId(profileId) || !validId(resourceId) ||
       (sharedId !== undefined && (!validId(sharedId) || !Number.isSafeInteger(sharedVersion) || sharedVersion < 1))) {

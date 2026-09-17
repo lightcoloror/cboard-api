@@ -48,6 +48,8 @@ function buildCareClosurePlan({ owner, familyIds, families, profiles, fundings, 
     if (!account || !stringId(account._id)) unavailable();
     const state = open(encryption, account.sealed, `account:${account._id}`);
     if (!state || typeof state !== 'object') unavailable();
+    if (state.selectedProfileId !== undefined && state.selectedProfileId !== null && !stringId(state.selectedProfileId)) unavailable();
+    if (state.selectedProfileId && profileSet.has(state.selectedProfileId)) relatedAccounts.add(account._id);
     const favorites = state.favorites;
     if (favorites !== undefined && (!favorites || typeof favorites !== 'object' || Array.isArray(favorites))) unavailable();
     for (const favorite of Object.values(favorites || {})) if (favorite && profileSet.has(favorite.profileId)) relatedAccounts.add(account._id);

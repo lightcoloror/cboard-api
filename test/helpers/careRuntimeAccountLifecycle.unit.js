@@ -151,4 +151,18 @@ describe('care runtime account lifecycle adapter', () => {
     familyExpired = true;
     await assert.rejects(store.casAccount('owner-a', 0, { rev: 1 }, { mode: 'favorite', actor: 'owner-a', profileId: 'profile-a', resourceId: 'favorite-a' }), e => e.code === 'SUBSCRIPTION_EXPIRED');
   });
+
+  it('checks selected profiles in the family transaction before account CAS', async () => {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    assert.equal(await store.casAccount('reader-a', 0, { rev: 1 }, { mode: 'select-profile', profileId: 'profile-a' }), true);
+    assert.deepEqual(calls.find(call => call.op === 'withOpenFamilyAccounts').accountIds, ['reader-a']);
+    assert.deepEqual(calls.find(call => call.op === 'collectionUpdateOne').options, { session: { id: 'session-1' } });
+  });
+
+  it('rejects selected profile writes when the lifecycle transaction is closed', async () => {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleError = Object.assign(new Error('FAMILY_CLOSING'), { code: 'FAMILY_CLOSING' });
+    await assert.rejects(store.casAccount('reader-a', 0, { rev: 1 }, { mode: 'select-profile', profileId: 'profile-a' }), /FAMILY_CLOSING/);
+    assert.equal(calls.some(call => call.op === 'collectionUpdateOne'), false);
+  });
 });

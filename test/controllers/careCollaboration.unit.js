@@ -159,6 +159,7 @@ describe('patient collaboration security and offline recovery', () => {
     const f = fixture(); const { profile } = await setup(f);
     await invite(f, profile.id, 'reader', ['read']);
     await f.service.context('reader', { profileId: profile.id });
+    assert.deepEqual(f.accountContexts.at(-1), { mode: 'select-profile', profileId: profile.id });
     await f.service.command('reader', profile.id, { action: 'relationship', operationId: newId(), value: { role: 'patient' } });
     assert.equal((await f.service.profiles('reader'))[0].relationship.defaultMode, 'expression');
     await assert.rejects(f.service.command('reader', profile.id, command()), e => e.status === 403);

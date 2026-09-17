@@ -140,7 +140,8 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
           if (body.profileId !== null) await load(body.profileId, user);
           state.selectedProfileId = body.profileId;
           const value = { _id: user, rev: doc ? doc.rev + 1 : 0, sealed: encryption.seal(state, `account:${user}`) };
-          if (!(doc ? await store.casAccount(user, doc.rev, value) : await store.createAccount(value))) continue;
+          const accountContext = body.profileId === null ? {} : { mode: 'select-profile', profileId: body.profileId };
+          if (!(doc ? await store.casAccount(user, doc.rev, value, accountContext) : await store.createAccount(value, accountContext))) continue;
         }
         if (state.selectedProfileId) {
           try { await load(state.selectedProfileId, user); } catch (e) {

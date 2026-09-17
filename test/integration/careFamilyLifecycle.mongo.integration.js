@@ -376,7 +376,22 @@ async function main() {
     await profiles.updateOne({ _id: cleanFamily.profileId }, { $set: {
       sealed: encryption.seal({ media: { a: { blob: firstBlob }, b: { blob: secondBlob } } }, `profile:${cleanFamily.profileId}`)
     } });
+    const mixedState = { selectedProfileId: cleanFamily.profileId, preference: 'retain', favorites: {
+      closed: { profileId: cleanFamily.profileId, value: { sentence: 'SYNTHETIC-CLOSED' } },
+      other: { profileId: otherFamily.profileId, value: { sentence: 'SYNTHETIC-RETAIN' } }
+    }, favoriteAudit: [{ profileId: cleanFamily.profileId }, { profileId: otherFamily.profileId }],
+    favoriteReceipts: {
+      closed: { result: { resource: { profileId: cleanFamily.profileId, value: { sentence: 'SYNTHETIC-CLOSED' } } } },
+      other: { result: { resource: { profileId: otherFamily.profileId, value: { sentence: 'SYNTHETIC-RETAIN' } } } }
+    } };
+    await careAccounts.insertOne({ _id: 'cleanup-collaborator', rev: 0,
+      sealed: encryption.seal(mixedState, 'account:cleanup-collaborator') });
+    await careAccounts.insertOne({ _id: 'selection-only', rev: 0,
+      sealed: encryption.seal({ selectedProfileId: cleanFamily.profileId }, 'account:selection-only') });
     const cleanJob = await coordinator.begin(cleanFamily.owner, [cleanFamily.familyId]);
+    const { createCareClosureAccountStep } = require('../../api/helpers/careClosureAccountStep');
+    await assert.rejects(createCareClosureAccountStep({ connection, encryption }).run(cleanFamily.owner, cleanJob.operationId),
+      error => error.code === 'CLOSURE_MEDIA_NOT_COMPLETE');
     await assert.rejects(createCareClosureMediaStep({ connection, encryption, media: {
       async remove(blob) { if (blob === secondBlob) throw new Error('synthetic interruption'); await fileMedia.remove(blob); }
     } }).run(cleanFamily.owner, cleanJob.operationId), error => error.code === 'CLOSURE_MEDIA_RETRY_REQUIRED');
@@ -390,6 +405,40 @@ async function main() {
     assert(await families.findOne({ _id: cleanFamily.familyId }));
     assert(await profiles.findOne({ _id: cleanFamily.profileId }));
     passed.push('synthetic-file-media-checkpoints-resume-and-prevent-resurrection');
+    const beforePrune = await careAccounts.findOne({ _id: 'cleanup-collaborator' });
+    const beforeCheckpoint = await jobs.findOne({ _id: cleanJob.operationId });
+    const interruptedConnection = {
+      startSession: () => connection.startSession(),
+      collection: name => name === 'careclosurejobs' ? {
+        findOne: (...args) => jobs.findOne(...args),
+        async updateOne() { throw new Error('synthetic checkpoint interruption'); }
+      } : connection.collection(name)
+    };
+    await assert.rejects(createCareClosureAccountStep({ connection: interruptedConnection, encryption })
+      .run(cleanFamily.owner, cleanJob.operationId), /synthetic checkpoint interruption/);
+    assert.deepEqual(await careAccounts.findOne({ _id: 'cleanup-collaborator' }), beforePrune);
+    assert.deepEqual(await jobs.findOne({ _id: cleanJob.operationId }), beforeCheckpoint);
+    assert.deepEqual(await createCareClosureAccountStep({ connection, encryption, maxPerRun: 1 })
+      .run(cleanFamily.owner, cleanJob.operationId), { status: 'account_cleanup', count: 1 });
+    const pruned = await careAccounts.findOne({ _id: 'cleanup-collaborator' });
+    const prunedState = encryption.open(pruned.sealed, 'account:cleanup-collaborator');
+    assert.equal(pruned.rev, 1);
+    assert.deepEqual(prunedState, { ...mixedState, selectedProfileId: null,
+      favorites: { other: mixedState.favorites.other }, favoriteAudit: [mixedState.favoriteAudit[1]],
+      favoriteReceipts: { other: mixedState.favoriteReceipts.other } });
+    await assert.rejects(runtimeStore.casAccount('selection-only', 0, {
+      sealed: encryption.seal({ selectedProfileId: cleanFamily.profileId }, 'account:selection-only'), rev: 1
+    }, { mode: 'select-profile', profileId: cleanFamily.profileId }), error => error.code === 'FAMILY_CLOSING');
+    const parallelCleanup = await Promise.all([1, 2].map(() => createCareClosureAccountStep({ connection, encryption })
+      .run(cleanFamily.owner, cleanJob.operationId)));
+    assert(parallelCleanup.every(result => result.status === 'accounts_cleaned'));
+    const selectedAfter = await careAccounts.findOne({ _id: 'selection-only' });
+    assert.equal(selectedAfter.rev, 1);
+    assert.equal(encryption.open(selectedAfter.sealed, 'account:selection-only').selectedProfileId, null);
+    assert.deepEqual(await careAccounts.findOne({ _id: 'cleanup-collaborator' }), pruned);
+    assert.deepEqual(await createCareClosureAccountStep({ connection, encryption }).run(cleanFamily.owner, cleanJob.operationId),
+      { status: 'accounts_cleaned', count: 0 });
+    passed.push('account-reference-cleanup-is-atomic-resumable-and-family-scoped');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

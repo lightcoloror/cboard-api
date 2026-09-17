@@ -22,14 +22,14 @@ describe('care closure plan', () => {
       profiles: [profile('profile-a', 'family-a', { media: {
         photoA: { blob: 'physical-a' },
         released: { deleted: true, storageReleased: true, blob: 'gone' }
-      } })], fundings: [], accounts: [account('owner-a', { favorites: { one: { profileId: 'profile-a', value: { sentence: '不要复制' } } }, favoriteAudit: [{ profileId: 'profile-a' }], favoriteReceipts: { one: { result: { resource: { profileId: 'profile-a' } } } } }), account('other-a', { favorites: { other: { profileId: 'other-profile' } } })], encryption });
+      } })], fundings: [], accounts: [account('owner-a', { favorites: { one: { profileId: 'profile-a', value: { sentence: '不要复制' } } }, favoriteAudit: [{ profileId: 'profile-a' }], favoriteReceipts: { one: { result: { resource: { profileId: 'profile-a' } } } } }), account('other-a', { selectedProfileId: 'profile-a', favorites: { other: { profileId: 'other-profile' } } })], encryption });
     assert.deepEqual(plan.media, [{ familyId: 'family-a', profileId: 'profile-a', mediaId: 'photoA', blob: 'physical-a' }]);
     assert.deepEqual(plan.pendingUploads, [
       { familyId: 'family-a', key: 'pending', profileId: 'profile-a', mediaId: 'photo-a', objectName: 'candidate.bin' },
       { familyId: 'family-a', key: 'missingObject', profileId: 'profile-a', mediaId: 'photo-b', objectName: null }
     ]);
     assert.equal(plan.pendingUploads.some(item => item.blob), false);
-    assert.deepEqual(plan.relatedAccountIds, ['owner-a']);
+    assert.deepEqual(plan.relatedAccountIds, ['other-a', 'owner-a']);
   });
 
   it('filters institution administrators and pending usage by closure scope', () => {
