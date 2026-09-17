@@ -4,6 +4,7 @@ const CommunicationReceiverRecord = require('../models/CommunicationReceiverReco
 const {
   normalizePublicPictogramAttribution
 } = require('../helpers/pictogramAttribution');
+const { createCareFamilyLifecycle } = require('../helpers/careFamilyLifecycle');
 
 const MAX_SYNC_RECORDS = 100;
 const MAX_SEQUENCE_ITEMS = 50;
@@ -24,6 +25,22 @@ const MATCH_TYPES = new Set([
   'missing'
 ]);
 const SOURCES = new Set(['local_dict', 'arasaac', 'opensymbols', 'ai', 'user']);
+const lifecycleEnabled = () =>
+  process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true';
+
+function queryWithSession(query, session) {
+  if (!session) return query;
+  if (!query || typeof query.session !== 'function') {
+    throw new Error('Receiver record query does not support transaction sessions');
+  }
+  return query.session(session);
+}
+
+function withOpenAccount(userId, callback) {
+  if (!lifecycleEnabled()) return callback(null);
+  return createCareFamilyLifecycle().withOpenAccount(String(userId), callback);
+}
+
 module.exports = {
   deleteConfirmedReceiverRecords,
   syncConfirmedReceiverRecords
@@ -419,12 +436,13 @@ async function syncConfirmedReceiverRecords(req, res) {
   }
 
   try {
+    const result = await withOpenAccount(req.user.id, async session => {
     const requestedIds = normalized.map(record => record.clientRecordId);
     const existing = requestedIds.length
-      ? await CommunicationReceiverRecord.find({
+      ? await queryWithSession(CommunicationReceiverRecord.find({
           user: req.user.id,
           clientRecordId: { $in: requestedIds }
-        })
+        }), session)
           .lean()
           .exec()
       : [];
@@ -501,12 +519,15 @@ async function syncConfirmedReceiverRecords(req, res) {
     });
 
     if (operations.length) {
-      await CommunicationReceiverRecord.bulkWrite(operations);
+      await CommunicationReceiverRecord.bulkWrite(
+        operations,
+        session ? { session } : undefined
+      );
     }
 
-    const stored = await CommunicationReceiverRecord.find({
+    const stored = await queryWithSession(CommunicationReceiverRecord.find({
       user: req.user.id
-    })
+    }), session)
       .sort({ updatedAt: -1 })
       .limit(MAX_SYNC_RECORDS * 2)
       .lean()
@@ -537,17 +558,28 @@ async function syncConfirmedReceiverRecords(req, res) {
       }
     });
 
-    return res.status(200).json({
-      acceptedCount: normalized.length - conflictedRecordIds.size,
-      conflictCount: conflictedRecordIds.size,
-      conflictedRecordIds: [...conflictedRecordIds],
-      records: activeRecords.map(record =>
-        serializeRecord(record, conflictedRecordIds.has(record.clientRecordId))
-      ),
-      deletedRecordIds,
-      deletedRecords
+    return {
+      status: 200,
+      body: {
+        acceptedCount: normalized.length - conflictedRecordIds.size,
+        conflictCount: conflictedRecordIds.size,
+        conflictedRecordIds: [...conflictedRecordIds],
+        records: activeRecords.map(record =>
+          serializeRecord(record, conflictedRecordIds.has(record.clientRecordId))
+        ),
+        deletedRecordIds,
+        deletedRecords
+      }
+    };
     });
+    return res.status(result.status).json(result.body);
   } catch (error) {
+    if (error && (error.code === 'ACCOUNT_CLOSING' || error.code === 'ACCOUNT_CLOSED')) {
+      return res.status(error.code === 'ACCOUNT_CLOSING' ? 409 : 403).json({
+        message: error.code === 'ACCOUNT_CLOSING' ? 'Account is closing' : 'Account is closed',
+        error: { code: error.code }
+      });
+    }
     return res.status(409).json({
       message: 'Error syncing confirmed receiver records',
       error: error.message
@@ -584,7 +616,8 @@ async function deleteConfirmedReceiverRecords(req, res) {
   const deletedAt = Date.now();
 
   try {
-    const activeRecords = await CommunicationReceiverRecord.find(filter)
+    const result = await withOpenAccount(req.user.id, async session => {
+    const activeRecords = await queryWithSession(CommunicationReceiverRecord.find(filter), session)
       .sort({ updatedAt: -1 })
       .limit(MAX_SYNC_RECORDS)
       .lean()
@@ -600,7 +633,8 @@ async function deleteConfirmedReceiverRecords(req, res) {
         ...filter,
         serverVersion: { $exists: false }
       },
-      { $set: { serverVersion: 1 } }
+      { $set: { serverVersion: 1 } },
+      session ? { session } : undefined
     );
     const result = await CommunicationReceiverRecord.updateMany(filter, {
       $set: {
@@ -609,7 +643,7 @@ async function deleteConfirmedReceiverRecords(req, res) {
         updatedAt: deletedAt
       },
       $inc: { serverVersion: 1 }
-    });
+    }, session ? { session } : undefined);
     const deletedRecords = targetIds
       .map(id =>
         buildDeletedRecordTombstone(null, {
@@ -620,12 +654,23 @@ async function deleteConfirmedReceiverRecords(req, res) {
         })
       )
       .filter(Boolean);
-    return res.status(200).json({
-      deletedCount: Number(result.modifiedCount || result.nModified) || 0,
-      deletedRecordIds: targetIds,
-      deletedRecords
+    return {
+      status: 200,
+      body: {
+        deletedCount: Number(result.modifiedCount || result.nModified) || 0,
+        deletedRecordIds: targetIds,
+        deletedRecords
+      }
+    };
     });
+    return res.status(result.status).json(result.body);
   } catch (error) {
+    if (error && (error.code === 'ACCOUNT_CLOSING' || error.code === 'ACCOUNT_CLOSED')) {
+      return res.status(error.code === 'ACCOUNT_CLOSING' ? 409 : 403).json({
+        message: error.code === 'ACCOUNT_CLOSING' ? 'Account is closing' : 'Account is closed',
+        error: { code: error.code }
+      });
+    }
     return res.status(409).json({
       message: 'Error deleting confirmed receiver records',
       error: error.message

@@ -844,6 +844,50 @@ async function main() {
     assert.equal(await Phrase.collection.countDocuments({ user: finalUserId }), 0);
     assert.equal(await Phrase.collection.countDocuments({ user: loginUser }), 1);
     passed.push('legacy-favorite-sync-and-tombstones-share-account-closure-transaction');
+    const recordsController = require('../../api/controllers/communicationRecords');
+    const ReceiverRecord = require('../../api/models/CommunicationReceiverRecord');
+    const recordUserId = new mongoose.Types.ObjectId();
+    const recordOwner = String(recordUserId);
+    const recordUser = { id: recordOwner };
+    const record = { id: 'synthetic-record', sessionId: 'synthetic-session', patientId: 'synthetic-patient',
+      workspaceId: 'synthetic-workspace', recordStatus: 'confirmed', direction: 'receive', inputText: 'Synthetic water',
+      createdAt: 1000, updatedAt: 1000, confirmedAt: 1000, labels: [], pictogramSequence: [] };
+    const callRecord = async (method, user, body) => {
+      const response = settingsResponse();
+      await recordsController[method]({ user, body }, response);
+      return response;
+    };
+    const firstRecord = await callRecord('syncConfirmedReceiverRecords', recordUser, { records: [record] });
+    assert.equal(firstRecord.code, 200);
+    assert.equal(firstRecord.body.acceptedCount, 1);
+    process.env.CARE_NEXT_ENABLED = 'true';
+    try {
+      const noUpload = await callRecord('syncConfirmedReceiverRecords', recordUser, { records: [{ ...record, id: 'never-upload' }] });
+      assert.equal(noUpload.code, 410);
+      assert.equal(noUpload.body.code, 'HISTORY_LOCAL_ONLY');
+      assert.equal(await ReceiverRecord.collection.countDocuments({ user: recordUserId }), 1);
+      const deletedRecord = await callRecord('deleteConfirmedReceiverRecords', recordUser, { recordIds: [record.id] });
+      assert.equal(deletedRecord.code, 200);
+      assert.equal(deletedRecord.body.deletedCount, 1);
+    } finally { delete process.env.CARE_NEXT_ENABLED; }
+    const recordBeforeClose = await ReceiverRecord.collection.findOne({ user: recordUserId });
+    await coordinator.begin(recordOwner, []);
+    for (const [method, body] of [
+      ['syncConfirmedReceiverRecords', { records: [{ ...record, id: 'late-record' }] }],
+      ['deleteConfirmedReceiverRecords', { recordIds: [record.id] }]
+    ]) {
+      const refused = await callRecord(method, recordUser, body);
+      assert.equal(refused.code, 409);
+      assert.equal(refused.body.error.code, 'ACCOUNT_CLOSING');
+      const closed = await callRecord(method, { id: finalOwner }, body);
+      assert.equal(closed.code, 403);
+      assert.equal(closed.body.error.code, 'ACCOUNT_CLOSED');
+    }
+    assert.deepEqual(await ReceiverRecord.collection.findOne({ user: recordUserId }), recordBeforeClose);
+    assert.equal(await ReceiverRecord.collection.countDocuments({ user: recordUserId }), 1);
+    assert.equal(await ReceiverRecord.collection.countDocuments({ user: finalUserId }), 0);
+    assert.equal(await ReceiverRecord.collection.countDocuments({ user: loginUser }), 1);
+    passed.push('legacy-receiver-writes-fenced-and-care-mode-still-refuses-history-upload');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

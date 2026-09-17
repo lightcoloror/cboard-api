@@ -14,6 +14,11 @@ describe('Communication receiver records controller', function () {
   let deletions;
   let existingRecords;
   let storedRecords;
+  let previousCareFlag;
+  let previousLifecycleFlag;
+  let lifecycleMode;
+  let lifecycleCalls;
+  let sessions;
 
   beforeEach(function () {
     operations = [];
@@ -21,7 +26,18 @@ describe('Communication receiver records controller', function () {
     deletions = [];
     existingRecords = [];
     storedRecords = [];
+    previousCareFlag = process.env.CARE_NEXT_ENABLED;
+    previousLifecycleFlag = process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    delete process.env.CARE_NEXT_ENABLED;
+    delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    lifecycleMode = 'open';
+    lifecycleCalls = [];
+    sessions = [];
     const createQuery = records => ({
+      session(value) {
+        sessions.push(value);
+        return this;
+      },
       sort() {
         return this;
       },
@@ -36,11 +52,12 @@ describe('Communication receiver records controller', function () {
       }
     });
     const model = {
-      async bulkWrite(nextOperations) {
+      async bulkWrite(nextOperations, options) {
         operations = nextOperations;
+        if (options && options.session) sessions.push(options.session);
       },
-      async updateMany(filter, update) {
-        deletion = { filter, update };
+      async updateMany(filter, update, options) {
+        deletion = { filter, update, ...(options ? { options } : {}) };
         deletions.push(deletion);
         return { modifiedCount: 1 };
       },
@@ -65,10 +82,35 @@ describe('Communication receiver records controller', function () {
       '../models/CommunicationReceiverRecord',
       model
     );
+    mockery.registerMock('../helpers/careFamilyLifecycle', {
+      createCareFamilyLifecycle() {
+        return {
+          async withOpenAccount(id, callback) {
+            lifecycleCalls.push(id);
+            if (lifecycleMode === 'closing') {
+              throw Object.assign(new Error('closing'), {
+                code: 'ACCOUNT_CLOSING',
+                status: 409
+              });
+            }
+            const session = { id: 'receiver-record-session' };
+            const result = await callback(session);
+            if (lifecycleMode === 'commit-fail') {
+              throw new Error('commit failed');
+            }
+            return result;
+          }
+        };
+      }
+    });
     controller = require('../../api/controllers/communicationRecords');
   });
 
   afterEach(function () {
+    if (previousCareFlag === undefined) delete process.env.CARE_NEXT_ENABLED;
+    else process.env.CARE_NEXT_ENABLED = previousCareFlag;
+    if (previousLifecycleFlag === undefined) delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    else process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = previousLifecycleFlag;
     mockery.deregisterAll();
     mockery.disable();
   });
@@ -135,6 +177,19 @@ describe('Communication receiver records controller', function () {
       res
     );
     expect(res.statusCode).to.equal(400);
+  });
+
+  it('keeps sync history local in care mode before reading or writing', async function () {
+    process.env.CARE_NEXT_ENABLED = 'true';
+    const res = createResponse();
+    await controller.syncConfirmedReceiverRecords(
+      { user: { id: 'user-1' }, body: { records: [createConfirmedRecord()] } },
+      res
+    );
+    expect(res.statusCode).to.equal(410);
+    expect(res.body.code).to.equal('HISTORY_LOCAL_ONLY');
+    expect(operations).to.deep.equal([]);
+    expect(lifecycleCalls).to.deep.equal([]);
   });
 
   it('upserts only whitelisted confirmed data for the current user', async function () {
@@ -539,5 +594,54 @@ describe('Communication receiver records controller', function () {
       deletedBy: 'user-1',
       serverVersion: 3
     });
+  });
+
+  it('passes the account session to sync reads and bulk writes before 200', async function () {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    const input = createConfirmedRecord();
+    storedRecords = [{
+      user: 'user-1',
+      clientRecordId: input.id,
+      ...input,
+      serverVersion: 1
+    }];
+    const res = createResponse();
+    await controller.syncConfirmedReceiverRecords(
+      { user: { id: 'user-1' }, body: { records: [input] } },
+      res
+    );
+    expect(lifecycleCalls).to.deep.equal(['user-1']);
+    expect(sessions).to.deep.equal([
+      { id: 'receiver-record-session' },
+      { id: 'receiver-record-session' },
+      { id: 'receiver-record-session' }
+    ]);
+    expect(res.statusCode).to.equal(200);
+  });
+
+  it('rejects delete while the account is closing without database access', async function () {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'closing';
+    const res = createResponse();
+    await controller.deleteConfirmedReceiverRecords(
+      { user: { id: 'user-1' }, body: { recordIds: ['receiver-1'] } },
+      res
+    );
+    expect(res.statusCode).to.equal(409);
+    expect(res.body.error.code).to.equal('ACCOUNT_CLOSING');
+    expect(deletions).to.deep.equal([]);
+  });
+
+  it('does not send successful delete output when transaction commit fails', async function () {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'commit-fail';
+    const res = createResponse();
+    await controller.deleteConfirmedReceiverRecords(
+      { user: { id: 'user-1' }, body: { recordIds: ['receiver-1'] } },
+      res
+    );
+    expect(res.statusCode).to.equal(409);
+    expect(res.body.message).to.equal('Error deleting confirmed receiver records');
+    expect(res.body).not.to.have.property('deletedCount');
   });
 });
