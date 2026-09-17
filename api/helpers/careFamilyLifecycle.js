@@ -10,6 +10,9 @@ const FAMILY_CLOSING = 'FAMILY_CLOSING';
 const FAMILY_CLOSE_CONFLICT = 'FAMILY_CLOSE_CONFLICT';
 const FAMILY_CLOSE_CONFIRMATION_REQUIRED = 'FAMILY_CLOSE_CONFIRMATION_REQUIRED';
 const FAMILY_TRANSFER_REQUIRED = 'FAMILY_TRANSFER_REQUIRED';
+const ACCOUNT_CLOSED = 'ACCOUNT_CLOSED';
+const ACCOUNT_CLOSING = 'ACCOUNT_CLOSING';
+const ACCOUNT_CLOSE_CONFLICT = 'ACCOUNT_CLOSE_CONFLICT';
 
 const TRANSACTION_OPTIONS = Object.freeze({
   readConcern: { level: 'snapshot' },
@@ -64,11 +67,16 @@ function createCareFamilyLifecycle({
   connection = mongoose.connection,
   Family = DefaultFamily,
   Profile = DefaultProfile,
+  AccountLifecycle = null,
   now = () => Date.now(),
   operationId = () => crypto.randomBytes(16).toString('hex')
 } = {}) {
   const familyCollection = modelCollection(Family, 'Family');
   const profileCollection = modelCollection(Profile, 'Profile');
+  const accountLifecycleCollection = modelCollection(
+    AccountLifecycle || { collection: connection.collection('careaccountlifecycles') },
+    'AccountLifecycle'
+  );
 
   async function transaction(callback) {
     if (!connection || typeof connection.startSession !== 'function') {
@@ -97,6 +105,53 @@ function createCareFamilyLifecycle({
     const family = await familyCollection.findOne({ _id: familyId }, { session });
     assertOpen(family);
     return family;
+  }
+
+  function accountStatus(account) {
+    return account && account.status || 'open';
+  }
+
+  function assertAccountOpen(account) {
+    if (!account) return;
+    if (accountStatus(account) === 'closed') fail(403, ACCOUNT_CLOSED);
+    if (accountStatus(account) === 'closing') fail(409, ACCOUNT_CLOSING);
+    if (accountStatus(account) !== 'open') fail(409, ACCOUNT_CLOSE_CONFLICT);
+  }
+
+  async function lockOpenAccount(owner, session) {
+    let account = await accountLifecycleCollection.findOne({ _id: owner }, { session });
+    assertAccountOpen(account);
+    if (!account) {
+      // A duplicate first-writer insert aborts the transaction. There is no
+      // independent-write fallback that could bypass a concurrent close.
+      try {
+        await accountLifecycleCollection.insertOne({ _id: owner, status: 'open', lifecycleRev: 0 }, { session });
+      } catch (error) {
+        if (error.code === 11000) fail(409, ACCOUNT_CLOSE_CONFLICT);
+        throw error;
+      }
+      account = { _id: owner, status: 'open', lifecycleRev: 0 };
+    }
+    const result = await accountLifecycleCollection.updateOne({
+      _id: owner,
+      $or: [
+        { status: { $exists: false } },
+        { status: 'open' }
+      ]
+    }, { $inc: { lifecycleRev: 1 } }, { session });
+    if (!changed(result)) fail(409, ACCOUNT_CLOSE_CONFLICT);
+    return { ...account, lifecycleRev: (account.lifecycleRev || 0) + 1 };
+  }
+
+  async function withOpenAccount(owner, callback) {
+    if (!validId(owner)) fail(400, 'INVALID_OWNER');
+    if (typeof callback !== 'function') fail(400, 'INVALID_ACCOUNT_CALLBACK');
+    return transaction(async session => {
+      const account = await lockOpenAccount(owner, session);
+      // withTransaction can retry this callback. Keep it limited to Mongo
+      // operations; external I/O must happen after the committed result.
+      return callback(session, account);
+    });
   }
 
   async function withOpenFamily(familyId, callback) {
@@ -129,11 +184,11 @@ function createCareFamilyLifecycle({
     if (!validId(String(closeOperationId))) fail(500, 'INVALID_CLOSE_OPERATION_ID');
     const closedAt = now();
 
-    // The exact owner-family set is checked inside the transaction, but a
-    // snapshot does not fence a concurrent insert of a new family document.
-    // Callers must put createFamily/account lifecycle writes behind the same
-    // account-level boundary before claiming full account closure.
+    // createFamily and beginClose serialize through the same account document.
+    // Direct inserts and ownership transfers that bypass this boundary remain
+    // unsafe; all such writers must be integrated before enabling HTTP closure.
     return transaction(async session => {
+      const account = await lockOpenAccount(owner, session);
       const families = await familyCollection.find({ owner }, {
         session,
         projection: { _id: 1, owner: 1, closure: 1, lifecycleRev: 1 }
@@ -179,6 +234,20 @@ function createCareFamilyLifecycle({
         }, { session });
         if (!changed(result)) fail(409, FAMILY_CLOSE_CONFLICT);
       }
+      const accountResult = await accountLifecycleCollection.updateOne({
+        _id: owner,
+        $or: [
+          { status: { $exists: false } },
+          { status: 'open' }
+        ]
+      }, {
+        $set: {
+          status: 'closing',
+          closure: { status: 'closing', operationId: String(closeOperationId), owner, familyIds: actual, at: closedAt }
+        },
+        $inc: { lifecycleRev: 1 }
+      }, { session });
+      if (!changed(accountResult)) fail(409, ACCOUNT_CLOSE_CONFLICT);
       return {
         status: 'closing',
         owner,
@@ -189,7 +258,15 @@ function createCareFamilyLifecycle({
     });
   }
 
-  return { withOpenFamily, beginClose };
+  async function createFamily(value) {
+    if (!value || !validId(value._id) || !validId(value.owner)) fail(400, 'INVALID_FAMILY');
+    return withOpenAccount(value.owner, async session => {
+      await familyCollection.insertOne(value, { session });
+      return value;
+    });
+  }
+
+  return { withOpenFamily, withOpenAccount, beginClose, createFamily };
 }
 
 module.exports = {
@@ -199,6 +276,9 @@ module.exports = {
   FAMILY_CLOSE_CONFLICT,
   FAMILY_CLOSE_CONFIRMATION_REQUIRED,
   FAMILY_TRANSFER_REQUIRED,
+  ACCOUNT_CLOSED,
+  ACCOUNT_CLOSING,
+  ACCOUNT_CLOSE_CONFLICT,
   TRANSACTION_OPTIONS,
   createCareFamilyLifecycle
 };

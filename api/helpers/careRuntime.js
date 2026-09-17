@@ -8,7 +8,9 @@ const {
   resolveCareMediaQuotaConfig
 } = require('./careMediaQuota');
 const store = {
-  createFamily: value => Family.create(value),
+  createFamily: value => process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true'
+    ? require('./careFamilyLifecycle').createCareFamilyLifecycle().createFamily(value)
+    : Family.create(value),
   getFamily: id => Family.findById(id).lean().exec(),
   casFamily: async (id, rev, value) => {
     const filter = rev === 0 ? { _id: id, $or: [{ rev: 0 }, { rev: { $exists: false } }] } : { _id: id, rev };

@@ -12,8 +12,8 @@ const {
 
 const expect = chai.expect;
 
-function collection({ one = null, families = [], profiles = [], updateResults = [] } = {}) {
-  const calls = { findOne: [], find: [], updateOne: [] };
+function collection({ one = null, families = [], profiles = [], updateResults = [], insertResults = [] } = {}) {
+  const calls = { findOne: [], find: [], updateOne: [], insertOne: [] };
   return {
     calls,
     findOne(filter, options) {
@@ -28,6 +28,10 @@ function collection({ one = null, families = [], profiles = [], updateResults = 
     async updateOne(filter, update, options) {
       calls.updateOne.push({ filter, update, options });
       return updateResults.length ? updateResults.shift() : { matchedCount: 1 };
+    },
+    async insertOne(value, options) {
+      calls.insertOne.push({ value, options });
+      return insertResults.length ? insertResults.shift() : { acknowledged: true, insertedId: value._id };
     }
   };
 }
@@ -47,21 +51,28 @@ function connectionFor() {
     },
     async endSession() { state.ended = true; }
   };
-  return { state, connection: { async startSession() { return session; } } };
+  return {
+    state,
+    connection: {
+      async startSession() { return session; }
+    }
+  };
 }
 
-function factory({ family, profiles, updateResults, now = 1700000000000, operationId = 'close-op' } = {}) {
+function factory({ family, profiles, account, updateResults, accountUpdateResults, now = 1700000000000, operationId = 'close-op' } = {}) {
   const session = connectionFor();
   const Family = collection({ one: family, families: Array.isArray(family) ? family : [], updateResults });
   const Profile = collection({ profiles });
+  const AccountLifecycle = collection({ one: account, updateResults: accountUpdateResults });
   const lifecycle = createCareFamilyLifecycle({
     connection: session.connection,
     Family: { collection: Family },
     Profile: { collection: Profile },
+    AccountLifecycle: { collection: AccountLifecycle },
     now: () => now,
     operationId: () => operationId
   });
-  return { lifecycle, Family, Profile, state: session.state };
+  return { lifecycle, Family, Profile, AccountLifecycle, state: session.state };
 }
 
 async function expectCode(promise, code) {
@@ -128,6 +139,7 @@ describe('care family lifecycle helper', function() {
     expect(f.Family.calls.updateOne).to.have.length(2);
     expect(f.Family.calls.updateOne[0].update.$set.closure).to.deep.equal({ status: 'closing', operationId: 'close-op', owner: 'owner-1', at: 1700000000000 });
     expect(f.Family.calls.updateOne[0].update.$inc).to.deep.equal({ lifecycleRev: 1 });
+    expect(f.AccountLifecycle.calls.updateOne[1].update.$set.closure.familyIds).to.deep.equal(['family-a', 'family-b']);
   });
 
   it('aborts when the open-family fence loses a race', async function() {
@@ -142,5 +154,63 @@ describe('care family lifecycle helper', function() {
     await expectCode(f.lifecycle.withOpenFamily('family-a', async () => { throw new Error('callback failed'); }), 'callback failed');
     expect(f.state.aborted).to.equal(true);
     expect(f.state.committed).to.equal(false);
+  });
+
+  it('locks an existing account lifecycle document and returns the callback value', async function() {
+    const f = factory({ account: { _id: 'owner-1', status: 'open', lifecycleRev: 7 } });
+    const result = await f.lifecycle.withOpenAccount('owner-1', async (session, account) => ({ session, account }));
+    expect(result.account.lifecycleRev).to.equal(8);
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(1);
+    expect(f.AccountLifecycle.calls.updateOne[0].update).to.deep.equal({ $inc: { lifecycleRev: 1 } });
+    expect(f.state.committed).to.equal(true);
+  });
+
+  it('creates an initial account lifecycle document inside the same transaction', async function() {
+    const f = factory();
+    const result = await f.lifecycle.withOpenAccount('owner-1', async (session, account) => account);
+    expect(result).to.include({ _id: 'owner-1', status: 'open', lifecycleRev: 1 });
+    expect(f.AccountLifecycle.calls.insertOne).to.deep.equal([
+      { value: { _id: 'owner-1', status: 'open', lifecycleRev: 0 }, options: { session: f.AccountLifecycle.calls.insertOne[0].options.session } }
+    ]);
+  });
+
+  it('rejects account lifecycle states before callback or family writes', async function() {
+    for (const account of [
+      { _id: 'owner-1', status: 'closing' },
+      { _id: 'owner-1', status: 'closed' },
+      { _id: 'owner-1', status: 'unexpected' }
+    ]) {
+      const f = factory({ account });
+      await expectCode(f.lifecycle.withOpenAccount('owner-1', async () => true),
+        account.status === 'closing' ? 'ACCOUNT_CLOSING' : account.status === 'closed' ? 'ACCOUNT_CLOSED' : 'ACCOUNT_CLOSE_CONFLICT');
+      expect(f.AccountLifecycle.calls.updateOne).to.have.length(0);
+      expect(f.AccountLifecycle.calls.insertOne).to.have.length(0);
+      expect(f.state.aborted).to.equal(true);
+    }
+  });
+
+  it('routes createFamily through the account fence and the same session', async function() {
+    const f = factory({ account: { _id: 'owner-1', status: 'open', lifecycleRev: 0 } });
+    await f.lifecycle.createFamily({ _id: 'family-a', owner: 'owner-1', sealed: {} });
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(1);
+    expect(f.Family.calls.insertOne).to.deep.equal([
+      { value: { _id: 'family-a', owner: 'owner-1', sealed: {} }, options: { session: f.Family.calls.insertOne[0].options.session } }
+    ]);
+  });
+
+  it('aborts the transaction containing the initial gate when confirmation is stale', async function() {
+    const f = factory({ family: [{ _id: 'family-a', owner: 'owner-1' }] });
+    await expectCode(f.lifecycle.beginClose('owner-1', ['family-stale']), FAMILY_CLOSE_CONFIRMATION_REQUIRED);
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(1);
+    expect(f.AccountLifecycle.calls.insertOne).to.have.length(1);
+    expect(f.state.aborted).to.equal(true);
+    expect(f.state.committed).to.equal(false);
+    expect(f.Family.calls.updateOne).to.have.length(0);
+  });
+
+  it('rejects createFamily after account close without a fallback insert', async function() {
+    const f = factory({ account: { _id: 'owner-1', status: 'closed' } });
+    await expectCode(f.lifecycle.createFamily({ _id: 'family-a', owner: 'owner-1' }), 'ACCOUNT_CLOSED');
+    expect(f.Family.calls.insertOne).to.have.length(0);
   });
 });
