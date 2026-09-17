@@ -639,8 +639,12 @@ async function main() {
     const quotaLimiter = createCommunicationAiTokenQuotaLimiter({ storeClient: connection, config: quotaConfig });
     await quotaLimiter.createIndexes();
     const legacyQuota = createCommunicationAiTokenQuotaService({ config: quotaConfig, limiter: quotaLimiter });
+    // Seed historical data for an already-closing synthetic account. Production
+    // callers below still use the lifecycle-protected service.
+    const quotaSeed = createCommunicationAiTokenQuotaService({ config: quotaConfig,
+      limiter: quotaLimiter, lifecycleEnabled: () => false });
     for (const userId of [finalOwner, String(loginUser)]) {
-      await legacyQuota.reserve({ userId, operationId: 'generateCommunicationSentences' });
+      await quotaSeed.reserve({ userId, operationId: 'generateCommunicationSentences' });
       assert.equal((await legacyQuota.getStatus({ userId })).consumedTokens, 10);
     }
     const finalizeAdapters = { connection, encryption, revokeSessions: owner => deviceSessions.revoke(owner),
@@ -1054,6 +1058,7 @@ async function main() {
     passed.push('legacy-board-create-update-delete-fence-actor-owner-and-owner-transfer');
     await require('./passwordResetLifecycle.mongo.fixture')({ mongoose, coordinator, passed });
     await require('./userProfileLifecycle.mongo.fixture')({ mongoose, passed });
+    await require('./legacyQuotaLifecycle.mongo.fixture')({ mongoose, coordinator, passed });
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

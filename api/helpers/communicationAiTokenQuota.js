@@ -1,6 +1,7 @@
 'use strict';
 
 const { RateLimiterMongo } = require('rate-limiter-flexible');
+const { withMongoSession } = require('./rateLimiterMongoSession');
 const {
   getUtcMonth,
   normalizeCommunicationAiUsage
@@ -164,6 +165,8 @@ function createCommunicationAiTokenQuotaService({
   limiter,
   storeClient,
   RateLimiterClass,
+  lifecycle = null,
+  lifecycleEnabled = () => process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true',
   now = () => new Date()
 } = {}) {
   const quotaLimiter = config.enabled
@@ -174,6 +177,21 @@ function createCommunicationAiTokenQuotaService({
         RateLimiterClass
       })
     : null;
+
+  async function withQuotaWrite(userId, operation) {
+    if (!lifecycleEnabled()) return operation(quotaLimiter);
+    const activeLifecycle = lifecycle || require('./careFamilyLifecycle').createCareFamilyLifecycle(
+      storeClient ? { connection: storeClient } : {}
+    );
+    return activeLifecycle.withOpenAccount(userId, session =>
+      operation(withMongoSession(quotaLimiter, session)));
+  }
+
+  function rethrowLifecycleError(error) {
+    if (error && ['ACCOUNT_CLOSING', 'ACCOUNT_CLOSED', 'ACCOUNT_CLOSE_CONFLICT'].includes(error.code)) {
+      throw error;
+    }
+  }
 
   function createKey(userId, date) {
     return buildMonthlyRateLimitKey(hashRateLimitIdentity(userId), date);
@@ -192,15 +210,19 @@ function createCommunicationAiTokenQuotaService({
 
     const reservedAt = now();
     const key = createKey(normalizedUserId, reservedAt);
+    const transactional = lifecycleEnabled();
     let result;
     try {
-      result = await quotaLimiter.consume(key, reservationTokens, {
-        customDuration: secondsUntilNextUtcMonth(reservedAt)
-      });
+      result = await withQuotaWrite(normalizedUserId, scopedLimiter =>
+        scopedLimiter.consume(key, reservationTokens, {
+          customDuration: secondsUntilNextUtcMonth(reservedAt)
+        }));
     } catch (error) {
+      rethrowLifecycleError(error);
       if (isRateLimitRejection(error)) {
         try {
-          await quotaLimiter.reward(key, reservationTokens);
+          // A rejected transaction already rolled its increment back.
+          if (!transactional) await quotaLimiter.reward(key, reservationTokens);
         } catch (refundError) {
           throw createTokenQuotaError(
             'COMMUNICATION_AI_TOKEN_QUOTA_UNAVAILABLE',
@@ -223,6 +245,7 @@ function createCommunicationAiTokenQuotaService({
     }
 
     return {
+      userId: normalizedUserId,
       key,
       month: getUtcMonth(reservedAt),
       tokens: reservationTokens,
@@ -247,11 +270,13 @@ function createCommunicationAiTokenQuotaService({
       const difference = reservation.tokens - actualTokens;
 
       try {
-        if (difference > 0) {
-          await quotaLimiter.reward(reservation.key, difference);
-        } else if (difference < 0) {
-          await quotaLimiter.penalty(reservation.key, -difference);
-        }
+        await withQuotaWrite(reservation.userId, async scopedLimiter => {
+          if (difference > 0) {
+            await scopedLimiter.reward(reservation.key, difference);
+          } else if (difference < 0) {
+            await scopedLimiter.penalty(reservation.key, -difference);
+          }
+        });
         reservation.state = 'settled';
         reservation.actualTokens = actualTokens;
         reservation.providerReported = normalizedUsage.reported;
@@ -261,6 +286,7 @@ function createCommunicationAiTokenQuotaService({
         };
       } catch (error) {
         reservation.state = 'reserved';
+        rethrowLifecycleError(error);
         throw createTokenQuotaError(
           'COMMUNICATION_AI_TOKEN_QUOTA_UNAVAILABLE',
           'Communication AI token quota is temporarily unavailable',
@@ -276,11 +302,13 @@ function createCommunicationAiTokenQuotaService({
       if (reservation.state !== 'reserved') return false;
       reservation.state = 'releasing';
       try {
-        await quotaLimiter.reward(reservation.key, reservation.tokens);
+        await withQuotaWrite(reservation.userId, scopedLimiter =>
+          scopedLimiter.reward(reservation.key, reservation.tokens));
         reservation.state = 'released';
         return true;
       } catch (error) {
         reservation.state = 'reserved';
+        rethrowLifecycleError(error);
         throw createTokenQuotaError(
           'COMMUNICATION_AI_TOKEN_QUOTA_UNAVAILABLE',
           'Communication AI token quota is temporarily unavailable',
@@ -317,12 +345,33 @@ function createCommunicationAiTokenQuotaService({
   }
 
   async function deleteUserQuota({ userId }) {
-    if (!config.enabled) return false;
+    if (!config.enabled && !lifecycleEnabled()) return false;
     const normalizedUserId = String(userId || '').trim();
     if (!normalizedUserId) {
       throw new TypeError('AI token quota requires a user');
     }
     try {
+      if (lifecycleEnabled()) {
+        // Closure has already fenced writers. Remove every monthly key, not
+        // merely this month's key; TTL deletion is asynchronous.
+        const connection = storeClient || require('mongoose').connection;
+        const account = await connection.collection('careaccountlifecycles')
+          .findOne({ _id: normalizedUserId });
+        if (!account || !['closing', 'closed'].includes(account.status)) {
+          throw new Error('Account closure must fence quota writers before cleanup');
+        }
+        const cleanupLimiter = quotaLimiter || limiter || createCommunicationAiTokenQuotaLimiter({
+          storeClient, config, RateLimiterClass
+        });
+        if (!(cleanupLimiter instanceof RateLimiterMongo) || !cleanupLimiter._collection) {
+          throw new Error('Mongo quota collection required for lifecycle cleanup');
+        }
+        const prefix = cleanupLimiter.getKey('').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const result = await cleanupLimiter._collection.deleteMany({ key: {
+          $regex: `^${prefix}\\d{4}-\\d{2}:${hashRateLimitIdentity(normalizedUserId)}$`
+        } });
+        return result.deletedCount > 0;
+      }
       return Boolean(
         await quotaLimiter.delete(createKey(normalizedUserId, now()))
       );
