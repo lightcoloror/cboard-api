@@ -13,6 +13,32 @@ const {
 const expect = chai.expect;
 
 describe('authentication request rate limits', function() {
+  it('waits for unique indexes once before any concurrent consume', async function() {
+    let resolveIndexes;
+    const pending = new Promise(resolve => { resolveIndexes = resolve; });
+    let built = 0, consumed = 0;
+    const limiter = { async createIndexes() { built += 1; await pending; }, async consume() { consumed += 1; } };
+    const args = { limiters: { ipHourly: limiter, emailHourly: limiter }, operation: 'closureStatus', email: 'receipt', ip: 'synthetic' };
+    const requests = [consumeAuthRequestLimits(args), consumeAuthRequestLimits(args)];
+    await Promise.resolve();
+    expect(consumed).to.equal(0);
+    resolveIndexes();
+    await Promise.all(requests);
+    expect(built).to.equal(1);
+    expect(consumed).to.equal(4);
+  });
+
+  it('fails closed on index errors and permits a later initialization retry', async function() {
+    let fail = true, consumed = 0;
+    const limiter = { async createIndexes() { if (fail) throw new Error('index unavailable'); }, async consume() { consumed += 1; } };
+    const args = { limiters: { ipHourly: limiter, emailHourly: limiter }, operation: 'closureStatus', email: 'receipt', ip: 'synthetic' };
+    try { await consumeAuthRequestLimits(args); expect.fail('expected rejection'); }
+    catch (error) { expect(error.code).to.equal('CLOSURE_STATUS_RATE_LIMIT_UNAVAILABLE'); }
+    expect(consumed).to.equal(0);
+    fail = false;
+    await consumeAuthRequestLimits(args);
+    expect(consumed).to.equal(2);
+  });
   it('uses bounded independent registration and reset configuration', function() {
     const config = resolveAuthRequestRateLimitConfig({
       USER_REGISTRATION_RATE_LIMIT_EMAIL_HOURLY_LIMIT: '4',

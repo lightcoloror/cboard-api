@@ -5,6 +5,18 @@ const mongoose = require('mongoose');
 const { RateLimiterMongo } = require('rate-limiter-flexible');
 
 const OPERATIONS = Object.freeze({
+  closurePrepare: Object.freeze({
+    codePrefix: 'CLOSURE_PREPARE', keyPrefix: 'closure_prepare',
+    emailTable: 'closurePrepareAccountHourlyLimits', ipTable: 'closurePrepareIpHourlyLimits',
+    emailEnv: 'CLOSURE_PREPARE_ACCOUNT_HOURLY_LIMIT', ipEnv: 'CLOSURE_PREPARE_IP_HOURLY_LIMIT',
+    emailDefault: 10, ipDefault: 30
+  }),
+  closureStatus: Object.freeze({
+    codePrefix: 'CLOSURE_STATUS', keyPrefix: 'closure_status',
+    emailTable: 'closureStatusReceiptHourlyLimits', ipTable: 'closureStatusIpHourlyLimits',
+    emailEnv: 'CLOSURE_STATUS_RECEIPT_HOURLY_LIMIT', ipEnv: 'CLOSURE_STATUS_IP_HOURLY_LIMIT',
+    emailDefault: 240, ipDefault: 600
+  }),
   registration: Object.freeze({
     codePrefix: 'USER_REGISTRATION',
     keyPrefix: 'user_registration',
@@ -90,6 +102,7 @@ function createAuthRequestMongoLimiters({
       storeClient,
       keyPrefix: `${policy.keyPrefix}_email_hour`,
       tableName: policy.emailTable,
+      disableIndexesCreation: true,
       points: limits.emailHourlyLimit,
       duration: 60 * 60
     }),
@@ -97,6 +110,7 @@ function createAuthRequestMongoLimiters({
       storeClient,
       keyPrefix: `${policy.keyPrefix}_ip_hour`,
       tableName: policy.ipTable,
+      disableIndexesCreation: true,
       points: limits.ipHourlyLimit,
       duration: 60 * 60
     })
@@ -111,8 +125,17 @@ function isLimiterRejection(value) {
   );
 }
 
+const indexReadiness = new WeakMap();
 async function consumeLimiter(limiter, key, codePrefix) {
   try {
+    if (typeof limiter.createIndexes === 'function') {
+      if (!indexReadiness.has(limiter)) {
+        const ready = Promise.resolve().then(() => limiter.createIndexes());
+        indexReadiness.set(limiter, ready);
+      }
+      try { await indexReadiness.get(limiter); }
+      catch (error) { indexReadiness.delete(limiter); throw error; }
+    }
     return await limiter.consume(key, 1);
   } catch (error) {
     if (isLimiterRejection(error)) {

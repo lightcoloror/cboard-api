@@ -15,6 +15,8 @@ if (!uriPattern.test(uri)) {
 }
 
 const config = {
+  closurePrepare: { emailHourlyLimit: 2, ipHourlyLimit: 4 },
+  closureStatus: { emailHourlyLimit: 2, ipHourlyLimit: 4 },
   registration: { emailHourlyLimit: 3, ipHourlyLimit: 20 },
   passwordReset: { emailHourlyLimit: 3, ipHourlyLimit: 20 },
   login: { emailHourlyLimit: 3, ipHourlyLimit: 4 }
@@ -156,9 +158,22 @@ async function main() {
     const ipState = await ipRuntime.getLimiters('passwordReset').ipHourly.get(hashRateLimitIdentity('ip:203.0.117.9'));
     assert.strictEqual(ipState.consumedPoints, 4);
 
+    for (const operation of ['closurePrepare', 'closureStatus']) {
+      const attempts = await Promise.all(Array.from({ length: 3 }, (_, i) =>
+        attempt(i % 2 ? runtimeTwo : runtimeOne, operation, '0123456789abcdef01234567', `203.0.122.${i + 1}`)));
+      assert.strictEqual(attempts.filter(x => x.outcome === 'accepted').length, 2);
+      assert.strictEqual(attempts.filter(x => x.status === 429).length, 1);
+      assert.strictEqual((await attempt(makeRuntime(second), operation, '0123456789abcdef01234567', '203.0.122.8')).status, 429);
+      const ipAttempts = await Promise.all(Array.from({ length: 5 }, (_, i) =>
+        attempt(i % 2 ? runtimeTwo : runtimeOne, operation, `receipt-${i}`, '203.0.123.8')));
+      assert.strictEqual(ipAttempts.filter(x => x.outcome === 'accepted').length, 4);
+      assert.strictEqual(ipAttempts.filter(x => x.status === 429).length, 1);
+      results.push({ name: `${operation}_persistent_account_and_ip_caps`, accepted: 2, ipAccepted: 4 });
+    }
     const closedRuntime = makeRuntime(second);
     await ready(closedRuntime, 'registration');
     await ready(closedRuntime, 'login');
+    await ready(closedRuntime, 'closureStatus');
     await second.close();
     second = null;
     const unavailable = await attempt(closedRuntime, 'registration', 'backend@example.test', '203.0.118.1');
@@ -169,6 +184,10 @@ async function main() {
     results.push({ name: 'backend_disconnect_login_fail_closed', outcome: loginUnavailable.outcome, status: loginUnavailable.status, code: loginUnavailable.code });
     assert.strictEqual(loginUnavailable.status, 503);
     assert.strictEqual(loginUnavailable.code, 'LOGIN_RATE_LIMIT_UNAVAILABLE');
+    const closureUnavailable = await attempt(closedRuntime, 'closureStatus', 'receipt', '203.0.118.3');
+    assert.strictEqual(closureUnavailable.code, 'CLOSURE_STATUS_RATE_LIMIT_UNAVAILABLE');
+    assert.strictEqual(closureUnavailable.status, 503);
+    results.push({ name: 'closure_status_backend_fail_closed', status: closureUnavailable.status });
   } catch (error) {
     primaryError = error;
   } finally {

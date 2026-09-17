@@ -307,6 +307,60 @@ paths:
           description: Account or family closure is already in progress
         '503':
           description: Closure preview is disabled or unavailable
+  /care/account/closure-receipt:
+    x-swagger-router-controller: careClosureReceipt
+    post:
+      operationId: prepareClosureReceipt
+      security:
+        - Bearer: []
+      x-security-scopes:
+        - admin
+        - user
+      description: Creates a short-lived confirmation receipt. The secret is a bearer capability for closure status only and cannot authorize deletion or account access.
+      responses:
+        '201':
+          description: Receipt secret; persist it before submitting confirmation
+          headers:
+            Cache-Control:
+              type: string
+              enum: [no-store]
+          schema:
+            $ref: "#/definitions/ClosureReceiptPrepareResponse"
+        '401':
+          description: Sign in again
+        '429':
+          description: Too many receipt requests
+        '503':
+          description: Receipt unavailable
+  /care/account/closure-status:
+    x-swagger-router-controller: careClosureReceipt
+    post:
+      operationId: inspectClosureReceipt
+      security: []
+      description: Reads bounded closure progress using the operation receipt only. The receipt cannot confirm, delete, or access account data.
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            $ref: "#/definitions/ClosureReceiptStatusRequest"
+      responses:
+        '200':
+          description: Redacted closure progress
+          headers:
+            Cache-Control:
+              type: string
+              enum: [no-store]
+          schema:
+            $ref: "#/definitions/ClosureReceiptStatusResponse"
+        '401':
+          description: Receipt credentials required
+        '404':
+          description: Receipt unavailable
+        '429':
+          description: Too many status requests
+        '503':
+          description: Status unavailable
   /user/sessions:
     x-swagger-router-controller: deviceSessions
     get:
@@ -2964,6 +3018,66 @@ paths:
             $ref: "#/definitions/ErrorResponse"
 # complex objects have schema definitions
 definitions:
+  ClosureReceiptPrepareResponse:
+    type: object
+    additionalProperties: false
+    required:
+      - receiptId
+      - secret
+      - expiresAt
+    properties:
+      receiptId:
+        type: string
+        pattern: '^[a-fA-F0-9]{24}$'
+      secret:
+        type: string
+        pattern: '^[a-f0-9]{64}$'
+      expiresAt:
+        type: integer
+        format: int64
+        minimum: 1
+  ClosureReceiptStatusRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - receiptId
+      - secret
+    properties:
+      receiptId:
+        type: string
+        pattern: '^[a-fA-F0-9]{24}$'
+      secret:
+        type: string
+        pattern: '^[a-f0-9]{64}$'
+  ClosureReceiptStatusResponse:
+    type: object
+    additionalProperties: false
+    required:
+      - status
+      - accountDeleted
+      - expiresAt
+    properties:
+      status:
+        type: string
+        enum:
+          - prepared
+          - confirmed
+      operationId:
+        type: string
+        maxLength: 80
+      cleanupStatus:
+        type: string
+        maxLength: 80
+      accountDeleted:
+        type: boolean
+      updatedAt:
+        type: integer
+        format: int64
+        minimum: 1
+      expiresAt:
+        type: integer
+        format: int64
+        minimum: 1
   ClosurePreview:
     type: object
     additionalProperties: false

@@ -16,6 +16,10 @@ describe('care Swagger contract', () => {
       if (!route.startsWith('/care/') && route !== '/user/sessions') continue;
       for (const method of ['get', 'post', 'delete']) {
         if (!item[method]) continue;
+        if (route === '/care/account/closure-status' && method === 'post') {
+          assert.deepEqual(item[method].security, []);
+          continue;
+        }
         assert.deepEqual(item[method].security, [{ Bearer: [] }]);
         assert.equal(typeof item[method].operationId, 'string');
       }
