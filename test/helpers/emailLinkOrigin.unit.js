@@ -64,4 +64,26 @@ describe('configured email app origin', function() {
       )
     ).to.equal('https://override.example.test');
   });
+
+  it('does not use ambient environment URLs when application config is absent or invalid', function() {
+    expect(
+      configuredEmailAppOrigin(
+        { env: 'test' },
+        {
+          NODE_ENV: 'test',
+          AUTH_EMAIL_APP_URL: 'https://ambient.example.test',
+          CBOARD_APP_URL: 'https://ambient-fallback.example.test'
+        }
+      )
+    ).to.equal(null);
+    expect(
+      configuredEmailAppOrigin(
+        {
+          env: 'test',
+          AUTH_EMAIL_APP_URL: 'https://example.test/not-root'
+        },
+        { NODE_ENV: 'test', CBOARD_APP_URL: 'https://ambient.example.test' }
+      )
+    ).to.equal(null);
+  });
 });

@@ -5,9 +5,7 @@ const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 function configuredEmailAppOrigin(config, env = process.env) {
   const raw =
     config.AUTH_EMAIL_APP_URL ||
-    config.CBOARD_APP_URL ||
-    env.AUTH_EMAIL_APP_URL ||
-    env.CBOARD_APP_URL;
+    config.CBOARD_APP_URL;
   if (typeof raw !== 'string' || !raw.trim()) return null;
 
   let url;
