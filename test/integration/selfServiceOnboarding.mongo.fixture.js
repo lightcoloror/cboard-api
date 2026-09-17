@@ -28,28 +28,6 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     [verificationPath, require.cache[verificationPath]]
   ]);
 
-  const response = () => {
-    let finish;
-    const completed = new Promise(resolve => { finish = resolve; });
-    return {
-      code: null,
-      body: null,
-      headers: {},
-      set(name, value) { this.headers[name] = value; return this; },
-      status(code) { this.code = code; return this; },
-      json(body) {
-        this.body = body;
-        finish(this);
-        return this;
-      },
-      wait() { return completed; }
-    };
-  };
-  const run = async (handler, request) => {
-    const res = response();
-    await handler(request, res);
-    return res.wait();
-  };
   const request = body => ({
     body,
     ip: '127.0.0.1',
@@ -82,6 +60,7 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     }
   });
 
+  let server;
   try {
     // `api/mail` loads the real email-verification implementation; nodemailer is
     // the only substituted boundary and never creates a network transport.
@@ -90,6 +69,43 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     const User = require('../../api/models/User');
     const auth = require('../../api/helpers/auth');
     const sessions = require('../../api/helpers/deviceSessions');
+    // Reuse the existing care HTTP fixture's real Swagger metadata/router stack.
+    // Only mail delivery is substituted; requests cross a loopback HTTP socket.
+    const express = require('express');
+    const spec = require('yamljs').load(require('path').resolve(__dirname, '../../api/swagger/swagger.yaml'));
+    const api = express();
+    api.use(express.json());
+    api.use(require('express-session')({ secret: 'synthetic-onboarding-session', resave: false, saveUninitialized: false }));
+    await new Promise((resolve, reject) => require('swagger-tools').initializeMiddleware(spec, middleware => {
+      try {
+        api.use(middleware.swaggerMetadata());
+        api.use(middleware.swaggerRouter({ controllers: Object.fromEntries(
+          Object.entries(controller).map(([name, handler]) => [`user_${name}`, handler])
+        ), ignoreMissingHandlers: true }));
+        api.use((error, req, res, next) => res.status(error.statusCode || error.status || 500).json({ code: 'TEST_HTTP_ERROR' }));
+        resolve();
+      } catch (error) { reject(error); }
+    }));
+    server = api.listen(0, '127.0.0.1');
+    await new Promise((resolve, reject) => { server.once('listening', resolve); server.once('error', reject); });
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const run = async (handler, input) => {
+      const operation = Object.keys(controller).find(key => controller[key] === handler);
+      let route;
+      let method;
+      for (const [path, operations] of Object.entries(spec.paths)) {
+        for (const [verb, value] of Object.entries(operations)) {
+          if (value.operationId === operation) { route = path; method = verb.toUpperCase(); }
+        }
+      }
+      assert(route, 'controller operation must have a real Swagger route');
+      route = route.replace(/\{([^}]+)\}/g, (_, key) => encodeURIComponent(input.swagger.params[key].value));
+      const result = await fetch(base + route, { method,
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'self-service-onboarding-fixture' },
+        ...(input.body && method !== 'GET' ? { body: JSON.stringify(input.body) } : {})
+      });
+      return { code: result.status, body: await result.json(), headers: { 'Retry-After': result.headers.get('retry-after') } };
+    };
 
     const suffix = new mongoose.Types.ObjectId().toString();
     const password = 'synthetic-onboarding-password';
@@ -275,6 +291,7 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
       'expression', 'administrator transfer must not change the patient entry mode');
     passed.push('self-service-family-administrator-transfer-and-no-self-promotion');
   } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
     config.emailTransport = originalTransport;
     config.AUTH_EMAIL_APP_URL = originalOrigin;
     mockery.deregisterAll();
