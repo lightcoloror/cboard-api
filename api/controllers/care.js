@@ -1,5 +1,6 @@
 'use strict';
 const { createRuntime } = require('../helpers/careRuntime');
+const { consumeAuthRequestLimits, getAuthRequestLimiters } = require('../helpers/authRequestRateLimit');
 function handler(fn) {
   return async (req, res) => {
     res.set('Cache-Control', 'no-store');
@@ -8,6 +9,7 @@ function handler(fn) {
       const result = await fn(createRuntime(), String(req.user.id), req);
       res.status(result && result.conflict ? 409 : 200).json(result);
     } catch (error) {
+      if (Number.isSafeInteger(error.retryAfter) && error.retryAfter > 0) res.set('Retry-After', String(error.retryAfter));
       res.status(error.status || 503).json({ code: error.code || 'CARE_STORAGE_UNAVAILABLE' });
     }
   };
@@ -23,9 +25,15 @@ exports.writeFavorite = handler((s, u, r) => s.favorite(u, profile(r), r.body));
 exports.writeFavoriteOriginal = handler((s, u, r) => s.favoriteOriginal(u, profile(r), r.body));
 exports.migrationPreview = handler((s, u, r) => require('../helpers/careMigrationPreview').previewCareMigration(
   require('mongoose').connection, { id: u, email: r.user.email }));
-exports.createFamily = handler((s, u, r) => s.createFamily(u, r.body));
+exports.createFamily = handler(async (s, u, r) => {
+  await consumeAuthRequestLimits({ limiters: getAuthRequestLimiters('familyCreate'), operation: 'familyCreate', email: u, ip: r.ip });
+  return s.createFamily(u, r.body);
+});
 exports.listProfiles = handler((s, u) => s.profiles(u));
-exports.createProfile = handler((s, u, r) => s.createProfile(u, r.body));
+exports.createProfile = handler(async (s, u, r) => {
+  await consumeAuthRequestLimits({ limiters: getAuthRequestLimiters('profileCreate'), operation: 'profileCreate', email: u, ip: r.ip });
+  return s.createProfile(u, r.body);
+});
 exports.getProfile = handler((s, u, r) => s.snapshot(u, profile(r), r.query.since === undefined ? -1 : Number(r.query.since)));
 exports.command = handler((s, u, r) => s.command(u, profile(r), r.body));
 exports.acceptInvitation = handler((s, u, r) => s.accept(u, r.body.token));

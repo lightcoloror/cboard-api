@@ -490,6 +490,12 @@ paths:
           description: Access revoked or denied
         '409':
           description: Version conflict or concurrent change; retain local edit
+        '429':
+          description: Creation rate limit exceeded; retry after the indicated delay
+          headers:
+            Retry-After:
+              type: integer
+              description: Seconds before retry
         '503':
           description: Storage or feature unavailable
   /care/trial-claims:
@@ -734,6 +740,12 @@ paths:
           description: Access revoked or denied
         '409':
           description: Version conflict or concurrent change; retain local edit
+        '429':
+          description: Creation rate limit exceeded; retry after the indicated delay
+          headers:
+            Retry-After:
+              type: integer
+              description: Seconds before retry
         '503':
           description: Storage or feature unavailable
   /care/invitations/accept:

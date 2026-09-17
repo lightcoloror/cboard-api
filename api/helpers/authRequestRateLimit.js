@@ -5,6 +5,18 @@ const mongoose = require('mongoose');
 const { RateLimiterMongo } = require('rate-limiter-flexible');
 
 const OPERATIONS = Object.freeze({
+  familyCreate: Object.freeze({
+    codePrefix: 'CARE_FAMILY_CREATE', keyPrefix: 'care_family_create',
+    emailTable: 'careFamilyCreateAccountHourlyLimits', ipTable: 'careFamilyCreateIpHourlyLimits',
+    emailEnv: 'CARE_FAMILY_CREATE_ACCOUNT_HOURLY_LIMIT', ipEnv: 'CARE_FAMILY_CREATE_IP_HOURLY_LIMIT',
+    emailDefault: 10, ipDefault: 30
+  }),
+  profileCreate: Object.freeze({
+    codePrefix: 'CARE_PROFILE_CREATE', keyPrefix: 'care_profile_create',
+    emailTable: 'careProfileCreateAccountHourlyLimits', ipTable: 'careProfileCreateIpHourlyLimits',
+    emailEnv: 'CARE_PROFILE_CREATE_ACCOUNT_HOURLY_LIMIT', ipEnv: 'CARE_PROFILE_CREATE_IP_HOURLY_LIMIT',
+    emailDefault: 30, ipDefault: 60
+  }),
   closureConfirm: Object.freeze({
     codePrefix: 'CLOSURE_CONFIRM', keyPrefix: 'closure_confirm',
     emailTable: 'closureConfirmAccountHourlyLimits', ipTable: 'closureConfirmIpHourlyLimits',
