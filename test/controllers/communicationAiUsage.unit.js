@@ -132,7 +132,10 @@ describe('Communication AI usage ledger', function() {
         return createQuery({});
       }
     };
-    const service = createCommunicationAiUsageService({ model });
+    const service = createCommunicationAiUsageService({
+      model,
+      lifecycleEnabled: () => false
+    });
 
     await service.recordUsage({
       userId: '507f1f77bcf86cd799439011',
@@ -146,6 +149,112 @@ describe('Communication AI usage ledger', function() {
       true,
       false
     ]);
+  });
+
+  it('records usage inside the account lifecycle transaction when enabled', async function() {
+    const session = { id: 'usage-session' };
+    const calls = [];
+    let captured;
+    const model = {
+      findOneAndUpdate(filter, update, options) {
+        captured = { filter, update, options };
+        return createQuery({});
+      }
+    };
+    const service = createCommunicationAiUsageService({
+      model,
+      lifecycleEnabled: () => true,
+      lifecycle: {
+        async withOpenAccount(id, callback) {
+          calls.push(id);
+          return callback(session);
+        }
+      }
+    });
+
+    await service.recordUsage({
+      userId: 'user-id',
+      provider: 'openai-compatible',
+      model: 'model',
+      operation: 'ocr',
+      usage: null
+    });
+
+    expect(calls).to.deep.equal(['user-id']);
+    expect(captured.options.session).to.equal(session);
+  });
+
+  it('propagates lifecycle closure errors without writing usage', async function() {
+    let writes = 0;
+    const model = {
+      findOneAndUpdate() {
+        writes += 1;
+        return createQuery({});
+      }
+    };
+    const lifecycleError = Object.assign(new Error('account is closing'), {
+      code: 'ACCOUNT_CLOSING',
+      status: 409
+    });
+    const service = createCommunicationAiUsageService({
+      model,
+      lifecycleEnabled: () => true,
+      lifecycle: {
+        async withOpenAccount() {
+          throw lifecycleError;
+        }
+      }
+    });
+
+    try {
+      await service.recordUsage({
+        userId: 'user-id',
+        provider: 'openai-compatible',
+        model: 'model',
+        operation: 'ocr',
+        usage: null
+      });
+      throw new Error('expected lifecycle error');
+    } catch (error) {
+      expect(error).to.equal(lifecycleError);
+      expect(error.code).to.equal('ACCOUNT_CLOSING');
+      expect(error.status).to.equal(409);
+    }
+    expect(writes).to.equal(0);
+  });
+
+  it('does not retry a duplicate key after the transactional write aborts', async function() {
+    let writes = 0;
+    const duplicate = Object.assign(new Error('race'), { code: 11000 });
+    const model = {
+      findOneAndUpdate() {
+        writes += 1;
+        return createQuery(Promise.reject(duplicate));
+      }
+    };
+    const service = createCommunicationAiUsageService({
+      model,
+      lifecycleEnabled: () => true,
+      lifecycle: {
+        async withOpenAccount(id, callback) {
+          return callback({ id: 'session' });
+        }
+      }
+    });
+
+    try {
+      await service.recordUsage({
+        userId: 'user-id',
+        provider: 'openai-compatible',
+        model: 'model',
+        operation: 'ocr',
+        usage: null
+      });
+      throw new Error('expected duplicate error');
+    } catch (error) {
+      expect(error).to.equal(duplicate);
+    }
+    expect(writes).to.equal(1);
   });
 
   it('returns content-free totals and exposes unreported provider calls', async function() {

@@ -782,6 +782,28 @@ async function main() {
     assert.equal(await Settings.collection.countDocuments({ user: finalUserId }), 0);
     assert.equal(await Settings.collection.countDocuments({ user: loginUser }), 1);
     passed.push('settings-write-and-read-time-create-cannot-recreate-closing-or-closed-account-data');
+    const { createCommunicationAiUsageService } = require('../../api/helpers/communicationAiUsage');
+    const usageService = createCommunicationAiUsageService();
+    const Usage = require('../../api/models/CommunicationAiUsage');
+    const usageOwnerId = new mongoose.Types.ObjectId();
+    const usageOwner = String(usageOwnerId);
+    const usageEvent = { userId: usageOwner, provider: 'synthetic', model: 'synthetic',
+      operation: 'sentence-candidates', usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 } };
+    await usageService.recordUsage(usageEvent);
+    const usageBeforeClose = await Usage.collection.findOne({ user: usageOwnerId });
+    assert(usageBeforeClose);
+    assert.equal(usageBeforeClose.requestCount, 1);
+    await coordinator.begin(usageOwner, []);
+    await assert.rejects(usageService.recordUsage(usageEvent), error => error.code === 'ACCOUNT_CLOSING');
+    assert.deepEqual(await Usage.collection.findOne({ user: usageOwnerId }), usageBeforeClose);
+    await Usage.collection.deleteOne({ user: usageOwnerId });
+    await assert.rejects(usageService.recordUsage(usageEvent), error => error.code === 'ACCOUNT_CLOSING');
+    assert.equal(await Usage.collection.countDocuments({ user: usageOwnerId }), 0);
+    await assert.rejects(usageService.recordUsage({ ...usageEvent, userId: finalOwner }),
+      error => error.code === 'ACCOUNT_CLOSED');
+    assert.equal(await Usage.collection.countDocuments({ user: finalUserId }), 0);
+    assert.equal(await Usage.collection.countDocuments({ user: loginUser }), 1);
+    passed.push('late-ai-usage-cannot-update-or-recreate-closing-and-closed-account-records');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

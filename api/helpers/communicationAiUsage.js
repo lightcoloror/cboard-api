@@ -1,6 +1,7 @@
 'use strict';
 
 const CommunicationAiUsage = require('../models/CommunicationAiUsage');
+const { createCareFamilyLifecycle } = require('./careFamilyLifecycle');
 
 const MAX_TOKENS_PER_RESPONSE = 1000000000;
 const COMMUNICATION_AI_OPERATIONS = Object.freeze([
@@ -189,7 +190,10 @@ function summarizeCommunicationAiUsage(rows, month) {
 
 function createCommunicationAiUsageService({
   model = CommunicationAiUsage,
-  now = () => new Date()
+  now = () => new Date(),
+  lifecycle = null,
+  lifecycleEnabled = () =>
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true'
 } = {}) {
   async function recordUsage({
     userId,
@@ -236,8 +240,31 @@ function createCommunicationAiUsageService({
       upsert: true
     };
 
+    const write = session =>
+      executeQuery(
+        model.findOneAndUpdate(filter, update, {
+          ...options,
+          ...(session ? { session } : {})
+        })
+      );
+
+    if (lifecycleEnabled()) {
+      const accountLifecycle = lifecycle || createCareFamilyLifecycle();
+      await accountLifecycle.withOpenAccount(normalizedUserId, write);
+      // A duplicate-key error aborts the transaction. Retrying an upsert:false
+      // write on that session would violate the transaction boundary; propagate
+      // it and let the caller handle the failed transaction.
+      return {
+        month,
+        reported: normalizedUsage.reported,
+        promptTokens: normalizedUsage.promptTokens,
+        completionTokens: normalizedUsage.completionTokens,
+        totalTokens: normalizedUsage.totalTokens
+      };
+    }
+
     try {
-      await executeQuery(model.findOneAndUpdate(filter, update, options));
+      await write();
     } catch (error) {
       if (!error || error.code !== 11000) throw error;
       await executeQuery(
