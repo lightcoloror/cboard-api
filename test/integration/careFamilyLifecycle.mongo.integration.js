@@ -276,6 +276,66 @@ async function main() {
     assert.equal((await budget.reserve('institution-funding', { ...usage, actor: otherFamily.owner,
       profileId: otherFamily.profileId, requestId: 'institution-open-profile' })).status, 'reserved');
     passed.push('institution-budget-checks-patient-family-without-locking-other-families');
+    await connection.db.createCollection('careclosurejobs');
+    const careAccounts = connection.db.collection('careaccounts');
+    // Earlier account CAS cases used a marker payload; normalize it before
+    // exercising the real encrypted manifest scan of all personal accounts.
+    await careAccounts.updateOne({ _id: personal._id }, { $set: { sealed: encryption.seal({}, `account:${personal._id}`) } });
+    const jobFamily = await seed('closure-job');
+    const blobName = `${'a'.repeat(48)}.bin`, pendingName = `${'b'.repeat(48)}.bin`;
+    await families.updateOne({ _id: jobFamily.familyId }, { $set: { sealed: encryption.seal({
+      subscription: { startsAt, expiresAt }, mediaQuota: { reservations: { uploadPending: {
+        status: 'reserved', profileId: jobFamily.profileId, mediaId: 'pending-media', objectName: pendingName
+      } } }
+    }, `family:${jobFamily.familyId}`) } });
+    await profiles.updateOne({ _id: jobFamily.profileId }, { $set: { sealed: encryption.seal({
+      name: 'SYNTHETIC-PATIENT-NAME', grants: { [jobFamily.owner]: ['read'] },
+      media: { image: { blob: blobName, size: 3, deleted: false } }
+    }, `profile:${jobFamily.profileId}`) } });
+    await careAccounts.insertOne({ _id: 'former-collaborator', rev: 0, sealed: encryption.seal({ favorites: {
+      oldFavorite: { profileId: jobFamily.profileId, value: { sentence: 'SYNTHETIC-PRIVATE-SENTENCE' } }
+    } }, 'account:former-collaborator') });
+    await budget.provision('closing-family-funding', { owner: jobFamily.owner, familyId: jobFamily.familyId,
+      kind: 'family', startsAt, expiresAt, weeklyLimit: 100 });
+    await budget.reserve('closing-family-funding', { ...usage, actor: jobFamily.owner, profileId: jobFamily.profileId, requestId: 'job-family-pending' });
+    await budget.delegate('institution-funding', 'institution-owner', { member: jobFamily.owner, limit: 20, profileIds: [jobFamily.profileId] });
+    await budget.reserve('institution-funding', { ...usage, actor: jobFamily.owner, profileId: jobFamily.profileId, requestId: 'job-institution-pending' });
+    const { createCareClosureCoordinator } = require('../../api/helpers/careClosureCoordinator');
+    const coordinator = createCareClosureCoordinator({ connection, encryption });
+    const prepared = await coordinator.begin(jobFamily.owner, [jobFamily.familyId]);
+    const jobs = connection.db.collection('careclosurejobs');
+    const job = await jobs.findOne({ _id: prepared.operationId });
+    assert.equal(prepared.cleanupStatus, 'prepared');
+    const plan = encryption.open(job.sealed, `closure:${prepared.operationId}`);
+    assert.deepEqual(plan.familyFundingIds, ['closing-family-funding']);
+    assert.equal(plan.pendingUsage.length, 2, 'include pending institution receipts owned by another administrator');
+    assert.equal(plan.pendingUploads[0].objectName, pendingName);
+    assert.deepEqual(plan.media.map(item => item.blob), [blobName]);
+    assert(plan.relatedAccountIds.includes('former-collaborator'));
+    assert(!JSON.stringify(plan).includes('SYNTHETIC-PRIVATE-SENTENCE'));
+    assert(!JSON.stringify(plan).includes('SYNTHETIC-PATIENT-NAME'));
+    assert(!JSON.stringify(job).includes(blobName));
+    const beforeResume = await accounts.findOne({ _id: jobFamily.owner });
+    const resumed = await createCareClosureCoordinator({ connection, encryption }).begin(jobFamily.owner, [jobFamily.familyId]);
+    assert.equal(resumed.operationId, prepared.operationId);
+    assert.deepEqual(await accounts.findOne({ _id: jobFamily.owner }), beforeResume);
+    assert.equal(await jobs.countDocuments({ owner: jobFamily.owner }), 1);
+    const status = await coordinator.inspect(jobFamily.owner, prepared.operationId);
+    assert.equal(status.sealed, undefined);
+    await assert.rejects(coordinator.inspect('unrelated-owner', prepared.operationId), error => error.code === 'CLOSURE_JOB_UNAVAILABLE');
+    passed.push('closure-manifest-is-atomic-encrypted-scoped-and-resumable');
+
+    const broken = await seed('broken-closure-plan');
+    await assert.rejects(coordinator.begin(broken.owner, [broken.familyId]), error => error.code === 'CLOSURE_PLAN_UNAVAILABLE');
+    assert.equal((await families.findOne({ _id: broken.familyId })).closure, undefined);
+    assert.equal(await accounts.findOne({ _id: broken.owner }), null);
+    assert.equal(await jobs.countDocuments({ owner: broken.owner }), 0);
+    const bounded = await seed('bounded-closure-plan');
+    await assert.rejects(createCareClosureCoordinator({ connection, encryption, maxScanRecords: 1 }).begin(bounded.owner, [bounded.familyId]),
+      error => error.code === 'CLOSURE_SCAN_LIMIT_REACHED');
+    assert.equal((await families.findOne({ _id: bounded.familyId })).closure, undefined);
+    assert.equal(await accounts.findOne({ _id: bounded.owner }), null);
+    passed.push('failed-or-incomplete-manifest-rolls-back-closing-state');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

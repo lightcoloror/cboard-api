@@ -60,7 +60,7 @@ function connectionFor() {
   };
 }
 
-function factory({ family, profile, profiles, account, updateResults, profileUpdateResults, accountUpdateResults, now = 1700000000000, operationId = 'close-op' } = {}) {
+function factory({ family, profile, profiles, account, updateResults, profileUpdateResults, accountUpdateResults, prepareClose = null, now = 1700000000000, operationId = 'close-op' } = {}) {
   const session = connectionFor();
   const Family = collection({ one: family, families: Array.isArray(family) ? family : [], updateResults });
   const Profile = collection({ one: profile, profiles, updateResults: profileUpdateResults });
@@ -72,6 +72,7 @@ function factory({ family, profile, profiles, account, updateResults, profileUpd
     Profile: { collection: Profile },
     Communicator: { collection: Communicator },
     AccountLifecycle: { collection: AccountLifecycle },
+    prepareClose,
     now: () => now,
     operationId: () => operationId
   });
@@ -253,6 +254,74 @@ describe('care family lifecycle helper', function() {
   it('aborts the transaction when the callback fails', async function() {
     const f = factory({ family: { _id: 'family-a', owner: 'owner-1' } });
     await expectCode(f.lifecycle.withOpenFamilyAccounts('family-a', ['owner-1'], async () => { throw new Error('quota callback failed'); }), 'quota callback failed');
+    expect(f.state.aborted).to.equal(true);
+    expect(f.state.committed).to.equal(false);
+  });
+
+  it('returns an existing closing record idempotently without generating or writing', async function() {
+    let generated = 0;
+    const f = factory({
+      account: {
+        _id: 'owner-1',
+        status: 'closing',
+        closure: { owner: 'owner-1', operationId: 'close-existing', familyIds: ['family-a'], at: 1700000000000 }
+      },
+      operationId: () => { generated += 1; return 'close-new'; },
+      prepareClose: async () => { throw new Error('must not prepare'); }
+    });
+    const result = await f.lifecycle.beginClose('owner-1', ['family-a']);
+    expect(result).to.deep.equal({ status: 'closing', owner: 'owner-1', familyIds: ['family-a'], operationId: 'close-existing', at: 1700000000000 });
+    expect(generated).to.equal(0);
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(0);
+    expect(f.Family.calls.updateOne).to.have.length(0);
+  });
+
+  it('rejects a different confirmation against an existing closing record without writing', async function() {
+    const f = factory({
+      account: {
+        _id: 'owner-1',
+        status: 'closing',
+        closure: { owner: 'owner-1', operationId: 'close-existing', familyIds: ['family-a'], at: 1700000000000 }
+      }
+    });
+    try {
+      await f.lifecycle.beginClose('owner-1', ['family-b']);
+      throw new Error('expected FAMILY_CLOSE_CONFIRMATION_REQUIRED');
+    } catch (error) {
+      expect(error.code).to.equal(FAMILY_CLOSE_CONFIRMATION_REQUIRED);
+      expect(error.details.familyIds).to.deep.equal(['family-a']);
+    }
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(0);
+    expect(f.Family.calls.updateOne).to.have.length(0);
+  });
+
+  it('runs prepareClose after closing writes in the same session', async function() {
+    let prepared;
+    const f = factory({
+      family: [{ _id: 'family-a', owner: 'owner-1' }],
+      profiles: [{ _id: 'profile-a', familyId: 'family-a', members: ['owner-1'] }],
+      prepareClose: async (session, result) => { prepared = { session, result }; }
+    });
+    const result = await f.lifecycle.beginClose('owner-1', ['family-a']);
+    expect(prepared.result).to.deep.equal(result);
+    expect(prepared.session).to.equal(f.AccountLifecycle.calls.updateOne[1].options.session);
+    expect(prepared.session).to.equal(f.Family.calls.updateOne[0].options.session);
+  });
+  it('rejects a damaged persisted closing timestamp instead of resuming it', async function() {
+    const f = factory({ account: { _id: 'owner-1', status: 'closing', closure: {
+      owner: 'owner-1', familyIds: ['family-a'], operationId: 'existing-op'
+    } } });
+    await expectCode(f.lifecycle.beginClose('owner-1', ['family-a']), 'ACCOUNT_CLOSE_CONFLICT');
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(0);
+  });
+
+  it('aborts closing writes when prepareClose fails', async function() {
+    const f = factory({
+      family: [{ _id: 'family-a', owner: 'owner-1' }],
+      profiles: [{ _id: 'profile-a', familyId: 'family-a', members: ['owner-1'] }],
+      prepareClose: async () => { throw new Error('prepare failed'); }
+    });
+    await expectCode(f.lifecycle.beginClose('owner-1', ['family-a']), 'prepare failed');
     expect(f.state.aborted).to.equal(true);
     expect(f.state.committed).to.equal(false);
   });

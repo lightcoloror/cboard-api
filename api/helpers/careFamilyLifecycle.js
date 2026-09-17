@@ -70,7 +70,8 @@ function createCareFamilyLifecycle({
   Communicator = null,
   AccountLifecycle = null,
   now = () => Date.now(),
-  operationId = () => crypto.randomBytes(16).toString('hex')
+  operationId = () => crypto.randomBytes(16).toString('hex'),
+  prepareClose = null
 } = {}) {
   const familyCollection = modelCollection(Family, 'Family');
   const profileCollection = modelCollection(Profile, 'Profile');
@@ -214,14 +215,35 @@ function createCareFamilyLifecycle({
       fail(400, 'INVALID_FAMILY_CONFIRMATION');
     }
     const requested = sortedIds(exactFamilyIds);
-    const closeOperationId = operationId();
-    if (!validId(String(closeOperationId))) fail(500, 'INVALID_CLOSE_OPERATION_ID');
-    const closedAt = now();
+    let closeOperationId;
+    let closedAt;
 
     // createFamily and beginClose serialize through the same account document.
     // Direct inserts and ownership transfers that bypass this boundary remain
     // unsafe; all such writers must be integrated before enabling HTTP closure.
     return transaction(async session => {
+      const existingAccount = await accountLifecycleCollection.findOne({ _id: owner }, { session });
+      if (existingAccount && existingAccount.status === 'closing') {
+        const closure = existingAccount.closure;
+        const existingFamilyIds = closure && closure.familyIds;
+        if (!closure || closure.owner !== owner || typeof closure.operationId !== 'string' || !validId(closure.operationId) ||
+          !Number.isSafeInteger(closure.at) || closure.at < 0 ||
+          !Array.isArray(existingFamilyIds) || existingFamilyIds.some(id => !validId(id)) ||
+          new Set(existingFamilyIds.map(String)).size !== existingFamilyIds.length) {
+          fail(409, ACCOUNT_CLOSE_CONFLICT);
+        }
+        const existingIds = sortedIds(existingFamilyIds);
+        if (!requested.length || !sameIdSet(requested, existingIds)) {
+          fail(409, FAMILY_CLOSE_CONFIRMATION_REQUIRED, { owner, familyIds: existingIds });
+        }
+        return {
+          status: 'closing',
+          owner,
+          familyIds: existingIds,
+          operationId: String(closure.operationId),
+          at: closure.at
+        };
+      }
       const account = await lockOpenAccount(owner, session);
       const families = await familyCollection.find({ owner }, {
         session,
@@ -250,6 +272,10 @@ function createCareFamilyLifecycle({
           profiles: members.map(profile => ({ profileId: profile._id, familyId: profile.familyId }))
         });
       }
+
+      if (!closeOperationId) closeOperationId = operationId();
+      if (!validId(String(closeOperationId))) fail(500, 'INVALID_CLOSE_OPERATION_ID');
+      if (closedAt === undefined) closedAt = now();
 
       for (const family of families) {
         assertOpen(family);
@@ -282,13 +308,15 @@ function createCareFamilyLifecycle({
         $inc: { lifecycleRev: 1 }
       }, { session });
       if (!changed(accountResult)) fail(409, ACCOUNT_CLOSE_CONFLICT);
-      return {
+      const result = {
         status: 'closing',
         owner,
         familyIds: actual,
         operationId: String(closeOperationId),
         at: closedAt
       };
+      if (typeof prepareClose === 'function') await prepareClose(session, result);
+      return result;
     });
   }
 
