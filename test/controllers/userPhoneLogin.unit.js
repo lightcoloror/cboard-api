@@ -11,11 +11,13 @@ describe('user phone login controller', function() {
   let lookupError;
   let verificationError;
   let consumed;
+  let sessionError;
 
   beforeEach(function() {
     lookupError = null;
     verificationError = null;
     consumed = null;
+    sessionError = null;
     user = {
       _id: 'user-id',
       email: 'care@example.test',
@@ -53,7 +55,7 @@ describe('user phone login controller', function() {
       useCleanCache: true
     });
     mockery.registerMock('../models/User', User);
-    mockery.registerMock('../helpers/deviceSessions', { create: async () => 'a'.repeat(48) });
+    mockery.registerMock('../helpers/deviceSessions', { create: async () => { if (sessionError) throw sessionError; return 'a'.repeat(48); } });
     mockery.registerMock('../models/ResetPassword', {});
     mockery.registerMock('../models/Settings', {
       async getOrCreate() {
@@ -202,5 +204,15 @@ describe('user phone login controller', function() {
     await controller.loginUserWithPhone(request(), storageResponse);
     expect(storageResponse.statusCode).to.equal(503);
     expect(storageResponse.body.message).not.to.contain('mongo');
+  });
+
+  it('returns account closing from an async device session failure without setting the request session', async function() {
+    sessionError = Object.assign(new Error('closing'), { status: 409, code: 'ACCOUNT_CLOSING' });
+    const req = request();
+    const res = response();
+    await controller.loginUserWithPhone(req, res);
+    expect(res.statusCode).to.equal(409);
+    expect(res.body).to.deep.equal({ message: 'Unable to complete login.', error: { code: 'ACCOUNT_CLOSING' } });
+    expect(req.session.userId).to.equal(undefined);
   });
 });

@@ -19,6 +19,7 @@ async function main() {
   await connection.db.createCollection('careaccountlifecycles');
   await connection.db.createCollection('careaccounts');
   await connection.db.createCollection('communicators');
+  await connection.db.createCollection('devicesessions');
   process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
   const runtimeStore = require('../../api/helpers/careRuntime').store;
   const dependencies = { connection, Family: { collection: families }, Profile: { collection: profiles }, AccountLifecycle: { collection: accounts } };
@@ -498,6 +499,18 @@ async function main() {
       { status: 'family_data_cleaned', count: 0 });
     assert.equal((await accounts.findOne({ _id: cleanFamily.owner })).status, 'closing', 'account deletion remains a later stage');
     passed.push('family-data-cleanup-is-atomic-exact-scoped-and-preserves-institutions');
+    const deviceSessions = require('../../api/helpers/deviceSessions');
+    const loginUser = new mongoose.Types.ObjectId();
+    const loginOwner = String(loginUser);
+    const deviceId = await deviceSessions.create(loginUser, 'synthetic device');
+    assert.equal(await deviceSessions.valid({ id: loginOwner, sid: deviceId }), true);
+    await service.createFamily({ _id: 'login-closure-family', owner: loginOwner, rev: 0,
+      sealed: encryption.seal({}, 'family:login-closure-family') });
+    await service.beginClose(loginOwner, ['login-closure-family']);
+    assert.equal(await deviceSessions.valid({ id: loginOwner, sid: deviceId }), false);
+    await assert.rejects(deviceSessions.create(loginUser), error => error.code === 'ACCOUNT_CLOSING');
+    assert.equal(await connection.collection('devicesessions').countDocuments({ user: loginUser }), 1);
+    passed.push('closing-account-rejects-existing-token-and-new-device-session');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

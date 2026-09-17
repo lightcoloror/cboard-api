@@ -620,9 +620,8 @@ function updateUser(req, res) {
 
 async function completeUserLogin(req, res, user) {
   const userId = user._id;
-  req.session.userId = userId;
-
   const sid = await require('../helpers/deviceSessions').create(userId, req.get('User-Agent'));
+  req.session.userId = userId;
   const tokenString = auth.issueToken({
     sid,
     email: user.email,
@@ -649,6 +648,15 @@ async function completeUserLogin(req, res, user) {
     birthdate: moment(user.birthdate).format('YYYY-MM-DD'),
     authToken: tokenString
   });
+}
+
+function sendLoginCompletionError(res, error, fallbackStatus = 500) {
+  if (error && (error.code === 'ACCOUNT_CLOSING' || error.code === 'ACCOUNT_CLOSED')) {
+    return res.status(error.code === 'ACCOUNT_CLOSED' ? 403 : 409).json({
+      message: 'Unable to complete login.', error: { code: error.code }
+    });
+  }
+  return res.status(fallbackStatus).json({ message: 'Unable to complete login.' });
 }
 
 function sendPhoneLoginFailure(res, status = 401) {
@@ -678,9 +686,7 @@ async function loginUser(req, res) {
         message: 'Wrong email or password.'
       });
     }
-    return completeUserLogin(req, res, user).catch(() =>
-      res.status(500).json({ message: 'Unable to complete login.' })
-    );
+    return completeUserLogin(req, res, user).catch(error => sendLoginCompletionError(res, error));
   });
 }
 
@@ -709,8 +715,13 @@ async function loginUserWithPhone(req, res) {
       .populate({ path: 'boards', options: { lean: true } })
       .exec();
     if (!user || user.role === 'admin') return sendPhoneLoginFailure(res);
-    return completeUserLogin(req, res, user);
+    return await completeUserLogin(req, res, user);
   } catch (error) {
+    if (error && (error.code === 'ACCOUNT_CLOSING' || error.code === 'ACCOUNT_CLOSED')) {
+      return res.status(error.code === 'ACCOUNT_CLOSED' ? 403 : 409).json({
+        message: 'Unable to complete login.', error: { code: error.code }
+      });
+    }
     return sendPhoneLoginFailure(res, 503);
   }
 }

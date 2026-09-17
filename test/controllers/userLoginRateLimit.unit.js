@@ -11,12 +11,14 @@ describe('user password login rate limit', function() {
   let limiterError;
   let authenticateCalls;
   let sessionCalls;
+  let sessionError;
 
   beforeEach(function() {
     limiterCalls = [];
     limiterError = null;
     authenticateCalls = 0;
     sessionCalls = 0;
+    sessionError = null;
     const authenticatedUser = {
       _id: 'user-1',
       email: 'care@example.test',
@@ -45,7 +47,7 @@ describe('user password login rate limit', function() {
       issueToken() { return 'synthetic-token'; }
     });
     mockery.registerMock('../helpers/deviceSessions', {
-      async create() { sessionCalls += 1; return 'session-1'; }
+      async create() { sessionCalls += 1; if (sessionError) throw sessionError; return 'session-1'; }
     });
     mockery.registerMock('../helpers/phoneVerificationRuntime', { phoneVerificationService: {} });
     mockery.registerMock('../helpers/careAccountDeletion', {});
@@ -170,5 +172,16 @@ describe('user password login rate limit', function() {
     );
     expect(res.statusCode).to.equal(401);
     expect(authenticateCalls).to.equal(1);
+  });
+
+  it('returns account lifecycle errors without establishing a request session', async function() {
+    sessionError = Object.assign(new Error('closing'), { status: 409, code: 'ACCOUNT_CLOSING' });
+    const req = request();
+    const res = response();
+    await controller.loginUser(req, res);
+    await res.completed;
+    expect(res.statusCode).to.equal(409);
+    expect(res.body).to.deep.equal({ message: 'Unable to complete login.', error: { code: 'ACCOUNT_CLOSING' } });
+    expect(req.session.userId).to.equal(undefined);
   });
 });
