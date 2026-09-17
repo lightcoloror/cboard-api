@@ -23,6 +23,7 @@ const GoogleToken = require('./api/passport/googleToken');
 const FacebookToken = require('./api/passport/facebookToken');
 const Apple = require('./api/passport/apple');
 const morgan = require('morgan');
+const { createHttpLogFormat, registerHttpLoggerTokens } = require('./api/helpers/httpLogger');
 const config = require('./config');
 const {
   createCommunicationEnhancementRateLimitMiddleware
@@ -76,9 +77,9 @@ swaggerTools.initializeMiddleware(swaggerConfig, async function (middleware) {
     })
   );
 
-  // Log HTTP requests. The `dev` format looks like this:
-  // :method :url :status :response-time ms - :res[content-length]
-  app.use(morgan('dev'));
+  // Log only request method, fixed route metadata, status, and duration.
+  registerHttpLoggerTokens(morgan);
+  app.use(morgan(createHttpLogFormat()));
 
   app.use(bodyParser.json({ limit: '10mb' }));
   app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
