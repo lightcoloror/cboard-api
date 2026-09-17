@@ -6,15 +6,15 @@ const { createCareBudget } = require('../../api/helpers/careBudget');
 const { DAY } = require('../../api/helpers/carePolicy');
 const clone = v => v && JSON.parse(JSON.stringify(v));
 function fixture() {
-  const docs = {}; let clock = DAY;
+  const docs = {}; const casContexts = []; let clock = DAY;
   const encryption = createCareCrypto({ test: crypto.randomBytes(32).toString('hex') }, 'test');
   const store = {
     get: async id => clone(docs[id]),
     create: async d => { if (docs[d._id]) return false; docs[d._id] = clone(d); return true; },
-    cas: async (id, rev, value) => { if (docs[id].rev !== rev) return false; docs[id] = { ...docs[id], ...clone(value) }; return true; }
+    cas: async (id, rev, value, context = {}) => { casContexts.push(clone(context)); if (docs[id].rev !== rev) return false; docs[id] = { ...docs[id], ...clone(value) }; return true; }
   };
   const options = { store, encryption, now: () => clock };
-  return { options, service: createCareBudget(options), time: v => { clock = v; }, docs };
+  return { options, service: createCareBudget(options), time: v => { clock = v; }, docs, casContexts };
 }
 const request = (requestId, units = 20) => ({ actor: 'therapist', profileId: 'patient', requestId, units, fingerprint: 'a'.repeat(64) });
 async function setup(f) {
@@ -22,6 +22,18 @@ async function setup(f) {
   await f.service.delegate('family', 'owner', { member: 'therapist', limit: 30, profileIds: ['patient'] });
 }
 describe('durable family and institutional weekly AI budget', () => {
+  it('passes operation-specific internal CAS contexts without mixing reserve and settlement', async () => {
+    const f = fixture(); await setup(f);
+    assert.deepEqual(f.casContexts[0], { mode: 'delegate', actor: 'owner' });
+
+    await f.service.reserve('family', request('context-check'));
+    assert.deepEqual(f.casContexts.at(-1), { mode: 'reserve', actor: 'therapist', profileId: 'patient' });
+
+    await f.service.settle('family', 'therapist', 'context-check', 7);
+    assert.deepEqual(f.casContexts.at(-1), { mode: 'settle', actor: 'therapist', requestId: 'context-check' });
+    assert.notDeepEqual(f.casContexts.at(-2), f.casContexts.at(-1));
+  });
+
   it('atomically enforces delegated caps across concurrent requests', async () => {
     const f = fixture(); await setup(f);
     const results = await Promise.allSettled([f.service.reserve('family', request('one')), f.service.reserve('family', request('two'))]);

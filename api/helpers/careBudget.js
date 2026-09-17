@@ -13,13 +13,13 @@ function createCareBudget({ store, encryption, now = Date.now }) {
     if (!doc) fail(403, 'FUNDING_ACCESS_DENIED');
     return { doc, state: encryption.open(doc.sealed, `funding:${id}`) };
   }
-  async function mutate(id, fn) {
+  async function mutate(id, fn, context = {}) {
     for (let attempt = 0; attempt < 12; attempt++) {
       const { doc, state } = await load(id);
       const result = fn(state);
       if (result.noWrite) return result.value;
       if (Buffer.byteLength(JSON.stringify(state)) > 5 * 1024 * 1024) fail(413, 'FUNDING_CAPACITY_REACHED');
-      if (await store.cas(id, doc.rev, { rev: doc.rev + 1, members: Object.keys(state.grants).filter(u => !state.grants[u].revoked), sealed: encryption.seal(state, `funding:${id}`) })) return result.value;
+      if (await store.cas(id, doc.rev, { rev: doc.rev + 1, members: Object.keys(state.grants).filter(u => !state.grants[u].revoked), sealed: encryption.seal(state, `funding:${id}`) }, context)) return result.value;
     }
     fail(409, 'RETRY_CONCURRENT_CHANGE');
   }
@@ -68,10 +68,10 @@ function createCareBudget({ store, encryption, now = Date.now }) {
         if (!state.trialPending) return { noWrite: true, value: { ok: true } };
         state.trialPending = false;
         return { value: { ok: true } };
-      });
+      }, {});
     },
     async renew(id, expiresAt) {
-      return mutate(id, state => { if (!(expiresAt > state.expiresAt)) fail(400, 'INVALID_RENEWAL'); state.expiresAt = expiresAt; return { value: { ok: true } }; });
+      return mutate(id, state => { if (!(expiresAt > state.expiresAt)) fail(400, 'INVALID_RENEWAL'); state.expiresAt = expiresAt; return { value: { ok: true } }; }, {});
     },
     async addPack(id, pack) {
       if (!valid(pack.id) || !PACK_TYPES.includes(pack.type) || !positive(pack.amount) || !Number.isSafeInteger(pack.startsAt)) fail(400, 'INVALID_CREDIT_PACK');
@@ -85,7 +85,7 @@ function createCareBudget({ store, encryption, now = Date.now }) {
           return { noWrite: true, value: { ok: true } };
         }
         state.packs.push(value); return { value: { ok: true } };
-      });
+      }, {});
     },
     async delegate(id, actor, body) {
       if (!valid(body.member) || !positive(body.limit) || !Array.isArray(body.profileIds) || !body.profileIds.length || body.profileIds.some(p => !valid(p))) fail(400, 'INVALID_DELEGATION');
@@ -93,7 +93,7 @@ function createCareBudget({ store, encryption, now = Date.now }) {
         if (state.owner !== actor || body.member === state.owner) fail(403, 'FUNDING_ADMIN_REQUIRED');
         state.grants[body.member] = { limit: body.limit, profileIds: [...new Set(body.profileIds)], revoked: body.revoked === true };
         return { value: { ok: true } };
-      });
+      }, { mode: 'delegate', actor });
     },
     async snapshot(id, actor, profileId) {
       const { state } = await load(id); const g = grant(state, actor, profileId); const w = week(state);
@@ -129,7 +129,7 @@ function createCareBudget({ store, encryption, now = Date.now }) {
         const receipt = { actor, requestId, profileId, fingerprint, reserved: units, status: 'reserved', allocations, delegateKey, createdAt: now() };
         state.receipts[key] = receipt;
         return { value: clone(receipt) };
-      });
+      }, { mode: 'reserve', actor, profileId });
     },
     async settle(id, actor, requestId, actualUnits, evidenceId) {
       if (!Number.isSafeInteger(actualUnits) || actualUnits < 0) fail(400, 'INVALID_SETTLEMENT');
@@ -151,7 +151,7 @@ function createCareBudget({ store, encryption, now = Date.now }) {
         receipt.status = actualUnits === 0 ? 'released' : 'settled'; receipt.actual = actualUnits; receipt.settledAt = now();
         if (evidenceId) receipt.reconciliationEvidence = evidenceId;
         return { value: clone(receipt) };
-      });
+      }, { mode: 'settle', actor, requestId });
     }
   };
 }

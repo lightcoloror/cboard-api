@@ -182,6 +182,32 @@ function createCareFamilyLifecycle({
     });
   }
 
+  async function withOpenFamilyAccounts(familyId, accountIds, callback) {
+    if (familyId !== null && !validId(familyId)) fail(400, 'INVALID_FAMILY');
+    if (!Array.isArray(accountIds) || !accountIds.length || accountIds.some(id => !validId(id))) {
+      fail(400, 'INVALID_ACCOUNT_IDS');
+    }
+    if (typeof callback !== 'function') fail(400, 'INVALID_FAMILY_CALLBACK');
+    return transaction(async session => {
+      const family = familyId === null ? null : await readFamily(familyId, session);
+      if (family && !validId(family.owner)) fail(409, FAMILY_CLOSE_CONFLICT);
+      const owners = [...new Set([...(family ? [family.owner] : []), ...accountIds])].sort();
+      for (const owner of owners) await lockOpenAccount(owner, session);
+      if (family) {
+        const result = await familyCollection.updateOne({
+          _id: familyId,
+          owner: family.owner,
+          $or: [
+            { closure: { $exists: false } },
+            { 'closure.status': 'open' }
+          ]
+        }, { $inc: { lifecycleRev: 1 } }, { session });
+        if (!changed(result)) fail(409, FAMILY_CLOSE_CONFLICT);
+      }
+      return callback(session, family);
+    });
+  }
+
   async function beginClose(owner, exactFamilyIds) {
     if (!validId(owner)) fail(400, 'INVALID_OWNER');
     if (!Array.isArray(exactFamilyIds) || exactFamilyIds.some(id => !validId(id))) {
@@ -359,7 +385,7 @@ function createCareFamilyLifecycle({
     });
   }
 
-  return { withOpenFamily, withOpenAccount, beginClose, createFamily, casFamily, casProfile, createProfile };
+  return { withOpenFamily, withOpenAccount, withOpenFamilyAccounts, beginClose, createFamily, casFamily, casProfile, createProfile };
 }
 
 module.exports = {

@@ -226,6 +226,37 @@ describe('care family lifecycle helper', function() {
     expect(f.state.committed).to.equal(false);
   });
 
+  it('locks family and requested accounts in sorted order before callback', async function() {
+    const f = factory({ family: { _id: 'family-a', owner: 'owner-z' } });
+    const result = await f.lifecycle.withOpenFamilyAccounts('family-a', ['owner-b', 'owner-z', 'owner-a'], async (session, family) => ({ session, family }));
+    expect(result.family._id).to.equal('family-a');
+    expect(f.AccountLifecycle.calls.updateOne.map(call => call.filter._id)).to.deep.equal(['owner-a', 'owner-b', 'owner-z']);
+    expect(f.Family.calls.updateOne).to.have.length(1);
+    expect(f.Family.calls.updateOne[0].options.session).to.equal(f.AccountLifecycle.calls.updateOne[0].options.session);
+  });
+
+  it('rejects a closing family before account locks or family writes', async function() {
+    const f = factory({ family: { _id: 'family-a', owner: 'owner-1', closure: { status: 'closing' } } });
+    await expectCode(f.lifecycle.withOpenFamilyAccounts('family-a', ['owner-1'], async () => true), FAMILY_CLOSING);
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(0);
+    expect(f.Family.calls.updateOne).to.have.length(0);
+  });
+
+  it('supports institution work with no family while still requiring an account lock', async function() {
+    const f = factory();
+    const result = await f.lifecycle.withOpenFamilyAccounts(null, ['institution-1', 'institution-1'], async (session, family) => ({ session, family }));
+    expect(result.family).to.equal(null);
+    expect(f.AccountLifecycle.calls.updateOne.map(call => call.filter._id)).to.deep.equal(['institution-1']);
+    expect(f.Family.calls.updateOne).to.have.length(0);
+  });
+
+  it('aborts the transaction when the callback fails', async function() {
+    const f = factory({ family: { _id: 'family-a', owner: 'owner-1' } });
+    await expectCode(f.lifecycle.withOpenFamilyAccounts('family-a', ['owner-1'], async () => { throw new Error('quota callback failed'); }), 'quota callback failed');
+    expect(f.state.aborted).to.equal(true);
+    expect(f.state.committed).to.equal(false);
+  });
+
   it('uses a transaction, primary snapshot options, and returns callback value', async function() {
     const f = factory({ family: { _id: 'family-a', owner: 'owner-1', lifecycleRev: 2 } });
     const result = await f.lifecycle.withOpenFamily('family-a', async (session, family) => ({

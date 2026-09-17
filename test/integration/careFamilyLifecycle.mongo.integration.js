@@ -227,6 +227,55 @@ async function main() {
       { expectedOwner: 'stale-owner' }), false);
     assert.equal((await profiles.findOne({ _id: newProfile._id })).rev, 0);
     passed.push('runtime-profile-create-is-atomic-and-preserves-owner-authorization');
+    // Fresh synthetic encryption key exists only for this isolated fixture.
+    process.env.CARE_ENCRYPTION_ACTIVE_KEY = 'synthetic';
+    process.env.CARE_ENCRYPTION_KEYS = JSON.stringify({ synthetic: require('crypto').randomBytes(32).toString('hex') });
+    const encryption = require('../../api/helpers/careCrypto').fromEnvironment();
+    await connection.db.createCollection('carefundings');
+    const fundingRuntime = require('../../api/helpers/careBudgetRuntime');
+    const budget = fundingRuntime.createRuntime();
+    const budgetFamily = await seed('budget');
+    const startsAt = Date.now() - 1000, expiresAt = Date.now() + 86400000;
+    await families.updateOne({ _id: budgetFamily.familyId }, { $set: {
+      sealed: encryption.seal({ subscription: { startsAt, expiresAt } }, `family:${budgetFamily.familyId}`)
+    } });
+    await profiles.updateOne({ _id: budgetFamily.profileId }, { $set: {
+      sealed: encryption.seal({ grants: { [budgetFamily.owner]: ['read'] } }, `profile:${budgetFamily.profileId}`)
+    } });
+    await budget.provision('budget-family-funding', { owner: budgetFamily.owner, familyId: budgetFamily.familyId,
+      kind: 'family', startsAt, expiresAt, weeklyLimit: 100 });
+    await budget.addPack('budget-family-funding', { id: 'before-close-pack', type: 'purchased', amount: 5, startsAt });
+    const usage = { actor: budgetFamily.owner, profileId: budgetFamily.profileId, requestId: 'before-close',
+      units: 10, fingerprint: 'a'.repeat(64) };
+    await budget.reserve('budget-family-funding', usage);
+    await service.beginClose(budgetFamily.owner, [budgetFamily.familyId]);
+    await assert.rejects(budget.reserve('budget-family-funding', { ...usage, requestId: 'after-close' }),
+      error => error.code === 'FAMILY_CLOSING');
+    const settled = await budget.settle('budget-family-funding', budgetFamily.owner, usage.requestId, 4);
+    assert.equal(settled.status, 'settled');
+    assert.equal((await budget.settle('budget-family-funding', budgetFamily.owner, usage.requestId, 4)).actual, 4);
+    const fundingState = encryption.open((await fundingRuntime.store.get('budget-family-funding')).sealed, 'funding:budget-family-funding');
+    assert.equal(fundingState.weekUsed['0'], 4);
+    assert.equal(fundingState.receipts[`${budgetFamily.owner}:after-close`], undefined);
+    await assert.rejects(budget.addPack('budget-family-funding', { id: 'late-pack', type: 'purchased', amount: 5, startsAt }),
+      error => error.code === 'FAMILY_CLOSING');
+    passed.push('family-close-blocks-new-budget-writes-but-preserves-settlement');
+
+    await budget.provision('institution-funding', { owner: 'institution-owner', kind: 'institution', startsAt, expiresAt, weeklyLimit: 100 });
+    await budget.delegate('institution-funding', 'institution-owner', { member: budgetFamily.owner, limit: 20, profileIds: [budgetFamily.profileId] });
+    await assert.rejects(budget.reserve('institution-funding', { ...usage, requestId: 'institution-closed-profile' }),
+      error => error.code === 'FAMILY_CLOSING');
+    const otherFamily = await seed('other-budget');
+    await families.updateOne({ _id: otherFamily.familyId }, { $set: {
+      sealed: encryption.seal({ subscription: { startsAt, expiresAt } }, `family:${otherFamily.familyId}`)
+    } });
+    await profiles.updateOne({ _id: otherFamily.profileId }, { $set: {
+      sealed: encryption.seal({ grants: { [otherFamily.owner]: ['read'] } }, `profile:${otherFamily.profileId}`)
+    } });
+    await budget.delegate('institution-funding', 'institution-owner', { member: otherFamily.owner, limit: 20, profileIds: [otherFamily.profileId] });
+    assert.equal((await budget.reserve('institution-funding', { ...usage, actor: otherFamily.owner,
+      profileId: otherFamily.profileId, requestId: 'institution-open-profile' })).status, 'reserved');
+    passed.push('institution-budget-checks-patient-family-without-locking-other-families');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));
