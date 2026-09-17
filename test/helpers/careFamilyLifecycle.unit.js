@@ -2,6 +2,7 @@
 
 const chai = require('chai');
 const {
+  FAMILY_ACCESS_DENIED,
   FAMILY_CLOSED,
   FAMILY_CLOSING,
   FAMILY_CLOSE_CONFIRMATION_REQUIRED,
@@ -59,20 +60,22 @@ function connectionFor() {
   };
 }
 
-function factory({ family, profiles, account, updateResults, accountUpdateResults, now = 1700000000000, operationId = 'close-op' } = {}) {
+function factory({ family, profile, profiles, account, updateResults, profileUpdateResults, accountUpdateResults, now = 1700000000000, operationId = 'close-op' } = {}) {
   const session = connectionFor();
   const Family = collection({ one: family, families: Array.isArray(family) ? family : [], updateResults });
-  const Profile = collection({ profiles });
+  const Profile = collection({ one: profile, profiles, updateResults: profileUpdateResults });
+  const Communicator = collection();
   const AccountLifecycle = collection({ one: account, updateResults: accountUpdateResults });
   const lifecycle = createCareFamilyLifecycle({
     connection: session.connection,
     Family: { collection: Family },
     Profile: { collection: Profile },
+    Communicator: { collection: Communicator },
     AccountLifecycle: { collection: AccountLifecycle },
     now: () => now,
     operationId: () => operationId
   });
-  return { lifecycle, Family, Profile, AccountLifecycle, state: session.state };
+  return { lifecycle, Family, Profile, Communicator, AccountLifecycle, state: session.state };
 }
 
 async function expectCode(promise, code) {
@@ -85,6 +88,144 @@ async function expectCode(promise, code) {
 }
 
 describe('care family lifecycle helper', function() {
+  it('fences both transfer owners in sorted order and writes in the same session', async function() {
+    const f = factory({ family: { _id: 'family-a', owner: 'owner-z', rev: 2 } });
+    expect(await f.lifecycle.casFamily('family-a', 2, { owner: 'owner-a', rev: 3 })).to.equal(true);
+    expect(f.AccountLifecycle.calls.updateOne.map(call => call.filter._id)).to.deep.equal(['owner-a', 'owner-z']);
+    const write = f.Family.calls.updateOne[0];
+    expect(write.options.session).to.equal(f.AccountLifecycle.calls.updateOne[0].options.session);
+    expect(write.filter.owner).to.equal('owner-z');
+    expect(write.update.$set).to.deep.equal({ owner: 'owner-a', rev: 3 });
+  });
+
+  it('returns false for stale revisions without acquiring account gates', async function() {
+    const f = factory({ family: { _id: 'family-a', owner: 'owner-a', rev: 3 } });
+    expect(await f.lifecycle.casFamily('family-a', 2, { rev: 3 })).to.equal(false);
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(0);
+    expect(f.Family.calls.updateOne).to.have.length(0);
+  });
+
+  it('rejects transfer when either account is closing', async function() {
+    for (const blocked of ['owner-a', 'owner-z']) {
+      const f = factory({ family: { _id: 'family-a', owner: 'owner-z', rev: 0 } });
+      f.AccountLifecycle.findOne = async filter => ({ _id: filter._id, status: filter._id === blocked ? 'closing' : 'open' });
+      await expectCode(f.lifecycle.casFamily('family-a', 0, { owner: 'owner-a', rev: 1 }), 'ACCOUNT_CLOSING');
+      expect(f.Family.calls.updateOne).to.have.length(0);
+      expect(f.state.aborted).to.equal(true);
+    }
+  });
+
+  it('does not permit a family update to replace closure metadata', async function() {
+    const f = factory();
+    await expectCode(f.lifecycle.casFamily('family-a', 0, { rev: 1, closure: { status: 'open' } }), 'INVALID_FAMILY_UPDATE');
+    expect(f.Family.calls.updateOne).to.have.length(0);
+  });
+
+  it('CAS-updates a profile after fencing its account and family in one session', async function() {
+    const f = factory({
+      profile: { _id: 'profile-a', familyId: 'family-a', rev: 4 },
+      family: { _id: 'family-a', owner: 'owner-1', closure: { status: 'open' } }
+    });
+    expect(await f.lifecycle.casProfile('profile-a', 4, { sealed: { v: 2 }, rev: 5, members: ['owner-1'] })).to.equal(true);
+    expect(f.AccountLifecycle.calls.updateOne.map(call => call.filter._id)).to.deep.equal(['owner-1']);
+    expect(f.Family.calls.updateOne).to.have.length(1);
+    expect(f.Profile.calls.updateOne).to.have.length(1);
+    expect(f.Profile.calls.updateOne[0].options.session).to.equal(f.Family.calls.updateOne[0].options.session);
+    expect(f.Profile.calls.updateOne[0].filter.familyId).to.equal('family-a');
+    expect(f.Profile.calls.updateOne[0].update.$set).to.deep.equal({ sealed: { v: 2 }, rev: 5, members: ['owner-1'] });
+  });
+
+  it('returns false for a stale profile revision without family or account writes', async function() {
+    const f = factory({
+      profile: { _id: 'profile-a', familyId: 'family-a', rev: 5 },
+      family: { _id: 'family-a', owner: 'owner-1' }
+    });
+    expect(await f.lifecycle.casProfile('profile-a', 4, { sealed: {}, rev: 5, members: [] })).to.equal(false);
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(0);
+    expect(f.Family.calls.updateOne).to.have.length(0);
+    expect(f.Profile.calls.updateOne).to.have.length(0);
+  });
+
+  it('rejects a missing profile before any lifecycle or family write', async function() {
+    const f = factory({ family: { _id: 'family-a', owner: 'owner-1' } });
+    await expectCode(f.lifecycle.casProfile('profile-a', 0, { sealed: {}, rev: 1, members: [] }), 'PROFILE_ACCESS_DENIED');
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(0);
+    expect(f.Family.calls.updateOne).to.have.length(0);
+    expect(f.Profile.calls.updateOne).to.have.length(0);
+    expect(f.state.aborted).to.equal(true);
+  });
+
+  it('returns false for an old owner after authorization changed without writing', async function() {
+    const f = factory({
+      profile: { _id: 'profile-a', familyId: 'family-a', rev: 1 },
+      family: { _id: 'family-a', owner: 'new-owner' }
+    });
+    expect(await f.lifecycle.casProfile('profile-a', 1, { sealed: {}, rev: 2, members: ['new-owner'] }, {
+      expectedOwner: 'old-owner'
+    })).to.equal(false);
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(0);
+    expect(f.Family.calls.updateOne).to.have.length(0);
+    expect(f.Profile.calls.updateOne).to.have.length(0);
+  });
+
+  it('rejects profile writes while the family is closing', async function() {
+    const f = factory({
+      profile: { _id: 'profile-a', familyId: 'family-a', rev: 1 },
+      family: { _id: 'family-a', owner: 'owner-1', closure: { status: 'closing' } }
+    });
+    await expectCode(f.lifecycle.casProfile('profile-a', 1, { sealed: {}, rev: 2, members: [] }), FAMILY_CLOSING);
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(0);
+    expect(f.Family.calls.updateOne).to.have.length(0);
+    expect(f.Profile.calls.updateOne).to.have.length(0);
+  });
+
+  it('fails closed when the profile CAS loses a race', async function() {
+    const f = factory({
+      profile: { _id: 'profile-a', familyId: 'family-a', rev: 1 },
+      family: { _id: 'family-a', owner: 'owner-1' },
+      profileUpdateResults: [{ matchedCount: 0 }]
+    });
+    await expectCode(f.lifecycle.casProfile('profile-a', 1, { sealed: {}, rev: 2, members: [] }), 'FAMILY_CLOSE_CONFLICT');
+    expect(f.state.aborted).to.equal(true);
+    expect(f.Family.calls.updateOne).to.have.length(1);
+    expect(f.Profile.calls.updateOne).to.have.length(1);
+  });
+
+  it('creates a communicator and profile after the account and family fences in one session', async function() {
+    const f = factory({ family: { _id: 'family-a', owner: 'owner-1' } });
+    const value = { _id: 'profile-a', familyId: 'family-a', owner: 'owner-1', members: ['owner-1'], rev: 0, sealed: { v: 1 } };
+    const communicator = { careProfileId: 'profile-a', careFamilyId: 'family-a', name: 'shared' };
+    expect(await f.lifecycle.createProfile(value, communicator)).to.equal(value);
+    const accountSession = f.AccountLifecycle.calls.updateOne[0].options.session;
+    expect(f.Family.calls.updateOne[0].options.session).to.equal(accountSession);
+    expect(f.Communicator.calls.insertOne[0].options.session).to.equal(accountSession);
+    expect(f.Profile.calls.insertOne[0].options.session).to.equal(accountSession);
+  });
+
+  it('rejects profile creation for a closing or differently owned family before inserts', async function() {
+    const cases = [
+      { family: { _id: 'family-a', owner: 'owner-1', closure: { status: 'closing' } }, code: FAMILY_CLOSING },
+      { family: { _id: 'family-a', owner: 'other-owner' }, code: FAMILY_ACCESS_DENIED }
+    ];
+    for (const item of cases) {
+      const f = factory({ family: item.family });
+      const value = { _id: 'profile-a', familyId: 'family-a', owner: 'owner-1', members: ['owner-1'], rev: 0 };
+      await expectCode(f.lifecycle.createProfile(value, { careProfileId: 'profile-a', careFamilyId: 'family-a' }), item.code);
+      expect(f.Communicator.calls.insertOne).to.have.length(0);
+      expect(f.Profile.calls.insertOne).to.have.length(0);
+    }
+  });
+
+  it('aborts when profile insertion fails after communicator insertion', async function() {
+    const f = factory({ family: { _id: 'family-a', owner: 'owner-1' } });
+    f.Profile.insertOne = async () => { throw new Error('profile insert failed'); };
+    const value = { _id: 'profile-a', familyId: 'family-a', owner: 'owner-1', members: ['owner-1'], rev: 0 };
+    await expectCode(f.lifecycle.createProfile(value, { careProfileId: 'profile-a', careFamilyId: 'family-a' }), 'profile insert failed');
+    expect(f.Communicator.calls.insertOne).to.have.length(1);
+    expect(f.state.aborted).to.equal(true);
+    expect(f.state.committed).to.equal(false);
+  });
+
   it('uses a transaction, primary snapshot options, and returns callback value', async function() {
     const f = factory({ family: { _id: 'family-a', owner: 'owner-1', lifecycleRev: 2 } });
     const result = await f.lifecycle.withOpenFamily('family-a', async (session, family) => ({

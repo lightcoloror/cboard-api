@@ -19,11 +19,19 @@ function text(value, max = 100) {
   if (typeof value !== 'string' || !value.trim() || value.length > max) fail(400, 'INVALID_TEXT');
   return value.trim();
 }
+function assertAccessibleFamily(family) {
+  if (!family) fail(403, 'FAMILY_ACCESS_DENIED');
+  const status = family.closure && family.closure.status || 'open';
+  if (status === 'closing') fail(409, 'FAMILY_CLOSING');
+  if (status === 'closed') fail(403, 'FAMILY_CLOSED');
+  if (status !== 'open') fail(403, 'FAMILY_CLOSED');
+  return family;
+}
 function createCareService({ store, encryption, media, mediaQuota = null, now = () => Date.now(), enforceEntitlements = false }) {
   const favorites = require('./careFavorites').createCareFavorites({ store, encryption, now });
   async function familyPolicy(familyId) {
     const family = await store.getFamily(familyId);
-    if (!family) fail(403, 'FAMILY_ACCESS_DENIED');
+    assertAccessibleFamily(family);
     const state = encryption.open(family.sealed, `family:${familyId}`);
     return { family, state, rights: policy.entitlement(state.subscription, now()) };
   }
@@ -38,6 +46,7 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
     const state = encryption.open(doc.sealed, `profile:${profileId}`);
     const family = await store.getFamily(doc.familyId);
     if (!family) fail(403, 'PROFILE_ACCESS_DENIED');
+    assertAccessibleFamily(family);
     const previousAdmin = state.adminOwner || doc.owner;
     if (family && family.owner !== previousAdmin) {
       if (state.grants[previousAdmin]) state.grants[previousAdmin] = state.grants[previousAdmin].filter(p => p !== 'members.manage');
@@ -51,7 +60,7 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
   async function save(doc, state) {
     if (Buffer.byteLength(JSON.stringify(state)) > 5 * 1024 * 1024) fail(413, 'PROFILE_CAPACITY_REACHED');
     const sealed = encryption.seal(state, `profile:${doc._id}`);
-    return store.casProfile(doc._id, doc.rev, { sealed, rev: doc.rev + 1, members: Object.keys(state.grants) });
+    return store.casProfile(doc._id, doc.rev, { sealed, rev: doc.rev + 1, members: Object.keys(state.grants) }, { expectedOwner: doc.owner });
   }
   function audit(state, actor, action, target, revision) {
     state.audit.push({ actor, action, target, revision, at: now() });
@@ -135,7 +144,7 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
         }
         if (state.selectedProfileId) {
           try { await load(state.selectedProfileId, user); } catch (e) {
-            if (e.code !== 'PROFILE_ACCESS_DENIED') throw e;
+            if (!['PROFILE_ACCESS_DENIED', 'FAMILY_CLOSING', 'FAMILY_CLOSED'].includes(e.code)) throw e;
             return { selectedProfileId: null };
           }
         }
@@ -148,7 +157,10 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
       return (await familyPolicy(doc.familyId)).rights;
     },
     async families(user) {
-      return (await store.listFamilies(user)).map(doc => ({ id: doc._id,
+      return (await store.listFamilies(user)).filter(doc => {
+        const status = doc.closure && doc.closure.status || 'open';
+        return status === 'open';
+      }).map(doc => ({ id: doc._id,
         name: encryption.open(doc.sealed, `family:${doc._id}`).name }));
     },
     async createFamily(user, body) {
@@ -162,11 +174,16 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
       if (!family || family.owner !== user) fail(403, 'FAMILY_ACCESS_DENIED');
       await checkEntitlement(family._id, 'write');
       const profileId = id();
-      // Communicator uses a shared-care marker and no patient content in legacy fields.
-      await store.createCommunicator(profileId, family._id);
       const state = { name: text(body.name), relationships: { [user]: policy.relationship({ role: body.role || 'relative' }) }, grants: { [user]: permissions }, resources: {}, invites: {}, receipts: {}, audit: [] };
-      await store.createProfile({ _id: profileId, familyId: family._id, owner: user, members: [user], rev: 0,
-        sealed: encryption.seal(state, `profile:${profileId}`) });
+      const value = { _id: profileId, familyId: family._id, owner: user, members: [user], rev: 0,
+        sealed: encryption.seal(state, `profile:${profileId}`) };
+      if (typeof store.createProfileWithCommunicator === 'function') {
+        await store.createProfileWithCommunicator(value);
+      } else {
+        // Communicator uses a shared-care marker and no patient content in legacy fields.
+        await store.createCommunicator(profileId, family._id);
+        await store.createProfile(value);
+      }
       return { id: profileId };
     },
     async profiles(user) {
@@ -176,7 +193,10 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
           const { doc, state } = await load(item._id, user);
           return { id: doc._id, familyId: doc.familyId, name: state.name,
             relationship: (state.relationships || {})[user] || null, permissions: state.grants[user], owner: doc.owner === user };
-        } catch (e) { if (e.code === 'PROFILE_ACCESS_DENIED') return null; throw e; }
+        } catch (e) {
+          if (['PROFILE_ACCESS_DENIED', 'FAMILY_CLOSING', 'FAMILY_CLOSED'].includes(e.code)) return null;
+          throw e;
+        }
       }));
       return items.filter(Boolean);
     },

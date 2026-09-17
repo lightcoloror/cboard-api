@@ -17,6 +17,10 @@ async function main() {
   await connection.db.createCollection('carefamilies');
   await connection.db.createCollection('careprofiles');
   await connection.db.createCollection('careaccountlifecycles');
+  await connection.db.createCollection('careaccounts');
+  await connection.db.createCollection('communicators');
+  process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+  const runtimeStore = require('../../api/helpers/careRuntime').store;
   const dependencies = { connection, Family: { collection: families }, Profile: { collection: profiles }, AccountLifecycle: { collection: accounts } };
   const service = createCareFamilyLifecycle(dependencies);
   const seed = async suffix => {
@@ -123,6 +127,106 @@ async function main() {
     assert.equal((await families.findOne({ _id: a.familyId })).sealed.synthetic, true);
     assert.equal((await families.findOne({ _id: b.familyId })).closure, undefined);
     passed.push('close-blocks-late-writer-without-deleting-content');
+    const transfer = await seed('transfer');
+    await assert.rejects(service.casFamily(transfer.familyId, 0, { owner: a.owner, rev: 1 }),
+      error => error.code === 'ACCOUNT_CLOSING');
+    assert.equal((await families.findOne({ _id: transfer.familyId })).owner, transfer.owner);
+    assert.equal(await accounts.findOne({ _id: transfer.owner }), null, 'failed transfer rolls back all gates');
+    assert.equal(await service.casFamily(transfer.familyId, 0, { owner: 'owner-transfer-next', rev: 1 }), true);
+    assert.equal(await service.casFamily(transfer.familyId, 0, { owner: transfer.owner, rev: 1 }), false);
+    assert.equal((await families.findOne({ _id: transfer.familyId })).owner, 'owner-transfer-next');
+    await assert.rejects(service.beginClose(transfer.owner, [transfer.familyId]),
+      error => error.code === 'FAMILY_CLOSE_CONFIRMATION_REQUIRED');
+    passed.push('ownership-transfer-fences-closing-account-and-stale-version');
+    const source = await seed('transfer-race-source');
+    const destination = await seed('transfer-race-destination');
+    await service.withOpenAccount(source.owner, async () => true);
+    await service.withOpenAccount(destination.owner, async () => true);
+    let transferReady, closeLockAttempt;
+    const ready = new Promise(resolve => { transferReady = resolve; });
+    const lockAttempt = new Promise(resolve => { closeLockAttempt = resolve; });
+    const transferService = createCareFamilyLifecycle({ ...dependencies, Family: { collection: {
+      findOne: (...args) => families.findOne(...args),
+      updateOne: async (...args) => {
+        transferReady();
+        await lockAttempt;
+        return families.updateOne(...args);
+      }
+    } } });
+    const destinationCloser = createCareFamilyLifecycle({ ...dependencies, AccountLifecycle: { collection: {
+      findOne: (...args) => accounts.findOne(...args),
+      updateOne: (...args) => { closeLockAttempt(); return accounts.updateOne(...args); }
+    } } });
+    const transferring = transferService.casFamily(source.familyId, 0, { owner: destination.owner, rev: 1 });
+    await ready;
+    const destinationClosing = assert.rejects(destinationCloser.beginClose(destination.owner, [destination.familyId]),
+      error => error.code === 'FAMILY_CLOSE_CONFIRMATION_REQUIRED' && error.details.familyIds.includes(source.familyId));
+    await Promise.all([transferring, destinationClosing]);
+    assert.equal((await accounts.findOne({ _id: destination.owner })).status, 'open');
+    assert.equal((await families.findOne({ _id: source.familyId })).owner, destination.owner);
+    passed.push('concurrent-transfer-forces-new-owner-close-reconfirmation');
+    await assert.rejects(service.casProfile(a.profileId, 0, { rev: 1, members: [a.owner, 'late-member'] }),
+      error => error.code === 'FAMILY_CLOSING');
+    assert.equal((await profiles.findOne({ _id: a.profileId })).rev, 0);
+    const profileRace = await seed('profile-write-race');
+    await service.withOpenAccount(profileRace.owner, async () => true);
+    let profileWriterReady, profileCloseAttempt;
+    const profileReady = new Promise(resolve => { profileWriterReady = resolve; });
+    const profileAttempt = new Promise(resolve => { profileCloseAttempt = resolve; });
+    const profileWriter = createCareFamilyLifecycle({ ...dependencies, Profile: { collection: {
+      findOne: (...args) => profiles.findOne(...args),
+      updateOne: async (...args) => {
+        profileWriterReady();
+        await profileAttempt;
+        return profiles.updateOne(...args);
+      }
+    } } });
+    const profileCloser = createCareFamilyLifecycle({ ...dependencies, AccountLifecycle: { collection: {
+      findOne: (...args) => accounts.findOne(...args),
+      updateOne: (...args) => { profileCloseAttempt(); return accounts.updateOne(...args); }
+    } } });
+    const profileWriting = profileWriter.casProfile(profileRace.profileId, 0, {
+      rev: 1, members: [profileRace.owner, 'accepted-member'], sealed: { synthetic: 'updated' }
+    });
+    await profileReady;
+    const profileClosing = assert.rejects(profileCloser.beginClose(profileRace.owner, [profileRace.familyId]),
+      error => error.code === 'FAMILY_TRANSFER_REQUIRED');
+    await Promise.all([profileWriting, profileClosing]);
+    assert.equal((await accounts.findOne({ _id: profileRace.owner })).status, 'open');
+    assert.equal((await profiles.findOne({ _id: profileRace.profileId })).sealed.synthetic, 'updated');
+    assert.equal(await service.casProfile(profileRace.profileId, 0, { rev: 1, members: [profileRace.owner] }), false);
+    passed.push('profile-cas-fences-close-and-revalidates-concurrent-membership');
+    const personal = { _id: 'personal-account', rev: 0, sealed: { synthetic: 'personal' } };
+    assert.equal(await runtimeStore.createAccount(personal), true);
+    const gateBeforeDuplicate = await accounts.findOne({ _id: personal._id });
+    assert.equal(await runtimeStore.createAccount(personal), false);
+    assert.deepEqual(await accounts.findOne({ _id: personal._id }), gateBeforeDuplicate,
+      'duplicate must abort the entire transaction, including lifecycle increment');
+    assert.equal(await runtimeStore.casAccount(personal._id, 0, { rev: 1, sealed: { synthetic: 'changed' } }), true);
+    assert.equal(await runtimeStore.casAccount(personal._id, 0, { rev: 1, sealed: { synthetic: 'stale' } }), false);
+    await assert.rejects(runtimeStore.createAccount({ _id: a.owner, rev: 0, sealed: { synthetic: true } }),
+      error => error.code === 'ACCOUNT_CLOSING');
+    await assert.rejects(runtimeStore.casAccount(a.owner, 0, { rev: 1 }), error => error.code === 'ACCOUNT_CLOSING');
+    assert.equal(await connection.db.collection('careaccounts').findOne({ _id: a.owner }), null);
+    passed.push('runtime-personal-account-cas-and-duplicate-rollback');
+
+    const creation = await seed('profile-create');
+    const newProfile = { _id: 'profile-created-atomic', familyId: creation.familyId, owner: creation.owner,
+      members: [creation.owner], rev: 0, sealed: { synthetic: true } };
+    await runtimeStore.createProfileWithCommunicator(newProfile);
+    assert.equal((await profiles.findOne({ _id: newProfile._id })).familyId, creation.familyId);
+    assert.equal(await connection.db.collection('communicators').countDocuments({ careProfileId: newProfile._id }), 1);
+    await assert.rejects(runtimeStore.createProfileWithCommunicator(newProfile), error => error.code === 11000);
+    assert.equal(await connection.db.collection('communicators').countDocuments({ careProfileId: newProfile._id }), 1,
+      'profile duplicate must roll back the preceding communicator insert');
+    await assert.rejects(runtimeStore.createProfileWithCommunicator({ ...newProfile, _id: 'profile-late-create',
+      familyId: a.familyId, owner: a.owner, members: [a.owner] }), error => error.code === 'FAMILY_CLOSING');
+    assert.equal(await connection.db.collection('communicators').countDocuments({ careProfileId: 'profile-late-create' }), 0);
+    assert.equal(await profiles.findOne({ _id: 'profile-late-create' }), null);
+    assert.equal(await runtimeStore.casProfile(newProfile._id, 0, { rev: 1, members: [creation.owner] },
+      { expectedOwner: 'stale-owner' }), false);
+    assert.equal((await profiles.findOne({ _id: newProfile._id })).rev, 0);
+    passed.push('runtime-profile-create-is-atomic-and-preserves-owner-authorization');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

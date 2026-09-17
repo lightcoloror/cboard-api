@@ -7,8 +7,10 @@ const { createCareMediaQuota, resolveCareMediaQuotaConfig } = require('../../api
 const { createCareSync } = require('../../../cboard/src/common/communicationSupport/careSync');
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const newId = () => crypto.randomBytes(16).toString('hex');
-function fixture() {
+function fixture({ atomicProfile = null } = {}) {
   const families = {}, profiles = {}, blobs = {}, accounts = {};
+  let profileCasContextHook = null;
+  const writes = { communicator: 0, profile: 0, atomicProfile: 0 };
   const keys = { test: crypto.randomBytes(32).toString('hex') };
   const encryption = createCareCrypto(keys, 'test');
   const store = {
@@ -19,20 +21,35 @@ function fixture() {
     getFamily: async id => clone(families[id]),
     casFamily: async (id, rev, update) => { if ((families[id].rev || 0) !== rev) return false; families[id] = { ...families[id], ...clone(update) }; return true; },
     listFamilies: async u => clone(Object.values(families).filter(f => f.owner === u)),
-    createCommunicator: async () => {},
-    createProfile: async d => { profiles[d._id] = clone(d); },
+    createCommunicator: async () => { writes.communicator += 1; },
+    createProfile: async d => { writes.profile += 1; profiles[d._id] = clone(d); },
     getProfile: async id => clone(profiles[id]),
     listProfiles: async u => clone(Object.values(profiles).filter(p => p.members.includes(u))),
     listProfilesByFamily: async familyId => clone(Object.values(profiles).filter(p => p.familyId === familyId)),
-    casProfile: async (id, rev, update) => {
+    casProfile: async (id, rev, update, context = {}) => {
+      if (profileCasContextHook) {
+        const hook = profileCasContextHook;
+        profileCasContextHook = null;
+        await hook(id, context);
+      }
       if (profiles[id].rev !== rev) return false;
+      if (context.expectedOwner !== undefined && families[profiles[id].familyId].owner !== context.expectedOwner) return false;
       profiles[id] = { ...profiles[id], ...clone(update) }; return true;
     }
   };
+  if (atomicProfile) {
+    store.createProfileWithCommunicator = async d => {
+      writes.atomicProfile += 1;
+      atomicProfile.calls.push(clone(d));
+      if (atomicProfile.error) throw atomicProfile.error;
+      profiles[d._id] = clone(d);
+    };
+  }
   const media = { write: async data => { const k = newId(); blobs[k] = Buffer.from(data); return k; },
     read: async k => blobs[k], remove: async k => { delete blobs[k]; } };
   const service = createCareService({ store, encryption, media });
-  return { service, profiles, families, blobs, encryption, store, keys, media };
+  return { service, profiles, families, blobs, encryption, store, keys, media, writes,
+    setProfileCasContextHook(hook) { profileCasContextHook = hook; } };
 }
 async function setup(f, user = 'familyA') {
   const family = await f.service.createFamily(user, { name: '合成家庭' });
@@ -46,6 +63,52 @@ async function invite(f, p, member, grant = ['read', 'library.edit', 'preference
   await f.service.accept(member, v.token); return v;
 }
 describe('patient collaboration security and offline recovery', () => {
+  it('uses atomic profile creation without separate communicator or profile writes', async () => {
+    const atomicProfile = { calls: [] };
+    const f = fixture({ atomicProfile });
+    const family = await f.service.createFamily('familyA', { name: '合成家庭' });
+    f.writes.atomicProfile = 0; f.writes.communicator = 0; f.writes.profile = 0;
+    atomicProfile.calls.length = 0;
+
+    const created = await f.service.createProfile('familyA', { familyId: family.id, name: '合成患者' });
+
+    assert.equal(f.writes.atomicProfile, 1);
+    assert.equal(f.writes.communicator, 0);
+    assert.equal(f.writes.profile, 0);
+    assert.equal(atomicProfile.calls.length, 1);
+    assert.equal(created.id, atomicProfile.calls[0]._id);
+  });
+
+  it('does not fall back to split writes when atomic profile creation fails', async () => {
+    const atomicProfile = { calls: [], error: new Error('atomic profile failure') };
+    const f = fixture({ atomicProfile });
+    const family = await f.service.createFamily('familyA', { name: '合成家庭' });
+    f.writes.atomicProfile = 0; f.writes.communicator = 0; f.writes.profile = 0;
+
+    await assert.rejects(
+      f.service.createProfile('familyA', { familyId: family.id, name: '合成患者' }),
+      error => error.message === 'atomic profile failure'
+    );
+    assert.equal(f.writes.atomicProfile, 1);
+    assert.equal(f.writes.communicator, 0);
+    assert.equal(f.writes.profile, 0);
+    assert.equal(Object.keys(f.profiles).length, 0);
+  });
+
+  it('validates profile name before any legacy creation writes', async () => {
+    const f = fixture();
+    const family = await f.service.createFamily('familyA', { name: '合成家庭' });
+    f.writes.communicator = 0; f.writes.profile = 0;
+
+    await assert.rejects(
+      f.service.createProfile('familyA', { familyId: family.id, name: '' }),
+      error => error.code === 'INVALID_TEXT'
+    );
+    assert.equal(f.writes.communicator, 0);
+    assert.equal(f.writes.profile, 0);
+    assert.equal(Object.keys(f.profiles).length, 0);
+  });
+
   it('protects private favorite media until explicitly shared and retains attachment recovery pins', async () => {
     const f = fixture(); const { profile } = await setup(f); await invite(f, profile.id, 'reader', ['read']);
     const data = Buffer.from('89504e470d0a1a0a112233', 'hex');
@@ -124,6 +187,37 @@ describe('patient collaboration security and offline recovery', () => {
     const read = f.media.read;
     f.media.read = async key => { const value = await read(key); delete f.families[family.id]; return value; };
     await assert.rejects(f.service.download('familyA', profile.id, asset.mediaId), e => e.code === 'PROFILE_ACCESS_DENIED');
+  });
+  it('fails closed for every profile and family read when the family is closing or closed', async () => {
+    for (const [status, expectedCode, expectedStatus] of [['closing', 'FAMILY_CLOSING', 409], ['closed', 'FAMILY_CLOSED', 403], ['unexpected', 'FAMILY_CLOSED', 403]]) {
+      const f = fixture(); const { family, profile } = await setup(f);
+      const invitation = await f.service.command('familyA', profile.id, { action: 'invite', operationId: newId(), permissions: ['read'] });
+      await f.service.context('familyA', { profileId: profile.id });
+      f.families[family.id].closure = { status };
+
+      for (const operation of [
+        () => f.service.snapshot('familyA', profile.id),
+        () => f.service.favorites('familyA', profile.id),
+        () => f.service.download('familyA', profile.id, 'missing-media'),
+        () => f.service.accept('reader', invitation.token),
+        () => f.service.context('familyA', { profileId: profile.id })
+      ]) {
+        await assert.rejects(operation(), error => error.code === expectedCode && error.status === expectedStatus);
+      }
+      assert.deepEqual(await f.service.families('familyA'), []);
+      assert.deepEqual(await f.service.profiles('familyA'), []);
+      assert.deepEqual(await f.service.context('familyA'), { selectedProfileId: null });
+    }
+  });
+  it('reloads authorization when ownership changes between profile load and CAS', async () => {
+    const f = fixture(); const { family, profile } = await setup(f);
+    f.setProfileCasContextHook(async () => { f.families[family.id].owner = 'newOwner'; });
+    await assert.rejects(
+      f.service.command('familyA', profile.id, { action: 'invite', operationId: newId(), permissions: ['read'] }),
+      error => error.code === 'PROFILE_ACCESS_DENIED'
+    );
+    const state = f.encryption.open(f.profiles[profile.id].sealed, `profile:${profile.id}`);
+    assert.deepEqual(state.invites, {});
   });
   it('encrypts data with authenticated context and restores using the separately held key', async () => {
     const f = fixture(); const { profile } = await setup(f);

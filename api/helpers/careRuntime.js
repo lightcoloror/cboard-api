@@ -7,38 +7,69 @@ const {
   createCareMediaQuota,
   resolveCareMediaQuotaConfig
 } = require('./careMediaQuota');
+const communicatorRecord = (id, familyId) => ({
+  careProfileId: id, careFamilyId: familyId, name: '共享沟通档案', author: 'care-service',
+  email: `care-${id}@invalid.local`, rootBoard: '', boards: []
+});
 const store = {
   createFamily: value => process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true'
     ? require('./careFamilyLifecycle').createCareFamilyLifecycle().createFamily(value)
     : Family.create(value),
   getFamily: id => Family.findById(id).lean().exec(),
   casFamily: async (id, rev, value) => {
+    if (process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true') {
+      return require('./careFamilyLifecycle').createCareFamilyLifecycle().casFamily(id, rev, value);
+    }
     const filter = rev === 0 ? { _id: id, $or: [{ rev: 0 }, { rev: { $exists: false } }] } : { _id: id, rev };
     const result = await Family.updateOne(filter, { $set: value }).exec();
     return (result.nModified || result.modifiedCount) === 1;
   },
   listFamilies: owner => Family.find({ owner }).lean().exec(),
   getAccount: id => Account.findById(id).lean().exec(),
-  createAccount: async value => { try { await Account.create(value); return true; } catch (e) { if (e.code === 11000) return false; throw e; } },
+  createAccount: async value => {
+    if (process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true') {
+      try {
+        return await require('./careFamilyLifecycle').createCareFamilyLifecycle().withOpenAccount(value._id, async session => {
+          await Account.collection.insertOne(value, { session });
+          return true;
+        });
+      } catch (e) { if (e.code === 11000) return false; throw e; }
+    }
+    try { await Account.create(value); return true; } catch (e) { if (e.code === 11000) return false; throw e; }
+  },
   casAccount: async (id, rev, value) => {
+    if (process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true') {
+      return require('./careFamilyLifecycle').createCareFamilyLifecycle().withOpenAccount(id, async session => {
+        const result = await Account.collection.updateOne({ _id: id, rev }, { $set: value }, { session });
+        return (result.matchedCount !== undefined ? result.matchedCount : result.n) === 1;
+      });
+    }
     const result = await Account.updateOne({ _id: id, rev }, { $set: value }).exec();
     return (result.nModified || result.modifiedCount) === 1;
   },
   createProfile: value => Profile.create(value),
+  createProfileWithCommunicator: async value => {
+    if (process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true') {
+      return require('./careFamilyLifecycle').createCareFamilyLifecycle().createProfile(value,
+        communicatorRecord(value._id, value.familyId));
+    }
+    await store.createCommunicator(value._id, value.familyId);
+    return store.createProfile(value);
+  },
   getProfile: id => Profile.findById(id).lean().exec(),
   listProfiles: async user => {
     const owned = await Family.find({ owner: user }).select('_id').lean().exec();
     return Profile.find({ $or: [{ members: user }, { familyId: { $in: owned.map(f => f._id) } }] }).lean().exec();
   },
   listProfilesByFamily: familyId => Profile.find({ familyId }).lean().exec(),
-  casProfile: async (id, rev, value) => {
+  casProfile: async (id, rev, value, context) => {
+    if (process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true') {
+      return require('./careFamilyLifecycle').createCareFamilyLifecycle().casProfile(id, rev, value, context);
+    }
     const result = await Profile.updateOne({ _id: id, rev }, { $set: value }).exec();
     return (result.nModified || result.modifiedCount) === 1;
   },
-  createCommunicator: (id, familyId) => mongoose.connection.collection('communicators').insertOne({
-    careProfileId: id, careFamilyId: familyId, name: '共享沟通档案', author: 'care-service',
-    email: `care-${id}@invalid.local`, rootBoard: '', boards: []
-  })
+  createCommunicator: (id, familyId) => mongoose.connection.collection('communicators').insertOne(communicatorRecord(id, familyId))
 };
 const container = () => process.env.CARE_MEDIA_CONTAINER || 'cboard-care-private';
 const media = {

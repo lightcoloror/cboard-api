@@ -67,6 +67,7 @@ function createCareFamilyLifecycle({
   connection = mongoose.connection,
   Family = DefaultFamily,
   Profile = DefaultProfile,
+  Communicator = null,
   AccountLifecycle = null,
   now = () => Date.now(),
   operationId = () => crypto.randomBytes(16).toString('hex')
@@ -77,6 +78,13 @@ function createCareFamilyLifecycle({
     AccountLifecycle || { collection: connection.collection('careaccountlifecycles') },
     'AccountLifecycle'
   );
+  let communicatorCollection = Communicator ? modelCollection(Communicator, 'Communicator') : null;
+  function getCommunicatorCollection() {
+    if (!communicatorCollection) {
+      communicatorCollection = modelCollection({ collection: connection.collection('communicators') }, 'Communicator');
+    }
+    return communicatorCollection;
+  }
 
   async function transaction(callback) {
     if (!connection || typeof connection.startSession !== 'function') {
@@ -266,7 +274,92 @@ function createCareFamilyLifecycle({
     });
   }
 
-  return { withOpenFamily, withOpenAccount, beginClose, createFamily };
+  async function casFamily(id, rev, value) {
+    if (!validId(id) || !Number.isSafeInteger(rev) || rev < 0 || !value ||
+      Object.keys(value).some(key => !['owner', 'rev', 'sealed'].includes(key)) ||
+      value.rev !== rev + 1 || (value.owner !== undefined && !validId(value.owner))) {
+      fail(400, 'INVALID_FAMILY_UPDATE');
+    }
+    return transaction(async session => {
+      const family = await readFamily(id, session);
+      if ((family.rev || 0) !== rev) return false;
+      if (!validId(family.owner)) fail(409, FAMILY_CLOSE_CONFLICT);
+      // Both ownership directions share the account-close fence. Sorting gives
+      // simultaneous transfers a consistent lock order; all writes stay atomic.
+      const owners = [...new Set([family.owner, value.owner || family.owner])].sort();
+      for (const owner of owners) await lockOpenAccount(owner, session);
+      const version = rev === 0 ? { $or: [{ rev: 0 }, { rev: { $exists: false } }] } : { rev };
+      const result = await familyCollection.updateOne({
+        _id: id, owner: family.owner,
+        $and: [version, { $or: [{ closure: { $exists: false } }, { 'closure.status': 'open' }] }]
+      }, { $set: value, $inc: { lifecycleRev: 1 } }, { session });
+      if (!changed(result)) fail(409, FAMILY_CLOSE_CONFLICT);
+      return true;
+    });
+  }
+
+  async function casProfile(id, rev, value, context = {}) {
+    if (!validId(id) || !Number.isSafeInteger(rev) || rev < 0 || !value ||
+      Object.keys(value).some(key => !['sealed', 'rev', 'members'].includes(key)) ||
+      value.rev !== rev + 1 || !Array.isArray(value.members) ||
+      value.members.some(member => !validId(member)) ||
+      (context.expectedOwner !== undefined && !validId(context.expectedOwner))) {
+      fail(400, 'INVALID_PROFILE_UPDATE');
+    }
+    return transaction(async session => {
+      const profile = await profileCollection.findOne({ _id: id }, { session });
+      if (!profile) fail(403, 'PROFILE_ACCESS_DENIED');
+      if ((profile.rev || 0) !== rev) return false;
+      const family = await readFamily(profile.familyId, session);
+      if (!validId(family.owner)) fail(409, FAMILY_CLOSE_CONFLICT);
+      if (context.expectedOwner !== undefined && family.owner !== context.expectedOwner) return false;
+      await lockOpenAccount(family.owner, session);
+      const familyResult = await familyCollection.updateOne({
+        _id: profile.familyId,
+        owner: family.owner,
+        $or: [
+          { closure: { $exists: false } },
+          { 'closure.status': 'open' }
+        ]
+      }, { $inc: { lifecycleRev: 1 } }, { session });
+      if (!changed(familyResult)) fail(409, FAMILY_CLOSE_CONFLICT);
+      const version = rev === 0 ? { $or: [{ rev: 0 }, { rev: { $exists: false } }] } : { rev };
+      const result = await profileCollection.updateOne({
+        _id: id,
+        familyId: profile.familyId,
+        $and: [version]
+      }, { $set: value, $inc: { lifecycleRev: 1 } }, { session });
+      if (!changed(result)) fail(409, FAMILY_CLOSE_CONFLICT);
+      return true;
+    });
+  }
+
+  async function createProfile(value, communicator) {
+    if (!value || !validId(value._id) || !validId(value.familyId) || !validId(value.owner) ||
+      value.rev !== 0 || !Array.isArray(value.members) || value.members.some(member => !validId(member)) ||
+      !communicator || communicator.careProfileId !== value._id || communicator.careFamilyId !== value.familyId) {
+      fail(400, 'INVALID_PROFILE');
+    }
+    return transaction(async session => {
+      const family = await readFamily(value.familyId, session);
+      if (family.owner !== value.owner) fail(403, FAMILY_ACCESS_DENIED);
+      await lockOpenAccount(value.owner, session);
+      const familyResult = await familyCollection.updateOne({
+        _id: value.familyId,
+        owner: value.owner,
+        $or: [
+          { closure: { $exists: false } },
+          { 'closure.status': 'open' }
+        ]
+      }, { $inc: { lifecycleRev: 1 } }, { session });
+      if (!changed(familyResult)) fail(409, FAMILY_CLOSE_CONFLICT);
+      await getCommunicatorCollection().insertOne(communicator, { session });
+      await profileCollection.insertOne(value, { session });
+      return value;
+    });
+  }
+
+  return { withOpenFamily, withOpenAccount, beginClose, createFamily, casFamily, casProfile, createProfile };
 }
 
 module.exports = {
