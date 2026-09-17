@@ -3,6 +3,8 @@
 const bcrypt = require('bcryptjs');
 const chai = require('chai');
 const mockery = require('mockery');
+const YAML = require('yamljs');
+const ZSchema = require('z-schema');
 const {
   compareResetToken,
   hashResetToken
@@ -21,6 +23,7 @@ describe('legacy email password reset controller security', function() {
   let emailTransportConfigured;
   let resetMailError;
   let userLookupCount;
+  let passwordResetRateLimitError;
 
   beforeEach(function() {
     emailUser = {
@@ -37,6 +40,7 @@ describe('legacy email password reset controller security', function() {
     emailTransportConfigured = true;
     resetMailError = null;
     userLookupCount = 0;
+    passwordResetRateLimitError = null;
 
     const User = {
       findOne(query) {
@@ -119,6 +123,12 @@ describe('legacy email password reset controller security', function() {
     mockery.registerMock('../helpers/phoneVerificationRuntime', {
       phoneVerificationService: {}
     });
+    mockery.registerMock('../helpers/authRequestRateLimit', {
+      getAuthRequestLimiters() { return {}; },
+      async consumeAuthRequestLimits() {
+        if (passwordResetRateLimitError) throw passwordResetRateLimitError;
+      }
+    });
     mockery.registerMock('../helpers/localize', {
       async findIpLocation() {
         return null;
@@ -155,6 +165,9 @@ describe('legacy email password reset controller security', function() {
       body: null,
       status(code) {
         this.statusCode = code;
+        return this;
+      },
+      set() {
         return this;
       },
       json(body) {
@@ -221,6 +234,57 @@ describe('legacy email password reset controller security', function() {
     expect(userLookupCount).to.equal(0);
     expect(resetUpsert).to.equal(null);
     expect(sentEmail).to.equal(null);
+  });
+
+  it('returns the same 429 response for known and unknown emails before lookup', async function() {
+    passwordResetRateLimitError = Object.assign(new Error('limited'), {
+      status: 429,
+      code: 'PASSWORD_RESET_RATE_LIMITED',
+      retryAfter: 23
+    });
+    const known = response();
+    await controller.forgotPassword(
+      { body: { email: 'care@example.test' }, ip: '1.2.3.4' },
+      known
+    );
+    const unknown = response();
+    await controller.forgotPassword(
+      { body: { email: 'unknown@example.test' }, ip: '1.2.3.4' },
+      unknown
+    );
+    expect(known.statusCode).to.equal(429);
+    expect(unknown.statusCode).to.equal(429);
+    expect(known.body.message).to.equal('Too many authentication requests.');
+    expect(known.body).to.deep.equal(unknown.body);
+    expect(userLookupCount).to.equal(0);
+    expect(resetUpsert).to.equal(null);
+    expect(sentEmail).to.equal(null);
+    const schema = YAML.load(require('path').resolve(__dirname, '../../api/swagger/swagger.yaml')).definitions.ErrorResponse;
+    expect(new ZSchema().validate(known.body, schema)).to.equal(true);
+  });
+
+  it('fails closed with a stable 503 before lookup when reset limiter storage is unavailable', async function() {
+    passwordResetRateLimitError = Object.assign(new Error('backend down'), {
+      status: 503,
+      code: 'PASSWORD_RESET_RATE_LIMIT_UNAVAILABLE'
+    });
+    const res = response();
+    await controller.forgotPassword(
+      { body: { email: 'care@example.test' }, ip: '1.2.3.4' },
+      res
+    );
+    expect(res.statusCode).to.equal(503);
+    expect(res.body.message).to.equal(
+      'Authentication requests are temporarily unavailable.'
+    );
+    expect(res.body.error.code).to.equal(
+      'PASSWORD_RESET_RATE_LIMIT_UNAVAILABLE'
+    );
+    expect(userLookupCount).to.equal(0);
+    expect(resetUpsert).to.equal(null);
+    expect(sentEmail).to.equal(null);
+    const schema = YAML.load(require('path').resolve(__dirname, '../../api/swagger/swagger.yaml')).definitions.ErrorResponse;
+    expect(new ZSchema().validate(res.body, schema)).to.equal(true);
   });
 
   it('keeps the configured transport response generic when delivery later fails', async function() {

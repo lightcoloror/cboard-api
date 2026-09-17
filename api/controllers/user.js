@@ -27,6 +27,10 @@ const {
   emailVerificationResendRateLimit
 } = require('../helpers/emailVerificationResendRateLimit');
 const {
+  consumeAuthRequestLimits,
+  getAuthRequestLimiters
+} = require('../helpers/authRequestRateLimit');
+const {
   compareResetToken,
   hashNewPassword,
   hashResetToken,
@@ -153,6 +157,18 @@ async function createUser(req, res) {
   // NEV writes a temporary user before its verification-email callback. Do
   // not enter that flow unless this process has real transport credentials.
   if (!hasConfiguredEmailTransport()) return sendMailServiceUnavailable(res);
+
+  const registrationEmail = normalizedEmail(req.body && req.body.email);
+  try {
+    await consumeAuthRequestLimits({
+      limiters: getAuthRequestLimiters('registration'),
+      operation: 'registration',
+      email: registrationEmail,
+      ip: req.ip
+    });
+  } catch (error) {
+    return sendAuthRateLimitError(res, error, 'registration');
+  }
 
   const phoneVerificationToken = req.body.phoneVerificationToken;
   delete req.body.phoneVerificationToken;
@@ -847,6 +863,28 @@ function sendPasswordResetFailure(res, status = 400) {
   });
 }
 
+function sendAuthRateLimitError(res, error, operation) {
+  const codePrefix =
+    operation === 'registration' ? 'USER_REGISTRATION' : 'PASSWORD_RESET';
+  if (error.status === 429) {
+    res.set('Retry-After', String(error.retryAfter));
+    return res.status(429).json({
+      message: 'Too many authentication requests.',
+      error: {
+        code: `${codePrefix}_RATE_LIMITED`,
+        message: 'Too many authentication requests.'
+      }
+    });
+  }
+  return res.status(503).json({
+    message: 'Authentication requests are temporarily unavailable.',
+    error: {
+      code: `${codePrefix}_RATE_LIMIT_UNAVAILABLE`,
+      message: 'Authentication requests are temporarily unavailable.'
+    }
+  });
+}
+
 async function forgotPassword(req, res) {
   // Unlike a configured transport's generic response, a globally unavailable
   // transport must not claim that reset instructions are on their way.
@@ -855,6 +893,18 @@ async function forgotPassword(req, res) {
   const email = String((req.body && req.body.email) || '')
     .trim()
     .toLowerCase();
+
+  try {
+    await consumeAuthRequestLimits({
+      limiters: getAuthRequestLimiters('passwordReset'),
+      operation: 'passwordReset',
+      email,
+      ip: req.ip
+    });
+  } catch (error) {
+    return sendAuthRateLimitError(res, error, 'passwordReset');
+  }
+
   const token = crypto.randomBytes(32).toString('hex');
 
   try {

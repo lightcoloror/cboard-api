@@ -17,6 +17,7 @@ describe('user phone registration controller', function() {
   let createTempUserCalls;
   let verificationMailError;
   let emailTransportConfigured;
+  let registrationRateLimitError;
 
   beforeEach(function() {
     capturedUser = null;
@@ -28,6 +29,7 @@ describe('user phone registration controller', function() {
     createTempUserCalls = 0;
     verificationMailError = null;
     emailTransportConfigured = true;
+    registrationRateLimitError = null;
 
     function User(data) {
       capturedUser = { ...data };
@@ -94,6 +96,12 @@ describe('user phone registration controller', function() {
         }
       }
     });
+    mockery.registerMock('../helpers/authRequestRateLimit', {
+      getAuthRequestLimiters() { return {}; },
+      async consumeAuthRequestLimits(input) {
+        if (registrationRateLimitError) throw registrationRateLimitError;
+      }
+    });
     mockery.registerMock('../helpers/localize', {
       findIpLocation: async function() {
         return null;
@@ -130,6 +138,9 @@ describe('user phone registration controller', function() {
       body: null,
       status: function(code) {
         this.statusCode = code;
+        return this;
+      },
+      set: function() {
         return this;
       },
       json: function(body) {
@@ -194,6 +205,43 @@ describe('user phone registration controller', function() {
     expect(phoneLookupCount).to.equal(0);
     expect(consumedPhoneVerification).to.equal(null);
     expect(sentVerification).to.equal(null);
+  });
+
+  it('returns a stable 429 before phone lookup when registration is limited', async function() {
+    registrationRateLimitError = Object.assign(new Error('limited'), {
+      status: 429,
+      code: 'USER_REGISTRATION_RATE_LIMITED',
+      retryAfter: 17
+    });
+    const response = createResponse();
+    await controller.createUser(createRequest('13800138000'), response);
+    expect(response.statusCode).to.equal(429);
+    expect(response.body.message).to.equal('Too many authentication requests.');
+    expect(response.body.error.code).to.equal('USER_REGISTRATION_RATE_LIMITED');
+    expect(phoneLookupCount).to.equal(0);
+    expect(createTempUserCalls).to.equal(0);
+    const schema = YAML.load(path.resolve(__dirname, '../../api/swagger/swagger.yaml')).definitions.ErrorResponse;
+    expect(new ZSchema().validate(response.body, schema)).to.equal(true);
+  });
+
+  it('fails closed with a stable 503 when registration limiter storage is unavailable', async function() {
+    registrationRateLimitError = Object.assign(new Error('backend down'), {
+      status: 503,
+      code: 'USER_REGISTRATION_RATE_LIMIT_UNAVAILABLE'
+    });
+    const response = createResponse();
+    await controller.createUser(createRequest('13800138000'), response);
+    expect(response.statusCode).to.equal(503);
+    expect(response.body.message).to.equal(
+      'Authentication requests are temporarily unavailable.'
+    );
+    expect(response.body.error.code).to.equal(
+      'USER_REGISTRATION_RATE_LIMIT_UNAVAILABLE'
+    );
+    expect(phoneLookupCount).to.equal(0);
+    expect(createTempUserCalls).to.equal(0);
+    const schema = YAML.load(path.resolve(__dirname, '../../api/swagger/swagger.yaml')).definitions.ErrorResponse;
+    expect(new ZSchema().validate(response.body, schema)).to.equal(true);
   });
 
   it('normalizes a valid phone, sends verification email, and keeps its token out of the response', async function() {
