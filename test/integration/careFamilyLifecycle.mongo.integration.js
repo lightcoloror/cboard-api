@@ -891,9 +891,10 @@ async function main() {
     const legacyCommunicator = require('../../api/controllers/communicator');
     const communicatorPayload = { name: 'Synthetic legacy', author: 'Synthetic',
       email: 'synthetic-marker@example.test', rootBoard: 'synthetic-root', boards: ['synthetic-root'] };
-    await usersCollection.insertOne({ _id: new mongoose.Types.ObjectId(), email: communicatorPayload.email });
+    const communicatorUserId = new mongoose.Types.ObjectId();
+    await usersCollection.insertOne({ _id: communicatorUserId, email: communicatorPayload.email });
     const normalCommunicator = settingsResponse();
-    await legacyCommunicator.createCommunicator({ user: { email: communicatorPayload.email },
+    await legacyCommunicator.createCommunicator({ user: { id: String(communicatorUserId), email: communicatorPayload.email },
       body: communicatorPayload }, normalCommunicator);
     assert.equal(normalCommunicator.code, 200, JSON.stringify(normalCommunicator.body));
     const legacyId = normalCommunicator.body.id;
@@ -916,6 +917,39 @@ async function main() {
     assert.equal(await communicatorCollection.countDocuments({}), markerCount);
     assert.deepEqual(await communicatorCollection.findOne({ _id: legacyId }), markerSnapshot);
     passed.push('legacy-communicator-cannot-create-or-assign-reserved-care-markers-even-as-admin');
+    const delegatedOwnerId = new mongoose.Types.ObjectId();
+    const delegatedEmail = 'synthetic-delegated@example.test';
+    await usersCollection.insertOne({ _id: delegatedOwnerId, email: delegatedEmail });
+    const createAs = async (actor, ownerEmail, key) => {
+      const response = settingsResponse();
+      await legacyCommunicator.createCommunicator({ user: actor,
+        body: { ...communicatorPayload, email: ownerEmail },
+        get: name => name === 'Idempotency-Key' ? key : undefined }, response);
+      return response;
+    };
+    const administrator = { id: String(communicatorUserId), email: communicatorPayload.email, isAdmin: true };
+    const delegated = await createAs(administrator, delegatedEmail, 'synthetic-delegation');
+    assert.equal(delegated.code, 200, JSON.stringify(delegated.body));
+    const repeated = await createAs(administrator, delegatedEmail, 'synthetic-delegation');
+    assert.equal(repeated.code, 200);
+    assert.equal(String(repeated.body.id), String(delegated.body.id));
+    await coordinator.begin(String(delegatedOwnerId), []);
+    const rejectedOwner = await createAs(administrator, delegatedEmail, 'late-owner');
+    assert.equal(rejectedOwner.code, 409);
+    assert.equal(rejectedOwner.body.error.code, 'ACCOUNT_CLOSING');
+    const rejectedReplay = await createAs(administrator, delegatedEmail, 'synthetic-delegation');
+    assert.equal(rejectedReplay.code, 409);
+    assert.equal(await communicatorCollection.countDocuments({ email: delegatedEmail }), 1);
+    await coordinator.begin(String(communicatorUserId), []);
+    const rejectedActor = await createAs(administrator, 'synthetic-upload-unowned@example.test', 'late-actor');
+    assert.equal(rejectedActor.code, 409);
+    const anotherOwnerId = new mongoose.Types.ObjectId();
+    await usersCollection.insertOne({ _id: anotherOwnerId, email: 'synthetic-open-owner@example.test' });
+    const actorClosed = await createAs(administrator, 'synthetic-open-owner@example.test', 'late-actor-open-owner');
+    assert.equal(actorClosed.code, 409);
+    assert.equal(actorClosed.body.error.code, 'ACCOUNT_CLOSING');
+    assert.equal(await communicatorCollection.countDocuments({ email: 'synthetic-open-owner@example.test' }), 0);
+    passed.push('legacy-communicator-create-locks-actor-and-owner-and-keeps-idempotency');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

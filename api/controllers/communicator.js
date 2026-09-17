@@ -1,6 +1,7 @@
 const { paginatedResponse } = require('../helpers/response');
 const { getORQuery } = require('../helpers/query');
 const Communicator = require('../models/Communicator');
+const { withLegacyAccountWrite } = require('../helpers/legacyAccountWrite');
 
 const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -34,8 +35,17 @@ function getIdempotencyKey(req) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function findIdempotentCommunicator(email, clientCreationKey) {
-  return Communicator.findOne({ email, clientCreationKey }).exec();
+function findIdempotentCommunicator(email, clientCreationKey, session) {
+  const query = Communicator.findOne({ email, clientCreationKey });
+  return (session ? query.session(session) : query).exec();
+}
+
+function lifecycleFailure(error, res) {
+  if (error && ['ACCOUNT_CLOSING', 'ACCOUNT_CLOSED', 'LEGACY_OWNER_UNAVAILABLE',
+    'LEGACY_OWNER_CHANGED', 'ACCOUNT_UNAVAILABLE', 'INVALID_ACCOUNT_IDS'].includes(error.code)) {
+    return res.status(error.status || 409).json({ message: 'Account is unavailable for this change', error: { code: error.code } });
+  }
+  return null;
 }
 
 function getCommunicatorQuery(req, id) {
@@ -92,20 +102,23 @@ async function createCommunicator(req, res) {
   }
 
   try {
-    if (clientCreationKey) {
+    const communicator = await withLegacyAccountWrite(req.user.id, [ownerEmail], async session => {
+      if (clientCreationKey) {
       const existingCommunicator = await findIdempotentCommunicator(
         ownerEmail,
-        clientCreationKey
+        clientCreationKey, session
       );
       if (existingCommunicator) {
-        return sendCommunicatorResponse(res, existingCommunicator);
+        return existingCommunicator;
       }
-    }
-
-    const communicator = await new Communicator(communicatorData).save();
+      }
+      return new Communicator(communicatorData).save(session ? { session } : undefined);
+    });
     return sendCommunicatorResponse(res, communicator);
   } catch (err) {
-    if (clientCreationKey && err && err.code === 11000) {
+    const rejected = lifecycleFailure(err, res);
+    if (rejected) return rejected;
+    if (process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED !== 'true' && clientCreationKey && err && err.code === 11000) {
       const existingCommunicator = await findIdempotentCommunicator(
         ownerEmail,
         clientCreationKey
