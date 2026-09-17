@@ -1123,6 +1123,56 @@ async function main() {
     assert.equal(await connection.collection('careclosurejobs').countDocuments({ owner: expiringOwner }), 0);
     passed.push('closure-receipt-atomic-binding-secret-rotation-expiry-and-lost-response-recovery');
     await require('./careClosureReceiptHttp.mongo.fixture')({ mongoose, passed, encryption });
+
+    const runtimeUser = new mongoose.Types.ObjectId();
+    const runtimeOwner = String(runtimeUser);
+    const runtimeEmail = `runtime-${runtimeOwner}@example.test`;
+    const runtimeFamily = `family-${runtimeOwner}`;
+    const runtimeProfile = `profile-${runtimeOwner}`;
+    const runtimeBlobs = [await fileMedia.write(ciphertext), await fileMedia.write(ciphertext)];
+    const untouchedBlob = await fileMedia.write(ciphertext);
+    await usersCollection.insertOne({ _id: runtimeUser, email: runtimeEmail });
+    await settingsCollection.insertOne({ user: runtimeUser, synthetic: true });
+    await Board.collection.insertOne({ email: runtimeEmail });
+    await families.insertOne({ _id: runtimeFamily, owner: runtimeOwner, rev: 0,
+      sealed: encryption.seal({}, `family:${runtimeFamily}`) });
+    await profiles.insertOne({ _id: runtimeProfile, familyId: runtimeFamily, owner: runtimeOwner,
+      members: [runtimeOwner], rev: 0, sealed: encryption.seal({ grants: { [runtimeOwner]: ['read'] },
+        media: { a: { blob: runtimeBlobs[0], size: 3 }, b: { blob: runtimeBlobs[1], size: 3 } }
+      }, `profile:${runtimeProfile}`) });
+    let runtimeCleanupCalls = 0;
+    const runtimeOptions = { connection, encryption, media: fileMedia, maxPerRun: 1,
+      revokeSessions: owner => deviceSessions.revoke(owner),
+      async cleanup(args) {
+        runtimeCleanupCalls += 1;
+        return cleanupAccountData({ ...args, quotaService: legacyQuota,
+          privateLibraryCleanup: archiveCleaners[0], privateDeviceCleanup: archiveCleaners[1] });
+      }
+    };
+    const { createCareClosureRuntime } = require('../../api/helpers/careClosureRuntime');
+    const closureRuntime = createCareClosureRuntime(runtimeOptions);
+    const runtimeReceipt = await closureRuntime.receipt.prepare(runtimeOwner);
+    const runtimeJob = await closureRuntime.coordinator.begin(runtimeOwner, [runtimeFamily], runtimeReceipt.secret);
+    let runtimeResult = await closureRuntime.runner.run(runtimeOwner, runtimeJob.operationId);
+    assert.equal(runtimeResult.accountDeleted, false);
+    assert(await usersCollection.findOne({ _id: runtimeUser }));
+    // Reconstruct every stage between bounded calls, as after a worker restart.
+    for (let attempt = 0; attempt < 10 && !runtimeResult.accountDeleted; attempt++) {
+      runtimeResult = await createCareClosureRuntime(runtimeOptions).runner.run(runtimeOwner, runtimeJob.operationId);
+    }
+    assert.equal(runtimeResult.accountDeleted, true);
+    assert.equal(runtimeCleanupCalls, 1);
+    assert.equal(await usersCollection.findOne({ _id: runtimeUser }), null);
+    assert.equal(await profiles.findOne({ _id: runtimeProfile }), null);
+    assert.equal((await families.findOne({ _id: runtimeFamily })).closure.status, 'closed');
+    assert.equal(await settingsCollection.countDocuments({ user: runtimeUser }), 0);
+    assert.equal(await Board.collection.countDocuments({ email: runtimeEmail }), 0);
+    for (const blob of runtimeBlobs) await assert.rejects(fileMedia.read(blob), e => e.code === 'MEDIA_FILE_DELETED');
+    assert.deepEqual(await fileMedia.read(untouchedBlob), ciphertext);
+    assert.equal((await closureRuntime.receipt.inspect(runtimeOwner, runtimeReceipt.secret)).accountDeleted, true);
+    assert.equal((await createCareClosureRuntime(runtimeOptions).runner.run(runtimeOwner, runtimeJob.operationId)).accountDeleted, true);
+    assert.equal(runtimeCleanupCalls, 1);
+    passed.push('composed-runtime-resumes-bounded-family-media-to-real-user-deletion-and-receipt-complete');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));
