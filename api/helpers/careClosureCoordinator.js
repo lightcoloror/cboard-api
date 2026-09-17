@@ -42,6 +42,9 @@ function createCareClosureCoordinator({
       const accountDocs = await boundedRead(accounts, {}, session);
       const plan = buildCareClosurePlan({ owner: closure.owner, familyIds: closure.familyIds,
         families: familyDocs, profiles: profileDocs, fundings: fundingDocs, accounts: accountDocs, encryption });
+      // Transfer institution administration before freezing the account;
+      // deleting one account must never strand a shared institution balance.
+      if (plan.institutionAdminIds.length) fail(409, 'INSTITUTION_TRANSFER_REQUIRED');
       await jobs.insertOne({ _id: closure.operationId, owner: closure.owner, rev: 0,
         status: 'prepared', createdAt: closure.at, updatedAt: closure.at,
         sealed: encryption.seal(plan, `closure:${closure.operationId}`) }, { session });

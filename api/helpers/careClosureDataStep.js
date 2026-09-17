@@ -32,11 +32,12 @@ function createCareClosureDataStep({ connection = mongoose.connection,
     if (!job) fail(503, 'CLOSURE_JOB_UNAVAILABLE');
     if (!['accounts_cleaned', 'family_data_cleaned'].includes(job.status)) fail(409, 'CLOSURE_ACCOUNTS_NOT_COMPLETE');
     const plan = open(job.sealed, `closure:${operationId}`);
-    if (plan.version !== 1 || plan.owner !== owner || !ids(plan.familyIds) || !plan.familyIds.length ||
+    if (plan.version !== 1 || plan.owner !== owner || !ids(plan.familyIds) ||
       !ids(plan.profileIds) || !ids(plan.familyFundingIds) || !ids(plan.relatedAccountIds) ||
       !plan.relatedAccountIds.includes(owner) || !Array.isArray(plan.media) ||
       !Array.isArray(plan.pendingUsage) || !Array.isArray(plan.institutionAdminIds) || plan.institutionAdminIds.length ||
       job.mediaCursor !== plan.media.length || job.accountCursor !== plan.relatedAccountIds.length) reconcile();
+    if (!plan.familyIds.length && (plan.profileIds.length || plan.familyFundingIds.length || plan.media.length)) reconcile();
     const lifecycle = await lifecycles.findOne({ _id: owner }, { session });
     const closure = lifecycle && lifecycle.closure;
     if (!lifecycle || lifecycle.status !== 'closing' || !closure || closure.status !== 'closing' ||

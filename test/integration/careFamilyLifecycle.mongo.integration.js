@@ -511,6 +511,33 @@ async function main() {
     await assert.rejects(deviceSessions.create(loginUser), error => error.code === 'ACCOUNT_CLOSING');
     assert.equal(await connection.collection('devicesessions').countDocuments({ user: loginUser }), 1);
     passed.push('closing-account-rejects-existing-token-and-new-device-session');
+    const noFamilyOwner = 'collaborator-without-family';
+    await careAccounts.insertOne({ _id: noFamilyOwner, rev: 0,
+      sealed: encryption.seal({ selectedProfileId: otherFamily.profileId }, `account:${noFamilyOwner}`) });
+    const otherProfileBeforeRunner = await profiles.findOne({ _id: otherFamily.profileId });
+    const noFamilyClosure = await coordinator.begin(noFamilyOwner, []);
+    assert.deepEqual(noFamilyClosure.familyIds, []);
+    assert.equal((await coordinator.begin(noFamilyOwner, [])).operationId, noFamilyClosure.operationId);
+    const { createCareClosureRunner } = require('../../api/helpers/careClosureRunner');
+    const runner = createCareClosureRunner({ coordinator,
+      mediaStep: createCareClosureMediaStep({ connection, encryption, media: fileMedia }),
+      accountStep: createCareClosureAccountStep({ connection, encryption }),
+      dataStep: createCareClosureDataStep({ connection, encryption }) });
+    assert.deepEqual(await runner.run(noFamilyOwner, noFamilyClosure.operationId), {
+      operationId: noFamilyClosure.operationId, cleanupStatus: 'family_data_cleaned', waiting: false, accountDeleted: false
+    });
+    assert.deepEqual(await profiles.findOne({ _id: otherFamily.profileId }), otherProfileBeforeRunner);
+    assert.equal((await accounts.findOne({ _id: noFamilyOwner })).status, 'closing');
+    assert.equal(encryption.open((await careAccounts.findOne({ _id: noFamilyOwner })).sealed,
+      `account:${noFamilyOwner}`).selectedProfileId, otherFamily.profileId);
+    assert.equal((await runner.run(jobFamily.owner, prepared.operationId)).waiting, true);
+    assert.equal((await runner.run(cleanFamily.owner, cleanJob.operationId)).cleanupStatus, 'family_data_cleaned');
+    passed.push('durable-stage-runner-supports-empty-owned-family-scope-and-waiting');
+    const institutionAccountBefore = await accounts.findOne({ _id: 'institution-owner' });
+    await assert.rejects(coordinator.begin('institution-owner', []), error => error.code === 'INSTITUTION_TRANSFER_REQUIRED');
+    assert.deepEqual(await accounts.findOne({ _id: 'institution-owner' }), institutionAccountBefore);
+    assert.equal(await jobs.countDocuments({ owner: 'institution-owner' }), 0);
+    passed.push('institution-administration-blocks-before-freezing-account');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

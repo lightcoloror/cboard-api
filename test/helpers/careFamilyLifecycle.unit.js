@@ -314,6 +314,32 @@ describe('care family lifecycle helper', function() {
     expect(f.Family.calls.updateOne).to.have.length(0);
   });
 
+  it('allows an empty closure scope when the owner has no families', async function() {
+    const f = factory({ family: [] });
+    const result = await f.lifecycle.beginClose('owner-1', []);
+    expect(result).to.deep.equal({ status: 'closing', owner: 'owner-1', familyIds: [], operationId: 'close-op', at: 1700000000000 });
+    expect(f.Family.calls.updateOne).to.have.length(0);
+    expect(f.AccountLifecycle.calls.updateOne[1].update.$set.closure.familyIds).to.deep.equal([]);
+  });
+
+  it('resumes an existing empty closure scope with an empty confirmation', async function() {
+    const f = factory({ account: {
+      _id: 'owner-1', status: 'closing',
+      closure: { owner: 'owner-1', operationId: 'close-empty', familyIds: [], at: 1700000000000 }
+    } });
+    const result = await f.lifecycle.beginClose('owner-1', []);
+    expect(result).to.deep.equal({ status: 'closing', owner: 'owner-1', familyIds: [], operationId: 'close-empty', at: 1700000000000 });
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(0);
+    expect(f.Family.calls.updateOne).to.have.length(0);
+  });
+
+  it('rejects duplicate family confirmations before any lifecycle write', async function() {
+    const f = factory({ family: [] });
+    await expectCode(f.lifecycle.beginClose('owner-1', ['family-a', 'family-a']), 'INVALID_FAMILY_CONFIRMATION');
+    expect(f.AccountLifecycle.calls.updateOne).to.have.length(0);
+    expect(f.Family.calls.updateOne).to.have.length(0);
+  });
+
   it('runs prepareClose after closing writes in the same session', async function() {
     let prepared;
     const f = factory({

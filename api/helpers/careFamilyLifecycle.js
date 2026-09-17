@@ -211,7 +211,8 @@ function createCareFamilyLifecycle({
 
   async function beginClose(owner, exactFamilyIds) {
     if (!validId(owner)) fail(400, 'INVALID_OWNER');
-    if (!Array.isArray(exactFamilyIds) || exactFamilyIds.some(id => !validId(id))) {
+    if (!Array.isArray(exactFamilyIds) || exactFamilyIds.some(id => !validId(id)) ||
+        new Set(exactFamilyIds.map(String)).size !== exactFamilyIds.length) {
       fail(400, 'INVALID_FAMILY_CONFIRMATION');
     }
     const requested = sortedIds(exactFamilyIds);
@@ -233,7 +234,7 @@ function createCareFamilyLifecycle({
           fail(409, ACCOUNT_CLOSE_CONFLICT);
         }
         const existingIds = sortedIds(existingFamilyIds);
-        if (!requested.length || !sameIdSet(requested, existingIds)) {
+        if (!sameIdSet(requested, existingIds)) {
           fail(409, FAMILY_CLOSE_CONFIRMATION_REQUIRED, { owner, familyIds: existingIds });
         }
         return {
@@ -250,7 +251,7 @@ function createCareFamilyLifecycle({
         projection: { _id: 1, owner: 1, closure: 1, lifecycleRev: 1 }
       }).toArray();
       const actual = sortedIds(families.map(family => family._id));
-      if (!requested.length || !sameIdSet(requested, actual) || new Set(exactFamilyIds.map(String)).size !== exactFamilyIds.length) {
+      if (!sameIdSet(requested, actual)) {
         fail(409, FAMILY_CLOSE_CONFIRMATION_REQUIRED, {
           owner,
           familyIds: actual

@@ -55,7 +55,7 @@ function createCareClosureAccountStep({ connection = mongoose.connection,
     if (!['media_cleaned', 'account_cleanup', 'accounts_cleaned'].includes(job.status)) fail(409, 'CLOSURE_MEDIA_NOT_COMPLETE');
     const plan = open(job.sealed, `closure:${operationId}`);
     if (!record(plan) || plan.version !== 1 || plan.owner !== owner || !idList(plan.familyIds) ||
-      !plan.familyIds.length || !idList(plan.profileIds) || !idList(plan.relatedAccountIds) ||
+      !idList(plan.profileIds) || (!plan.familyIds.length && plan.profileIds.length) || !idList(plan.relatedAccountIds) ||
       !plan.relatedAccountIds.includes(owner)) unavailable();
     const lifecycle = await lifecycles.findOne({ _id: owner }, { session });
     const closure = lifecycle && lifecycle.closure;
