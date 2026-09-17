@@ -497,17 +497,15 @@ function activateUser(req, res) {
   const url = req.swagger.params.url.value;
   nev.confirmTempUser(url, function(err, user) {
     if (user) {
-      nev.sendConfirmationEmail(user.email, function(err, info) {
-        if (err) {
-          return res.status(404).json({
-            message: 'ERROR: sending confirmation email FAILED ' + info
-          });
-        }
-        return res.status(200).json({
-          success: 1,
-          userid: user._id,
-          message: 'CONFIRMED!'
-        });
+      try {
+        nev.sendConfirmationEmail(user.email, function() {});
+      } catch (error) {
+        // Confirmation has already persisted; welcome notification is best effort.
+      }
+      return res.status(200).json({
+        success: 1,
+        userid: user._id,
+        message: 'CONFIRMED!'
       });
     } else {
       return res.status(404).json({

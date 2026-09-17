@@ -9,6 +9,7 @@ var bcrypt = require('bcryptjs');
 const nevInstance = configNev('en');
 
 function configNev(locale) {
+  const care = process.env.CARE_COLLABORATION_ENABLED === 'true';
   var myHasher = function(password, tempUserData, insertTempUser, callback) {
     bcrypt.genSalt(8, function(err, salt) {
       bcrypt.hash(password, salt, function(err, hash) {
@@ -41,6 +42,11 @@ function configNev(locale) {
         (text =
           'Thanks for signup to Cboard!. Please confirm your account by clicking the following link: ${URL}');
   }
+  if (care) {
+    subject = '图语家 — 验证邮箱';
+    html = '<p>请打开以下链接，完成图语家账号的邮箱验证：</p><p>${URL}</p><p>如果不是您发起的注册，请忽略此邮件。请勿转发验证链接。</p>';
+    text = '请打开以下链接，完成图语家账号的邮箱验证：${URL}。如果不是您发起的注册，请忽略此邮件。请勿转发验证链接。';
+  }
   nev.configure(
     {
       verificationURL: '${DOMAIN}/activate/${URL}',
@@ -63,13 +69,23 @@ function configNev(locale) {
         text: text
       },
       shouldSendConfirmation: true,
-      confirmMailOptions: {
+      confirmMailOptions: care ? {
+        from: config.emailTransport.from,
+        subject: '图语家 — 邮箱验证成功',
+        html: '<p>您的图语家账号已完成邮箱验证，可以返回应用登录。</p>',
+        text: '您的图语家账号已完成邮箱验证，可以返回应用登录。'
+      } : {
         from: config.emailTransport.from,
         subject: 'Cboard - Successfully verified!',
         html: '<p>Your account at Cboard has been successfully verified.</p>',
         text: 'Your account at Cboard has been successfully verified.'
       },
-      resetPasswordMailOptions: {
+      resetPasswordMailOptions: care ? {
+        from: config.emailTransport.from,
+        subject: '图语家 — 重置密码',
+        html: '<p>您申请了重置图语家账号密码。请打开以下链接设置新密码：</p><p>${URL}</p><p>如果不是您发起的请求，请忽略此邮件。请勿转发重置链接。</p>',
+        text: '您申请了重置图语家账号密码。请打开以下链接设置新密码：${URL}。如果不是您发起的请求，请忽略此邮件。请勿转发重置链接。'
+      } : {
         from: config.emailTransport.from,
         subject: 'Cboard - Password reset',
         html:

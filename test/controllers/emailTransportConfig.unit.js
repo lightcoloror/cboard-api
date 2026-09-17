@@ -9,14 +9,18 @@ describe('email transport environment configuration', function() {
   let previousEmailFrom;
   let previousDevelopment;
   let previousProduction;
+  let previousCare;
 
   beforeEach(function() {
     previousEmailFrom = process.env.EMAIL_FROM;
+    previousCare = process.env.CARE_COLLABORATION_ENABLED;
     previousDevelopment = require.cache[require.resolve('../../config/env/development')];
     previousProduction = require.cache[require.resolve('../../config/env/production')];
   });
 
   afterEach(function() {
+    if (previousCare === undefined) delete process.env.CARE_COLLABORATION_ENABLED;
+    else process.env.CARE_COLLABORATION_ENABLED = previousCare;
     if (previousEmailFrom === undefined) delete process.env.EMAIL_FROM;
     else process.env.EMAIL_FROM = previousEmailFrom;
     const developmentPath = require.resolve('../../config/env/development');
@@ -64,6 +68,7 @@ describe('email transport environment configuration', function() {
   });
 
   it('injects the configured sender into all application NEV mail options', function() {
+    process.env.CARE_COLLABORATION_ENABLED = 'true';
     let configured;
     mockery.enable({ warnOnReplace: false, warnOnUnregistered: false, useCleanCache: true });
     mockery.registerMock('../models/User', {});
@@ -85,5 +90,11 @@ describe('email transport environment configuration', function() {
     expect(configured.verifyMailOptions.from).to.equal('Configured Sender <mail@example.test>');
     expect(configured.confirmMailOptions.from).to.equal('Configured Sender <mail@example.test>');
     expect(configured.resetPasswordMailOptions.from).to.equal('Configured Sender <mail@example.test>');
+    for (const key of ['verifyMailOptions', 'confirmMailOptions', 'resetPasswordMailOptions']) {
+      expect(configured[key].subject).to.contain('图语家');
+      expect(configured[key].text).not.to.contain('Cboard');
+    }
+    expect(configured.verifyMailOptions.text).to.contain('${URL}');
+    expect(configured.resetPasswordMailOptions.text).to.contain('${URL}');
   });
 });
