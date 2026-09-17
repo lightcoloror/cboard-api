@@ -16,6 +16,12 @@ describe('user phone password reset controller', function() {
   let consumed;
   let userUpdate;
   let invalidatedEmailReset;
+  let userUpdateOptions;
+  let invalidatedEmailResetOptions;
+  let previousLifecycleFlag;
+  let lifecycleMode;
+  let lifecycleCalls;
+  let lifecycleSession;
 
   beforeEach(function() {
     verificationError = null;
@@ -25,6 +31,13 @@ describe('user phone password reset controller', function() {
     consumed = null;
     userUpdate = null;
     invalidatedEmailReset = null;
+    userUpdateOptions = null;
+    invalidatedEmailResetOptions = null;
+    previousLifecycleFlag = process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    lifecycleMode = 'open';
+    lifecycleCalls = [];
+    lifecycleSession = { id: 'phone-reset-session' };
     user = {
       _id: 'user-id',
       email: 'care@example.test',
@@ -43,6 +56,7 @@ describe('user phone password reset controller', function() {
       },
       findOneAndUpdate(filter, update, options) {
         userUpdate = { filter, update, options };
+        userUpdateOptions = options;
         return {
           async exec() {
             if (updateError) throw updateError;
@@ -55,8 +69,9 @@ describe('user phone password reset controller', function() {
     };
 
     const ResetPassword = {
-      updateMany(filter, update) {
+      updateMany(filter, update, options) {
         invalidatedEmailReset = { filter, update };
+        invalidatedEmailResetOptions = options;
         return {
           async exec() {
             if (resetUpdateError) throw resetUpdateError;
@@ -73,6 +88,26 @@ describe('user phone password reset controller', function() {
     });
     mockery.registerMock('../models/User', User);
     mockery.registerMock('../models/ResetPassword', ResetPassword);
+    mockery.registerMock('../helpers/careFamilyLifecycle', {
+      createCareFamilyLifecycle() {
+        return {
+          async withOpenAccount(id, callback) {
+            lifecycleCalls.push(id);
+            if (lifecycleMode === 'closing') {
+              throw Object.assign(new Error('closing'), {
+                code: 'ACCOUNT_CLOSING',
+                status: 409
+              });
+            }
+            const result = await callback(lifecycleSession);
+            if (lifecycleMode === 'commit-fail') {
+              throw new Error('commit failed');
+            }
+            return result;
+          }
+        };
+      }
+    });
     mockery.registerMock('../models/Settings', {});
     mockery.registerMock('../models/Subscribers', {});
     mockery.registerMock('../mail', { nev: { options: {} } });
@@ -98,6 +133,8 @@ describe('user phone password reset controller', function() {
   });
 
   afterEach(function() {
+    if (previousLifecycleFlag === undefined) delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    else process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = previousLifecycleFlag;
     mockery.deregisterAll();
     mockery.disable();
   });
@@ -143,6 +180,7 @@ describe('user phone password reset controller', function() {
     });
     expect(userUpdate.filter).to.deep.equal({
       _id: 'user-id',
+      phone: '13800138000',
       role: { $ne: 'admin' }
     });
     expect(userUpdate.update.$inc).to.deep.equal({ authVersion: 1 });
@@ -154,6 +192,62 @@ describe('user phone password reset controller', function() {
       update: { $set: { status: true } }
     });
     expect(res.body).not.to.have.property('authToken');
+  });
+
+  it('uses one lifecycle session for reset-token invalidation and User update', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'open';
+    const res = response();
+
+    await controller.resetPasswordWithPhone(request(), res);
+
+    expect(res.statusCode).to.equal(200);
+    expect(lifecycleCalls).to.deep.equal(['user-id']);
+    expect(invalidatedEmailResetOptions.session).to.equal(lifecycleSession);
+    expect(userUpdateOptions.session).to.equal(lifecycleSession);
+    expect(userUpdate.filter).to.deep.equal({
+      _id: 'user-id',
+      phone: '13800138000',
+      role: { $ne: 'admin' }
+    });
+  });
+
+  it('returns the generic failure and performs no DB writes when the account is closing', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'closing';
+    const res = response();
+
+    await controller.resetPasswordWithPhone(request(), res);
+
+    expect(res.statusCode).to.equal(400);
+    expect(res.body).to.deep.equal({
+      message: 'Unable to reset the password.',
+      error: { code: 'PASSWORD_RESET_FAILED' }
+    });
+    expect(consumed).to.deep.equal({
+      phone: '13800138000',
+      token: 'a'.repeat(64)
+    });
+    expect(invalidatedEmailReset).to.equal(null);
+    expect(userUpdate).to.equal(null);
+  });
+
+  it('does not return success when the lifecycle commit fails and consumes the SMS token once', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleMode = 'commit-fail';
+    const res = response();
+
+    await controller.resetPasswordWithPhone(request(), res);
+
+    expect(res.statusCode).to.equal(500);
+    expect(res.body).to.deep.equal({
+      message: 'Unable to reset the password.',
+      error: { code: 'PASSWORD_RESET_FAILED' }
+    });
+    expect(consumed).to.deep.equal({
+      phone: '13800138000',
+      token: 'a'.repeat(64)
+    });
   });
 
   it('rejects weak input before consuming the verification token', async function() {

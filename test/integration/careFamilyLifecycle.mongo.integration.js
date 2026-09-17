@@ -1052,6 +1052,7 @@ async function main() {
       assert.equal(refused.body.error.code, 'ACCOUNT_CLOSING');
     }
     passed.push('legacy-board-create-update-delete-fence-actor-owner-and-owner-transfer');
+    await require('./passwordResetLifecycle.mongo.fixture')({ mongoose, coordinator, passed });
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

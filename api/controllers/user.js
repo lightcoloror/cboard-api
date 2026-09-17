@@ -38,6 +38,28 @@ const {
 } = require('../helpers/passwordReset');
 const { requireAdmin, requireSelfOrAdmin } = require('../helpers/userAccess');
 const { configuredEmailAppOrigin } = require('../helpers/emailLinkOrigin');
+const { createCareFamilyLifecycle } = require('../helpers/careFamilyLifecycle');
+
+// Only Mongo writes belong in this callback: transactions can retry it.
+function withPasswordResetWrite(userId, write) {
+  return process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED === 'true'
+    ? createCareFamilyLifecycle().withOpenAccount(userId, write)
+    : write(null);
+}
+
+function failPasswordReset(status = 400) {
+  const error = new Error('PASSWORD_RESET_FAILED');
+  error.passwordResetStatus = status;
+  throw error;
+}
+
+function passwordResetErrorStatus(error) {
+  if (error && error.passwordResetStatus) return error.passwordResetStatus;
+  if (error && ['ACCOUNT_CLOSING', 'ACCOUNT_CLOSED', 'ACCOUNT_CLOSE_CONFLICT'].includes(error.code)) {
+    return 400;
+  }
+  return 500;
+}
 
 const config = require('../../config');
 const {
@@ -914,17 +936,24 @@ async function forgotPassword(req, res) {
     const user = email ? await User.findOne({ email }).exec() : null;
     if (user) {
       const userId = String(user.id || user._id);
-      await ResetPassword.findOneAndUpdate(
-        { userId },
-        {
-          $set: {
-            resetPasswordToken: tokenHash,
-            resetPasswordExpires: moment.utc().add(86400, 'seconds'),
-            status: false
-          }
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
-      ).exec();
+      await withPasswordResetWrite(userId, async session => {
+        if (session) {
+          const current = await User.findOne({ _id: userId, email: user.email })
+            .session(session).exec();
+          if (!current) failPasswordReset();
+        }
+        await ResetPassword.findOneAndUpdate(
+          { userId },
+          {
+            $set: {
+              resetPasswordToken: tokenHash,
+              resetPasswordExpires: moment.utc().add(86400, 'seconds'),
+              status: false
+            }
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true, ...(session ? { session } : {}) }
+        ).exec();
+      });
 
       try {
         nev.sendResetPasswordEmail(
@@ -969,33 +998,37 @@ async function storePassword(req, res) {
     }
 
     const passwordHash = await hashNewPassword(password);
-    const consumed = await ResetPassword.findOneAndUpdate(
-      {
-        _id: resetPassword._id,
-        status: false,
-        resetPasswordExpires: { $gt: now }
-      },
-      { $set: { status: true } },
-      { new: true }
-    ).exec();
-    if (!consumed) return sendPasswordResetFailure(res, 409);
+    await withPasswordResetWrite(userId, async session => {
+      const consumed = await ResetPassword.findOneAndUpdate(
+        {
+          _id: resetPassword._id,
+          userId,
+          resetPasswordToken: resetPassword.resetPasswordToken,
+          status: false,
+          resetPasswordExpires: { $gt: new Date() }
+        },
+        { $set: { status: true } },
+        { new: true, ...(session ? { session } : {}) }
+      ).exec();
+      if (!consumed) failPasswordReset(409);
 
-    const user = await User.findOneAndUpdate(
-      { _id: userId },
-      {
-        $set: { password: passwordHash },
-        $inc: { authVersion: 1 }
-      },
-      { new: true }
-    ).exec();
-    if (!user) return sendPasswordResetFailure(res);
+      const user = await User.findOneAndUpdate(
+        { _id: userId },
+        {
+          $set: { password: passwordHash },
+          $inc: { authVersion: 1 }
+        },
+        { new: true, ...(session ? { session } : {}) }
+      ).exec();
+      if (!user) failPasswordReset();
+    });
 
     return res.status(200).json({
       success: 1,
       message: 'Password reset. Please sign in again.'
     });
   } catch (error) {
-    return sendPasswordResetFailure(res, 500);
+    return sendPasswordResetFailure(res, passwordResetErrorStatus(error));
   }
 }
 
@@ -1025,27 +1058,30 @@ async function resetPasswordWithPhone(req, res) {
       return sendPasswordResetFailure(res);
     }
 
-    await ResetPassword.updateMany(
-      { userId: String(user._id), status: false },
-      { $set: { status: true } }
-    ).exec();
-
     const passwordHash = await hashNewPassword(password);
-    const updated = await User.findOneAndUpdate(
-      { _id: user._id, role: { $ne: 'admin' } },
-      {
-        $set: { password: passwordHash },
-        $inc: { authVersion: 1 }
-      },
-      { new: true }
-    ).exec();
-    if (!updated) return sendPasswordResetFailure(res);
+    await withPasswordResetWrite(String(user._id), async session => {
+      await ResetPassword.updateMany(
+        { userId: String(user._id), status: false },
+        { $set: { status: true } },
+        ...(session ? [{ session }] : [])
+      ).exec();
+
+      const updated = await User.findOneAndUpdate(
+        { _id: user._id, phone: phoneInput.phone, role: { $ne: 'admin' } },
+        {
+          $set: { password: passwordHash },
+          $inc: { authVersion: 1 }
+        },
+        { new: true, ...(session ? { session } : {}) }
+      ).exec();
+      if (!updated) failPasswordReset();
+    });
 
     return res.status(200).json({
       success: 1,
       message: 'Password reset. Please sign in again.'
     });
   } catch (error) {
-    return sendPasswordResetFailure(res, 500);
+    return sendPasswordResetFailure(res, passwordResetErrorStatus(error));
   }
 }

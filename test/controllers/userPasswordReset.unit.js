@@ -25,8 +25,16 @@ describe('legacy email password reset controller security', function() {
   let userLookupCount;
   let passwordResetRateLimitError;
   let emailLinkConfigured;
+  let lifecycleTransactionsEnabled;
+  let lifecycleSession;
+  let lifecycleCommitError;
+  let transactionCommitted;
+  let forceConsumeConflict;
+  let previousLifecycleFlag;
 
   beforeEach(function() {
+    previousLifecycleFlag = process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
     emailUser = {
       _id: 'user-id',
       id: 'user-id',
@@ -43,19 +51,28 @@ describe('legacy email password reset controller security', function() {
     userLookupCount = 0;
     passwordResetRateLimitError = null;
     emailLinkConfigured = true;
+    lifecycleTransactionsEnabled = false;
+    lifecycleSession = null;
+    lifecycleCommitError = null;
+    transactionCommitted = false;
+    forceConsumeConflict = false;
 
     const User = {
       findOne(query) {
         userLookupCount += 1;
-        return {
+        const result = {
+          session(value) { this.sessionValue = value; return this; },
           async exec() {
+            if (query._id === 'user-id') return emailUser;
             return query.email === 'care@example.test' ? emailUser : null;
           }
         };
+        return result;
       },
       findOneAndUpdate(filter, update, options) {
         userUpdate = { filter, update, options };
         return {
+          session(value) { this.sessionValue = value; return this; },
           async exec() {
             return filter._id === 'user-id' ? emailUser : null;
           }
@@ -66,6 +83,7 @@ describe('legacy email password reset controller security', function() {
     const ResetPassword = {
       findOne(query) {
         return {
+          session(value) { this.sessionValue = value; return this; },
           async exec() {
             if (
               !resetRecord ||
@@ -84,6 +102,7 @@ describe('legacy email password reset controller security', function() {
         if (options && options.upsert) {
           resetUpsert = { filter, update, options };
           return {
+            session(value) { this.sessionValue = value; return this; },
             async exec() {
               return { _id: 'reset-id' };
             }
@@ -91,8 +110,9 @@ describe('legacy email password reset controller security', function() {
         }
         consumedReset = { filter, update, options };
         return {
+          session(value) { this.sessionValue = value; return this; },
           async exec() {
-            return resetRecord && !resetRecord.consumed
+            return resetRecord && !resetRecord.consumed && !forceConsumeConflict
               ? { ...resetRecord, status: true }
               : null;
           }
@@ -116,12 +136,26 @@ describe('legacy email password reset controller security', function() {
       nev: {
         options: {},
         sendResetPasswordEmail(email, domain, userId, token, callback) {
-          sentEmail = { email, domain, userId, token };
+          sentEmail = { email, domain, userId, token, transactionCommitted };
           callback(resetMailError);
         }
       }
     });
     mockery.registerMock('../helpers/auth', {});
+    mockery.registerMock('../helpers/careFamilyLifecycle', {
+      createCareFamilyLifecycle() {
+        return {
+          async withOpenAccount(userId, callback) {
+            if (lifecycleCommitError && lifecycleCommitError.beforeCallback) throw lifecycleCommitError;
+            lifecycleSession = { userId };
+            const result = await callback(lifecycleSession);
+            if (lifecycleCommitError) throw lifecycleCommitError;
+            transactionCommitted = true;
+            return result;
+          }
+        };
+      }
+    });
     mockery.registerMock('../helpers/phoneVerificationRuntime', {
       phoneVerificationService: {}
     });
@@ -163,6 +197,8 @@ describe('legacy email password reset controller security', function() {
   afterEach(function() {
     mockery.deregisterAll();
     mockery.disable();
+    if (previousLifecycleFlag === undefined) delete process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED;
+    else process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = previousLifecycleFlag;
   });
 
   function response() {
@@ -329,6 +365,31 @@ describe('legacy email password reset controller security', function() {
     expect(sentEmail).not.to.equal(null);
   });
 
+  it('rejects forgot-password for a closing account before reset writes or email', async function() {
+    lifecycleTransactionsEnabled = true;
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleCommitError = Object.assign(new Error('account closing'), { code: 'ACCOUNT_CLOSING', status: 409 });
+    lifecycleCommitError.beforeCallback = true;
+    const res = response();
+    await controller.forgotPassword(
+      { body: { email: 'care@example.test' }, headers: { origin: 'http://localhost:3000' } },
+      res
+    );
+    expect(res.statusCode).to.equal(200);
+    expect(resetUpsert).to.equal(null);
+    expect(sentEmail).to.equal(null);
+  });
+
+  it('uses one account transaction session and sends mail only after commit', async function() {
+    lifecycleTransactionsEnabled = true;
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    const res = response();
+    await controller.forgotPassword({ body: { email: 'care@example.test' }, headers: { origin: 'http://localhost:3000' } }, res);
+    expect(res.statusCode).to.equal(200);
+    expect(resetUpsert.options.session).to.equal(lifecycleSession);
+    expect(sentEmail.transactionCommitted).to.equal(true);
+  });
+
   it('checks expiry and token before atomically consuming and updating the password', async function() {
     const token = 'd'.repeat(64);
     resetRecord = {
@@ -399,5 +460,81 @@ describe('legacy email password reset controller security', function() {
     );
     expect(expired.statusCode).to.equal(400);
     expect(userUpdate).to.equal(null);
+  });
+
+  it('binds token consumption to the user, original hash, and fresh expiry', async function() {
+    const token = 'a'.repeat(64);
+    const originalHash = await hashResetToken(token);
+    resetRecord = {
+      _id: 'reset-id', userId: 'user-id', resetPasswordToken: originalHash,
+      resetPasswordExpires: new Date(Date.now() + 60000), status: false
+    };
+    const res = response();
+    await controller.storePassword({ body: { userid: 'user-id', token, password: 'new-password' } }, res);
+    expect(res.statusCode).to.equal(200);
+    expect(consumedReset.filter).to.include({ _id: 'reset-id', userId: 'user-id', status: false });
+    expect(consumedReset.filter.resetPasswordToken).to.equal(originalHash);
+    expect(consumedReset.filter.resetPasswordExpires.$gt).to.be.instanceOf(Date);
+  });
+
+  it('throws from the transaction when the User is missing after the reset CAS', async function() {
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    emailUser = null;
+    resetRecord = {
+      _id: 'reset-id', userId: 'user-id', resetPasswordToken: await hashResetToken('b'.repeat(64)),
+      resetPasswordExpires: new Date(Date.now() + 60000), status: false
+    };
+    const res = response();
+    await controller.storePassword({ body: { userid: 'user-id', token: 'b'.repeat(64), password: 'new-password' } }, res);
+    expect(res.statusCode).to.equal(400);
+    expect(consumedReset).not.to.equal(null);
+    expect(userUpdate).not.to.equal(null);
+    expect(transactionCommitted).to.equal(false);
+    expect(consumedReset.options.session).to.equal(lifecycleSession);
+    expect(userUpdate.options.session).to.equal(lifecycleSession);
+  });
+
+  it('rejects storePassword for closing and closed accounts without writes', async function() {
+    for (const code of ['ACCOUNT_CLOSING', 'ACCOUNT_CLOSED']) {
+      resetRecord = {
+        _id: 'reset-id', userId: 'user-id', resetPasswordToken: await hashResetToken('c'.repeat(64)),
+        resetPasswordExpires: new Date(Date.now() + 60000), status: false
+      };
+      lifecycleTransactionsEnabled = true;
+      process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+      lifecycleCommitError = Object.assign(new Error(code), { code, status: 409 });
+      lifecycleCommitError.beforeCallback = true;
+      const res = response();
+      await controller.storePassword({ body: { userid: 'user-id', token: 'c'.repeat(64), password: 'new-password' } }, res);
+      expect(res.statusCode).to.equal(400);
+      expect(consumedReset).to.equal(null);
+      expect(userUpdate).to.equal(null);
+    }
+  });
+
+  it('does not update User when the original-token CAS loses a race', async function() {
+    const token = 'd'.repeat(64);
+    resetRecord = {
+      _id: 'reset-id', userId: 'user-id', resetPasswordToken: await hashResetToken(token),
+      resetPasswordExpires: new Date(Date.now() + 60000), status: false
+    };
+    forceConsumeConflict = true;
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    const res = response();
+    await controller.storePassword({ body: { userid: 'user-id', token, password: 'new-password' } }, res);
+    expect(res.statusCode).to.equal(409);
+    expect(consumedReset).not.to.equal(null);
+    expect(userUpdate).to.equal(null);
+  });
+
+  it('does not return success or send mail when the account transaction commit fails', async function() {
+    lifecycleTransactionsEnabled = true;
+    process.env.CARE_LIFECYCLE_TRANSACTIONS_ENABLED = 'true';
+    lifecycleCommitError = Object.assign(new Error('commit failed'), { code: 'CLOSURE_COMMIT_FAILED', status: 503 });
+    const res = response();
+    await controller.forgotPassword({ body: { email: 'care@example.test' }, headers: { origin: 'http://localhost:3000' } }, res);
+    expect(res.statusCode).to.equal(200);
+    expect(resetUpsert).not.to.equal(null);
+    expect(sentEmail).to.equal(null);
   });
 });
