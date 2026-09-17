@@ -177,6 +177,28 @@ describe('Communicator create idempotency', function() {
     expect(findCallCount).to.equal(0);
   });
 
+  for (const field of ['careProfileId', 'careFamilyId']) {
+    for (const value of [null, '']) {
+      for (const isAdmin of [false, true]) {
+        it(`rejects create requests with reserved ${field}=${String(value)} before Mongo access${isAdmin ? ' for admins' : ''}`, async function() {
+          const body = createCommunicatorData({ [field]: value });
+          const request = createRequest(body, 'reserved-marker-test');
+          if (isAdmin) {
+            request.user = { email: 'admin@example.com', isAdmin: true };
+          }
+          const response = createResponse();
+
+          await controller.createCommunicator(request, response);
+
+          expect(response.statusCode).to.equal(400);
+          expect(response.body.error.code).to.equal('CARE_MARKER_RESERVED');
+          expect(findCallCount).to.equal(0);
+          expect(persisted).to.have.length(0);
+        });
+      }
+    }
+  }
+
   it('binds an idempotent request to the authenticated email', async function() {
     const body = createCommunicatorData();
     const request = createRequest(body, 'local-communicator-1');
@@ -235,11 +257,15 @@ describe('Communicator resource ownership', function() {
   let foundCommunicator;
   let paginationOptions;
   let MockCommunicator;
+  let findCallCount;
+  let saveCallCount;
 
   beforeEach(function() {
     findQuery = null;
     foundCommunicator = null;
     paginationOptions = null;
+    findCallCount = 0;
+    saveCallCount = 0;
 
     MockCommunicator = class {
       constructor(data) {
@@ -248,10 +274,12 @@ describe('Communicator resource ownership', function() {
       }
 
       async save() {
+        saveCallCount += 1;
         return this;
       }
 
       static findOne(query, callback) {
+        findCallCount += 1;
         findQuery = query;
         if (callback) {
           callback(null, foundCommunicator);
@@ -408,6 +436,28 @@ describe('Communicator resource ownership', function() {
     });
     expect(res.statusCode).to.equal(404);
   });
+
+  for (const field of ['careProfileId', 'careFamilyId']) {
+    for (const value of [null, '']) {
+      for (const isAdmin of [false, true]) {
+        it(`rejects updates with reserved ${field}=${String(value)} before Mongo access${isAdmin ? ' for admins' : ''}`, async function() {
+          const request = createOwnedRequest({
+            body: { name: 'forbidden marker', [field]: value },
+            isAdmin,
+            email: isAdmin ? 'admin@example.com' : 'owner@example.com'
+          });
+          const response = createResponse();
+
+          await controller.updateCommunicator(request, response);
+
+          expect(response.statusCode).to.equal(400);
+          expect(response.body.error.code).to.equal('CARE_MARKER_RESERVED');
+          expect(findCallCount).to.equal(0);
+          expect(saveCallCount).to.equal(0);
+        });
+      }
+    }
+  }
 
   it('keeps cross-user read and ownership transfer available to admins', async function() {
     foundCommunicator = new MockCommunicator({

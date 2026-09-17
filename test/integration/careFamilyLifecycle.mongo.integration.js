@@ -888,6 +888,34 @@ async function main() {
     assert.equal(await ReceiverRecord.collection.countDocuments({ user: finalUserId }), 0);
     assert.equal(await ReceiverRecord.collection.countDocuments({ user: loginUser }), 1);
     passed.push('legacy-receiver-writes-fenced-and-care-mode-still-refuses-history-upload');
+    const legacyCommunicator = require('../../api/controllers/communicator');
+    const communicatorPayload = { name: 'Synthetic legacy', author: 'Synthetic',
+      email: 'synthetic-marker@example.test', rootBoard: 'synthetic-root', boards: ['synthetic-root'] };
+    await usersCollection.insertOne({ _id: new mongoose.Types.ObjectId(), email: communicatorPayload.email });
+    const normalCommunicator = settingsResponse();
+    await legacyCommunicator.createCommunicator({ user: { email: communicatorPayload.email },
+      body: communicatorPayload }, normalCommunicator);
+    assert.equal(normalCommunicator.code, 200, JSON.stringify(normalCommunicator.body));
+    const legacyId = normalCommunicator.body.id;
+    const markerSnapshot = await communicatorCollection.findOne({ _id: legacyId });
+    const markerCount = await communicatorCollection.countDocuments({});
+    for (const isAdmin of [false, true]) {
+      for (const field of ['careProfileId', 'careFamilyId']) {
+        for (const value of ['forged-patient-reference', '', null]) {
+          for (const method of ['createCommunicator', 'updateCommunicator']) {
+            const response = settingsResponse();
+            await legacyCommunicator[method]({ user: { email: communicatorPayload.email, isAdmin },
+              body: { ...communicatorPayload, [field]: value }, swagger: { params: { id: { value: String(legacyId) } } }
+            }, response);
+            assert.equal(response.code, 400);
+            assert.equal(response.body.error.code, 'CARE_MARKER_RESERVED');
+          }
+        }
+      }
+    }
+    assert.equal(await communicatorCollection.countDocuments({}), markerCount);
+    assert.deepEqual(await communicatorCollection.findOne({ _id: legacyId }), markerSnapshot);
+    passed.push('legacy-communicator-cannot-create-or-assign-reserved-care-markers-even-as-admin');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,
       httpClosureEnabled: false, externalMediaDeleted: false, syntheticFileMediaDeleted: true, accountCreationFenceVerified: true,
       allAccountWritersIntegrated: false }));

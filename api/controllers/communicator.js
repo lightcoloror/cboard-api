@@ -5,6 +5,19 @@ const Communicator = require('../models/Communicator');
 const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
+// Care markers are created only by the authorized patient workspace service.
+// Reject them even for legacy admins; hiding them in queries is not a write gate.
+function rejectCareMarkers(req, res) {
+  if (req.body && ['careProfileId', 'careFamilyId'].some(field =>
+    Object.prototype.hasOwnProperty.call(req.body, field))) {
+    return res.status(400).json({
+      message: 'Patient workspace identifiers cannot be set through legacy communicator endpoints',
+      error: { code: 'CARE_MARKER_RESERVED' }
+    });
+  }
+  return null;
+}
+
 module.exports = {
   createCommunicator: createCommunicator,
   listCommunicators: listCommunicators,
@@ -53,6 +66,8 @@ function sendCommunicatorResponse(res, communicator) {
 }
 
 async function createCommunicator(req, res) {
+  const reservedMarker = rejectCareMarkers(req, res);
+  if (reservedMarker) return reservedMarker;
   const clientCreationKey = getIdempotencyKey(req);
   const authenticatedEmail = req.user && req.user.email;
 
@@ -170,6 +185,8 @@ function getCommunicator(req, res) {
 }
 
 async function updateCommunicator(req, res) {
+  const reservedMarker = rejectCareMarkers(req, res);
+  if (reservedMarker) return reservedMarker;
   const id = req.swagger.params.id.value;
   let communicator = null;
   try {
