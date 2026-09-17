@@ -607,6 +607,11 @@ async function main() {
     }
     const Board = require('../../api/models/Board');
     const Subscribers = require('../../api/models/Subscribers');
+    const ResetPassword = require('../../api/models/ResetPassword');
+    await ResetPassword.collection.insertMany([
+      { userId: finalOwner, resetPasswordToken: 'synthetic-hash-not-a-credential', status: false },
+      { userId: String(loginUser), resetPasswordToken: 'synthetic-control-hash-not-a-credential', status: false }
+    ]);
     await Board.collection.insertMany([
       { email: 'synthetic-finalize@example.test' }, { email: 'synthetic-control@example.test' }
     ]);
@@ -698,6 +703,8 @@ async function main() {
     assert.equal(await Board.collection.countDocuments({ email: 'synthetic-control@example.test' }), 1);
     assert.equal(await Subscribers.collection.countDocuments({ userId: finalOwner }), 0);
     assert.equal(await Subscribers.collection.countDocuments({ userId: String(loginUser) }), 1);
+    assert.equal(await ResetPassword.collection.countDocuments({ userId: finalOwner }), 0);
+    assert.equal(await ResetPassword.collection.countDocuments({ userId: String(loginUser) }), 1);
     assert.equal(await communicatorCollection.findOne({ _id: 'final-legacy-marker' }), null);
     assert(await communicatorCollection.findOne({ _id: 'final-shared-marker' }));
     assert.equal((await legacyQuota.getStatus({ userId: finalOwner })).consumedTokens, 0);

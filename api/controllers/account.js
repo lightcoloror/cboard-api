@@ -6,6 +6,7 @@ const Subscribers = require('../models/Subscribers');
 const CommunicationReceiverRecord = require('../models/CommunicationReceiverRecord');
 const CommunicationSavedPhrase = require('../models/CommunicationSavedPhrase');
 const CommunicationAiUsage = require('../models/CommunicationAiUsage');
+const ResetPassword = require('../models/ResetPassword');
 const { Account: CareAccount } = require('../models/CareWorkspace');
 const {
   getCareAccountDeletionBlocker
@@ -72,6 +73,13 @@ async function cleanupAccountData({
     response.deletedCommunicationAiUsage = result.deletedCount;
   } catch (_) {
     throw cleanupFailure('Error deleting communication AI usage');
+  }
+
+  try {
+    const result = await ResetPassword.deleteMany({ userId: String(id) });
+    response.deletedPasswordResetRecords = result.deletedCount;
+  } catch (_) {
+    throw cleanupFailure('Error deleting password reset records');
   }
 
   try {

@@ -17,6 +17,7 @@ describe('Account deletion controller', function() {
   let userMissing;
   let settingsFailure;
   let careAccountFailure;
+  let passwordResetFailure;
 
   beforeEach(function() {
     requestedBy = 'user-1';
@@ -27,6 +28,7 @@ describe('Account deletion controller', function() {
     userMissing = false;
     settingsFailure = false;
     careAccountFailure = false;
+    passwordResetFailure = false;
 
     const models = {
       '../models/User': {
@@ -82,6 +84,13 @@ describe('Account deletion controller', function() {
         async deleteMany(filter) {
           deletedFilters.aiUsage = filter;
           return { deletedCount: 6 };
+        }
+      },
+      '../models/ResetPassword': {
+        async deleteMany(filter) {
+          deletedFilters.passwordReset = filter;
+          if (passwordResetFailure) throw new Error('reset store unavailable');
+          return { deletedCount: 7 };
         }
       },
       '../models/CareWorkspace': {
@@ -190,12 +199,14 @@ describe('Account deletion controller', function() {
     expect(deletedFilters.receiverRecords).to.deep.equal({ user: 'user-1' });
     expect(deletedFilters.savedPhrases).to.deep.equal({ user: 'user-1' });
     expect(deletedFilters.aiUsage).to.deep.equal({ user: 'user-1' });
+    expect(deletedFilters.passwordReset).to.deep.equal({ userId: 'user-1' });
     expect(deletedFilters.aiTokenQuota).to.deep.equal({ userId: 'user-1' });
     expect(deletedFilters.privateLibrary).to.equal('user-1');
     expect(deletedFilters.privateDeviceData).to.equal('user-1');
     expect(res.body.deletedCommunicationReceiverRecords).to.equal(4);
     expect(res.body.deletedCommunicationSavedPhrases).to.equal(5);
     expect(res.body.deletedCommunicationAiUsage).to.equal(6);
+    expect(res.body.deletedPasswordResetRecords).to.equal(7);
     expect(res.body.deletedCommunicationAiTokenQuota).to.equal(true);
     expect(res.body.deletedCommunicationPrivateLibrary).to.equal(true);
     expect(res.body.deletedCommunicationPrivateDeviceData).to.equal(true);
@@ -215,6 +226,7 @@ describe('Account deletion controller', function() {
     });
 
     expect(result.deletedCommunicationReceiverRecords).to.equal(4);
+    expect(result.deletedPasswordResetRecords).to.equal(7);
     expect(result.deletedCareAccount).to.equal(1);
     expect(deletedFilters.userLookup).to.not.exist;
     expect(deletedFilters.user).to.not.exist;
@@ -266,6 +278,20 @@ describe('Account deletion controller', function() {
       expect(error.message).to.equal('Error deleting user setting');
       expect(error.message).not.to.include('settings unavailable');
     }
+  });
+
+  it('wraps password reset cleanup failures and keeps User deletion out of the helper', async function() {
+    passwordResetFailure = true;
+    try {
+      await controller.cleanupAccountData({ id: 'user-1', userEmail: 'care@example.test' });
+      throw new Error('expected cleanup failure');
+    } catch (error) {
+      expect(error.status).to.equal(500);
+      expect(error.message).to.equal('Error deleting password reset records');
+      expect(error.message).not.to.include('reset store unavailable');
+    }
+    expect(deletedFilters.user).to.not.exist;
+    expect(deletedFilters.userLookup).to.not.exist;
   });
 
   it('rejects a different non-admin user before deleting anything', async function() {
