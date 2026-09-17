@@ -250,6 +250,30 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     assert.equal(deniedReset[0].body.error.code, 'PASSWORD_RESET_RATE_LIMITED');
     assert(Number(deniedReset[0].headers['Retry-After']) > 0);
     passed.push('self-service-concurrent-registration-and-reset-email-limits');
+
+    const secondProfile = await care.createProfile(owner.id, {
+      familyId: family.id, name: 'Synthetic second patient', role: 'relative'
+    });
+    assert.deepEqual((await care.profiles(invitee.id)).map(item => item.id), [profile.id]);
+    await assert.rejects(care.transferAdmin(invitee.id, profile.id, {
+      member: invitee.id, operationId: `self-promote-${suffix}`
+    }), error => error.code === 'OWNER_REQUIRED');
+    const transfer = { member: invitee.id, operationId: `transfer-${suffix}` };
+    await care.transferAdmin(owner.id, profile.id, transfer);
+    await care.transferAdmin(owner.id, profile.id, transfer);
+    const administered = await care.profiles(invitee.id);
+    assert.deepEqual(administered.map(item => item.id).sort(), [profile.id, secondProfile.id].sort());
+    assert(administered.every(item => item.owner && item.permissions.includes('members.manage')));
+    assert((await care.profiles(owner.id)).every(item => !item.owner && !item.permissions.includes('members.manage')));
+    await assert.rejects(care.transferAdmin(owner.id, profile.id, {
+      member: owner.id, operationId: `take-back-${suffix}`
+    }), error => error.code === 'OWNER_REQUIRED');
+    await care.command(invitee.id, secondProfile.id, {
+      action: 'invite', operationId: `new-admin-invite-${suffix}`, permissions: ['read']
+    });
+    assert.equal((await care.profiles(owner.id)).find(item => item.id === profile.id).relationship.defaultMode,
+      'expression', 'administrator transfer must not change the patient entry mode');
+    passed.push('self-service-family-administrator-transfer-and-no-self-promotion');
   } finally {
     config.emailTransport = originalTransport;
     config.AUTH_EMAIL_APP_URL = originalOrigin;
