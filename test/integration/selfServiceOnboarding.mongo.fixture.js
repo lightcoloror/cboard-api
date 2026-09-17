@@ -34,6 +34,8 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     return {
       code: null,
       body: null,
+      headers: {},
+      set(name, value) { this.headers[name] = value; return this; },
       status(code) { this.code = code; return this; },
       json(body) {
         this.body = body;
@@ -217,6 +219,37 @@ module.exports = async function selfServiceOnboardingFixture({ mongoose, passed 
     const stillOwned = await care.profiles(owner.id);
     assert.deepEqual(stillOwned.map(item => item.id), [profile.id]);
     passed.push('self-service-password-reset-rotates-login-and-preserves-care-authorization');
+
+    const { resolveAuthRequestRateLimitConfig } = require('../../api/helpers/authRequestRateLimit');
+    const limits = resolveAuthRequestRateLimitConfig();
+    const mailCount = outbox.length;
+    // This account already consumed one registration request above. Concurrent
+    // retries exercise Mongo atomic counters through the real controller.
+    const registrationRetries = await Promise.all(Array.from({
+      length: limits.registration.emailHourlyLimit
+    }, () => run(controller.createUser, request({
+      name: 'Synthetic owner', email: owner.email, password
+    }))));
+    assert.equal(registrationRetries.filter(item => item.code === 200).length,
+      limits.registration.emailHourlyLimit - 1);
+    const deniedRegistration = registrationRetries.filter(item => item.code === 429);
+    assert.equal(deniedRegistration.length, 1);
+    assert.equal(deniedRegistration[0].body.error.code, 'USER_REGISTRATION_RATE_LIMITED');
+    assert(Number(deniedRegistration[0].headers['Retry-After']) > 0);
+    assert.equal(await User.countDocuments({ email: owner.email }), 1);
+    assert.equal(await nev.options.tempUserModel.countDocuments({ email: owner.email }), 0);
+    assert.equal(outbox.length, mailCount, 'existing-account retries must not send new activation mail');
+
+    const resetRetries = await Promise.all(Array.from({
+      length: limits.passwordReset.emailHourlyLimit
+    }, () => run(controller.forgotPassword, request({ email: owner.email }))));
+    assert.equal(resetRetries.filter(item => item.code === 200).length,
+      limits.passwordReset.emailHourlyLimit - 1);
+    const deniedReset = resetRetries.filter(item => item.code === 429);
+    assert.equal(deniedReset.length, 1);
+    assert.equal(deniedReset[0].body.error.code, 'PASSWORD_RESET_RATE_LIMITED');
+    assert(Number(deniedReset[0].headers['Retry-After']) > 0);
+    passed.push('self-service-concurrent-registration-and-reset-email-limits');
   } finally {
     config.emailTransport = originalTransport;
     config.AUTH_EMAIL_APP_URL = originalOrigin;
