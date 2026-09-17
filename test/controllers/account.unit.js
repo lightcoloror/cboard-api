@@ -15,6 +15,7 @@ describe('Account deletion controller', function() {
   let sessionRevokeError;
   let sessionDestroyError;
   let userMissing;
+  let settingsFailure;
 
   beforeEach(function() {
     requestedBy = 'user-1';
@@ -23,9 +24,15 @@ describe('Account deletion controller', function() {
     sessionRevokeError = null;
     sessionDestroyError = null;
     userMissing = false;
+    settingsFailure = false;
 
     const models = {
       '../models/User': {
+        async findById(id) {
+          deletedFilters.userLookup = id;
+          if (userMissing) return null;
+          return { id, email: 'care@example.test' };
+        },
         async findByIdAndRemove(id) {
           deletedFilters.user = id;
           if (userMissing) return null;
@@ -35,6 +42,7 @@ describe('Account deletion controller', function() {
       '../models/Settings': {
         async findOneAndDelete(filter) {
           deletedFilters.settings = filter;
+          if (settingsFailure) throw new Error('settings unavailable');
           return { user: filter.user };
         }
       },
@@ -218,21 +226,38 @@ describe('Account deletion controller', function() {
     expect(deletedFilters).not.to.have.property('sessionDestroy');
   });
 
-  it('returns 404 without continuing when the target user is missing', async function() {
+  it('returns 404 without touching sessions or private cleanup when the target user is missing', async function() {
     userMissing = true;
     const res = createResponse();
 
     await controller.removeAccount(createRequest(), res);
 
     expect(res.statusCode).to.equal(404);
-    expect(deletedFilters).to.include({
+    expect(deletedFilters).to.deep.equal({
       careAccountDeletion: 'user-1',
-      sessionRevoke: 'user-1',
-      sessionDestroy: true,
-      privateLibrary: 'user-1',
-      privateDeviceData: 'user-1'
+      userLookup: 'user-1'
     });
     expect(deletedFilters.settings).to.not.exist;
+  });
+
+  it('keeps the user when an intermediate cleanup fails and deletes it after retry succeeds', async function() {
+    settingsFailure = true;
+    let res = createResponse();
+
+    await controller.removeAccount(createRequest(), res);
+
+    expect(res.statusCode).to.equal(500);
+    expect(deletedFilters.userLookup).to.equal('user-1');
+    expect(deletedFilters).not.to.have.property('user');
+
+    settingsFailure = false;
+    deletedFilters = {};
+    res = createResponse();
+    await controller.removeAccount(createRequest(), res);
+
+    expect(res.statusCode).to.equal(200);
+    expect(deletedFilters.userLookup).to.equal('user-1');
+    expect(deletedFilters.user).to.equal('user-1');
   });
 
   it('requires family administration transfer before deleting an active family owner', async function() {
@@ -289,6 +314,7 @@ describe('Account deletion controller', function() {
     expect(res.body.error.code).to.equal('SESSION_REVOKE_FAILED');
     expect(deletedFilters).to.deep.equal({
       careAccountDeletion: 'user-1',
+      userLookup: 'user-1',
       sessionRevoke: 'user-1'
     });
   });
@@ -303,6 +329,7 @@ describe('Account deletion controller', function() {
     expect(res.body.error.code).to.equal('SESSION_DESTROY_FAILED');
     expect(deletedFilters).to.deep.equal({
       careAccountDeletion: 'user-1',
+      userLookup: 'user-1',
       sessionRevoke: 'user-1',
       sessionDestroy: true
     });

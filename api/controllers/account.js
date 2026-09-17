@@ -45,6 +45,23 @@ async function removeAccount(req, res) {
       });
   }
 
+  let userEmail;
+  try {
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({
+        message: 'User not found. User Id: ' + id
+      });
+    }
+    userEmail = user.email;
+  } catch (error) {
+    console.error('Unable to verify account before deletion.');
+    return res.status(503).json({
+      message: 'Unable to verify account before deleting account',
+      error: { code: 'ACCOUNT_LOOKUP_FAILED' }
+    });
+  }
+
   try {
     await deviceSessions.revoke(id);
   } catch (error) {
@@ -85,21 +102,6 @@ async function removeAccount(req, res) {
     console.error('Account deletion cleanup failed.');
     return res.status(500).json({
       message: 'Error deleting private account archive backup'
-    });
-  }
-
-  try {
-    const user = await User.findByIdAndRemove(id);
-    if (!user) {
-      return res.status(404).json({
-        message: 'User not found. User Id: ' + id
-      });
-    }
-    response.userEmail = user.email;
-  } catch (error) {
-    console.error('Account deletion cleanup failed.');
-    return res.status(404).json({
-      message: 'User not found. User Id: ' + id
     });
   }
 
@@ -169,7 +171,7 @@ async function removeAccount(req, res) {
 
   try {
     const deletedComunicators = await Communicator.deleteMany({
-      email: response.userEmail
+      email: userEmail
     });
     response.deletedComunicators = deletedComunicators.deletedCount;
   } catch (error) {
@@ -181,7 +183,7 @@ async function removeAccount(req, res) {
 
   try {
     const deletedBoards = await Board.deleteMany({
-      email: response.userEmail
+      email: userEmail
     });
     response.deletedBoards = deletedBoards.deletedCount;
   } catch (error) {
@@ -200,6 +202,19 @@ async function removeAccount(req, res) {
     });
   }
 
-  delete response.userEmail;
+  try {
+    const user = await User.findByIdAndRemove(id);
+    if (!user) {
+      return res.status(404).json({
+        message: 'User not found. User Id: ' + id
+      });
+    }
+  } catch (error) {
+    console.error('Account deletion cleanup failed.');
+    return res.status(500).json({
+      message: 'Error deleting user account'
+    });
+  }
+
   return res.status(200).json(response);
 }
