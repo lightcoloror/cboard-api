@@ -12,16 +12,23 @@ describe('Account deletion controller', function() {
   let requestedBy;
   let deletedFilters;
   let careDeletionBlocker;
+  let sessionRevokeError;
+  let sessionDestroyError;
+  let userMissing;
 
   beforeEach(function() {
     requestedBy = 'user-1';
     deletedFilters = {};
     careDeletionBlocker = null;
+    sessionRevokeError = null;
+    sessionDestroyError = null;
+    userMissing = false;
 
     const models = {
       '../models/User': {
         async findByIdAndRemove(id) {
           deletedFilters.user = id;
+          if (userMissing) return null;
           return { id, email: 'care@example.test' };
         }
       },
@@ -82,6 +89,12 @@ describe('Account deletion controller', function() {
         return { requestedBy, isAdmin: false };
       }
     });
+    mockery.registerMock('../helpers/deviceSessions', {
+      async revoke(userId) {
+        deletedFilters.sessionRevoke = userId;
+        if (sessionRevokeError) throw sessionRevokeError;
+      }
+    });
     mockery.registerMock('../helpers/careAccountDeletion', {
       async getCareAccountDeletionBlocker(id) {
         deletedFilters.careAccountDeletion = id;
@@ -126,6 +139,14 @@ describe('Account deletion controller', function() {
   function createRequest(id = 'user-1') {
     return {
       swagger: { params: { id: { value: id } } },
+      user: { id: 'user-1', role: 'user', isAdmin: false },
+      session: {
+        destroy(callback) {
+          deletedFilters.sessionDestroy = true;
+          if (sessionDestroyError) return callback(sessionDestroyError);
+          callback(null);
+        }
+      },
       communicationAiTokenQuotaService: {
         async deleteUserQuota(input) {
           deletedFilters.aiTokenQuota = input;
@@ -133,6 +154,12 @@ describe('Account deletion controller', function() {
         }
       }
     };
+  }
+
+  function createAdminRequest(id = 'user-2') {
+    const req = createRequest(id);
+    req.user = { id: 'admin-1', role: 'admin', isAdmin: true };
+    return req;
   }
 
   it('allows the owner and removes communication sync data with the account', async function() {
@@ -153,16 +180,59 @@ describe('Account deletion controller', function() {
     expect(res.body.deletedCommunicationAiTokenQuota).to.equal(true);
     expect(res.body.deletedCommunicationPrivateLibrary).to.equal(true);
     expect(res.body.deletedCommunicationPrivateDeviceData).to.equal(true);
+    expect(res.body).not.to.have.property('user');
+    expect(res.body).not.to.have.property('userEmail');
+    expect(deletedFilters.sessionRevoke).to.equal('user-1');
+    expect(deletedFilters.sessionDestroy).to.equal(true);
   });
 
   it('rejects a different non-admin user before deleting anything', async function() {
-    requestedBy = 'user-2';
+    const req = createRequest();
+    req.user.id = 'user-2';
+    const res = createResponse();
+
+    await controller.removeAccount(req, res);
+
+    expect(res.statusCode).to.equal(401);
+    expect(deletedFilters).to.deep.equal({});
+  });
+
+  it('rejects an anonymous request before checking family ownership', async function() {
+    const req = createRequest();
+    req.user = null;
+    const res = createResponse();
+
+    await controller.removeAccount(req, res);
+
+    expect(res.statusCode).to.equal(401);
+    expect(deletedFilters).to.deep.equal({});
+  });
+
+  it('allows an admin to delete another account without destroying the admin session', async function() {
+    const res = createResponse();
+
+    await controller.removeAccount(createAdminRequest(), res);
+
+    expect(res.statusCode).to.equal(200);
+    expect(deletedFilters.sessionRevoke).to.equal('user-2');
+    expect(deletedFilters).not.to.have.property('sessionDestroy');
+  });
+
+  it('returns 404 without continuing when the target user is missing', async function() {
+    userMissing = true;
     const res = createResponse();
 
     await controller.removeAccount(createRequest(), res);
 
-    expect(res.statusCode).to.equal(401);
-    expect(deletedFilters).to.deep.equal({});
+    expect(res.statusCode).to.equal(404);
+    expect(deletedFilters).to.include({
+      careAccountDeletion: 'user-1',
+      sessionRevoke: 'user-1',
+      sessionDestroy: true,
+      privateLibrary: 'user-1',
+      privateDeviceData: 'user-1'
+    });
+    expect(deletedFilters.settings).to.not.exist;
   });
 
   it('requires family administration transfer before deleting an active family owner', async function() {
@@ -207,5 +277,34 @@ describe('Account deletion controller', function() {
       error: { code: 'CARE_FAMILY_CHECK_UNAVAILABLE' }
     });
     expect(deletedFilters).to.deep.equal({ careAccountDeletion: 'user-1' });
+  });
+
+  it('does not delete private data or the user when session revocation fails', async function() {
+    sessionRevokeError = new Error('storage unavailable');
+    const res = createResponse();
+
+    await controller.removeAccount(createRequest(), res);
+
+    expect(res.statusCode).to.equal(503);
+    expect(res.body.error.code).to.equal('SESSION_REVOKE_FAILED');
+    expect(deletedFilters).to.deep.equal({
+      careAccountDeletion: 'user-1',
+      sessionRevoke: 'user-1'
+    });
+  });
+
+  it('does not delete private data or the user when server session destruction fails', async function() {
+    sessionDestroyError = new Error('session unavailable');
+    const res = createResponse();
+
+    await controller.removeAccount(createRequest(), res);
+
+    expect(res.statusCode).to.equal(503);
+    expect(res.body.error.code).to.equal('SESSION_DESTROY_FAILED');
+    expect(deletedFilters).to.deep.equal({
+      careAccountDeletion: 'user-1',
+      sessionRevoke: 'user-1',
+      sessionDestroy: true
+    });
   });
 });

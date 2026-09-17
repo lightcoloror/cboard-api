@@ -4307,13 +4307,7 @@ definitions:
         locale:
           type: string
   DeleteAccountResponse:
-    required:
-        - user
     properties:
-        user:
-          type: object
-        setting:
-          type: object
         deletedCommunicationReceiverRecords:
           type: integer
         deletedCommunicationSavedPhrases:
@@ -4330,8 +4324,6 @@ definitions:
           type: number
         deletedBoards:
           type: number
-        subscriber:
-          type: object
   LogoutResponse:
     required:
       - message

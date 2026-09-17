@@ -15,8 +15,7 @@ const {
 const {
   deletePrivateDeviceDataForUser
 } = require('./communicationPrivateDeviceData');
-
-const { getAuthDataFromReq } = require('../helpers/auth');
+const deviceSessions = require('../helpers/deviceSessions');
 
 module.exports = {
   removeAccount
@@ -25,10 +24,10 @@ module.exports = {
 async function removeAccount(req, res) {
   const id = req.swagger.params.id.value;
 
-  //this would be implemented like a middleware
-  const { requestedBy, isAdmin: isRequestedByAdmin } = getAuthDataFromReq(req);
+  const actorId = req.user && String(req.user.id || req.user._id || '');
+  const isRequestedByAdmin = Boolean(req.user && req.user.isAdmin);
 
-  if (!isRequestedByAdmin && (!requestedBy || id != requestedBy)) {
+  if (!isRequestedByAdmin && (!actorId || String(id) !== actorId)) {
     return res.status(401).json({
       message: 'Error deleting the account',
       error:
@@ -46,6 +45,34 @@ async function removeAccount(req, res) {
       });
   }
 
+  try {
+    await deviceSessions.revoke(id);
+  } catch (error) {
+    console.error('Unable to revoke account sessions before deletion.');
+    return res.status(503).json({
+      message: 'Unable to revoke account sessions before deleting account',
+      error: { code: 'SESSION_REVOKE_FAILED' }
+    });
+  }
+
+  if (
+    String(id) === actorId &&
+    req.session &&
+    typeof req.session.destroy === 'function'
+  ) {
+    try {
+      await new Promise((resolve, reject) =>
+        req.session.destroy(error => (error ? reject(error) : resolve()))
+      );
+    } catch (error) {
+      console.error('Unable to destroy account server session before deletion.');
+      return res.status(503).json({
+        message: 'Unable to destroy account session before deleting account',
+        error: { code: 'SESSION_DESTROY_FAILED' }
+      });
+    }
+  }
+
   const response = {};
   try {
     response.deletedCommunicationPrivateLibrary = await deletePrivateLibraryForUser(
@@ -55,7 +82,7 @@ async function removeAccount(req, res) {
       id
     );
   } catch (error) {
-    console.error(error);
+    console.error('Account deletion cleanup failed.');
     return res.status(500).json({
       message: 'Error deleting private account archive backup'
     });
@@ -63,19 +90,23 @@ async function removeAccount(req, res) {
 
   try {
     const user = await User.findByIdAndRemove(id);
-    response.user = user;
+    if (!user) {
+      return res.status(404).json({
+        message: 'User not found. User Id: ' + id
+      });
+    }
+    response.userEmail = user.email;
   } catch (error) {
-    console.error(error);
+    console.error('Account deletion cleanup failed.');
     return res.status(404).json({
       message: 'User not found. User Id: ' + id
     });
   }
 
   try {
-    const setting = await Settings.findOneAndDelete({ user: id });
-    response.setting = setting;
+    await Settings.findOneAndDelete({ user: id });
   } catch (error) {
-    console.error(error);
+    console.error('Account deletion cleanup failed.');
     return res.status(500).json({
       message: 'Error deleting user setting'
     });
@@ -88,7 +119,7 @@ async function removeAccount(req, res) {
     response.deletedCommunicationReceiverRecords =
       deletedCommunicationReceiverRecords.deletedCount;
   } catch (error) {
-    console.error(error);
+    console.error('Account deletion cleanup failed.');
     return res.status(500).json({
       message: 'Error deleting confirmed receiver records'
     });
@@ -101,7 +132,7 @@ async function removeAccount(req, res) {
     response.deletedCommunicationSavedPhrases =
       deletedCommunicationSavedPhrases.deletedCount;
   } catch (error) {
-    console.error(error);
+    console.error('Account deletion cleanup failed.');
     return res.status(500).json({
       message: 'Error deleting communication saved phrases'
     });
@@ -114,7 +145,7 @@ async function removeAccount(req, res) {
     response.deletedCommunicationAiUsage =
       deletedCommunicationAiUsage.deletedCount;
   } catch (error) {
-    console.error(error);
+    console.error('Account deletion cleanup failed.');
     return res.status(500).json({
       message: 'Error deleting communication AI usage'
     });
@@ -130,7 +161,7 @@ async function removeAccount(req, res) {
           })
         : false;
   } catch (error) {
-    console.error(error);
+    console.error('Account deletion cleanup failed.');
     return res.status(500).json({
       message: 'Error deleting communication AI token quota'
     });
@@ -138,11 +169,11 @@ async function removeAccount(req, res) {
 
   try {
     const deletedComunicators = await Communicator.deleteMany({
-      email: response.user.email
+      email: response.userEmail
     });
     response.deletedComunicators = deletedComunicators.deletedCount;
   } catch (error) {
-    console.error(error);
+    console.error('Account deletion cleanup failed.');
     return res.status(500).json({
       message: 'Error deleting user communicator'
     });
@@ -150,25 +181,25 @@ async function removeAccount(req, res) {
 
   try {
     const deletedBoards = await Board.deleteMany({
-      email: response.user.email
+      email: response.userEmail
     });
     response.deletedBoards = deletedBoards.deletedCount;
   } catch (error) {
-    console.error(error);
+    console.error('Account deletion cleanup failed.');
     return res.status(500).json({
       message: 'Error deleting user communicator'
     });
   }
 
   try {
-    const subscriber = await Subscribers.findOneAndRemove({ userId: id });
-    response.subscriber = subscriber;
+    await Subscribers.findOneAndRemove({ userId: id });
   } catch (error) {
-    console.error(error);
+    console.error('Account deletion cleanup failed.');
     return res.status(500).json({
       message: 'Error deleting user subscriber'
     });
   }
 
+  delete response.userEmail;
   return res.status(200).json(response);
 }
