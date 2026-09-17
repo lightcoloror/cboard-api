@@ -644,6 +644,12 @@ async function main() {
         return cleanupAccountData({ id, userEmail, quotaService: legacyQuota,
           privateLibraryCleanup: archiveCleaners[0], privateDeviceCleanup: archiveCleaners[1] });
       } };
+    const finalRunner = adapters => createCareClosureRunner({ coordinator,
+      mediaStep: createCareClosureMediaStep({ connection, encryption, media: fileMedia }),
+      accountStep: createCareClosureAccountStep({ connection, encryption }),
+      dataStep: createCareClosureDataStep({ connection, encryption }),
+      accessStep: createCareClosureAccessStep({ connection, encryption }),
+      finalizeStep: createCareClosureFinalize(adapters) });
     const failedFinalConnection = {
       startSession: () => connection.startSession(),
       collection: name => name === 'careclosurejobs' ? {
@@ -654,7 +660,7 @@ async function main() {
         }
       } : connection.collection(name)
     };
-    await assert.rejects(createCareClosureFinalize({ ...finalizeAdapters, connection: failedFinalConnection })
+    await assert.rejects(finalRunner({ ...finalizeAdapters, connection: failedFinalConnection })
       .run(finalOwner, finalClosure.operationId), /synthetic final transaction interruption/);
     assert(await usersCollection.findOne({ _id: finalUserId }));
     assert.equal((await accounts.findOne({ _id: finalOwner })).status, 'closing');
@@ -662,7 +668,7 @@ async function main() {
     assert(failedFinalJob.cleanupClaim);
     assert.equal(failedFinalJob.status, 'account_cleanup_pending');
     let duplicateCleanupCalls = 0;
-    await assert.rejects(createCareClosureFinalize({ ...finalizeAdapters,
+    await assert.rejects(finalRunner({ ...finalizeAdapters,
       async cleanup() { duplicateCleanupCalls++; }
     }).run(finalOwner, finalClosure.operationId), error => error.code === 'CLOSURE_CLEANUP_IN_PROGRESS');
     assert.equal(duplicateCleanupCalls, 0);
@@ -670,8 +676,8 @@ async function main() {
     // and no provider call was made. Production cannot clear a claim by TTL.
     await jobs.updateOne({ _id: finalClosure.operationId, cleanupClaim: failedFinalJob.cleanupClaim },
       { $unset: { cleanupClaim: '' }, $inc: { rev: 1 } });
-    assert.deepEqual(await createCareClosureFinalize(finalizeAdapters).run(finalOwner, finalClosure.operationId),
-      { status: 'complete', accountDeleted: true });
+    assert.deepEqual(await finalRunner(finalizeAdapters).run(finalOwner, finalClosure.operationId),
+      { operationId: finalClosure.operationId, cleanupStatus: 'complete', waiting: false, accountDeleted: true });
     assert.equal(await usersCollection.findOne({ _id: finalUserId }), null);
     assert.equal((await accounts.findOne({ _id: finalOwner })).status, 'closed');
     const completeJob = await jobs.findOne({ _id: finalClosure.operationId });
@@ -696,9 +702,10 @@ async function main() {
     assert(await communicatorCollection.findOne({ _id: 'final-shared-marker' }));
     assert.equal((await legacyQuota.getStatus({ userId: finalOwner })).consumedTokens, 0);
     assert.equal((await legacyQuota.getStatus({ userId: String(loginUser) })).consumedTokens, 10);
-    assert.deepEqual(await createCareClosureFinalize({ ...finalizeAdapters,
+    assert.deepEqual(await finalRunner({ ...finalizeAdapters,
       async cleanup() { throw new Error('must not repeat completed cleanup'); }
-    }).run(finalOwner, finalClosure.operationId), { status: 'complete', accountDeleted: true });
+    }).run(finalOwner, finalClosure.operationId),
+    { operationId: finalClosure.operationId, cleanupStatus: 'complete', waiting: false, accountDeleted: true });
     passed.push('final-user-delete-is-atomic-and-interrupted-cleanup-requires-reconciliation');
     passed.push('real-account-cleanup-removes-private-files-legacy-records-and-current-month-quota-with-isolation');
     console.log(JSON.stringify({ result: 'passed', realReplicaSet: true, cases: passed, syntheticOnly: true,

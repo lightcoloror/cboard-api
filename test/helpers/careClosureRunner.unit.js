@@ -5,8 +5,8 @@ const { createCareClosureRunner } = require('../../api/helpers/careClosureRunner
 
 const expect = chai.expect;
 
-function factory(initial, transitions = {}) {
-  const calls = { inspect: [], media: 0, accounts: 0, data: 0, access: 0 };
+function factory(initial, transitions = {}, finalize = null) {
+  const calls = { inspect: [], media: 0, accounts: 0, data: 0, access: 0, finalize: 0 };
   const state = { operationId: 'op-1', cleanupStatus: initial };
   const coordinator = {
     async inspect(owner, operationId) {
@@ -23,7 +23,7 @@ function factory(initial, transitions = {}) {
       return { status: state.cleanupStatus };
     } };
   }
-  const runner = createCareClosureRunner({ coordinator, mediaStep: stage('media'), accountStep: stage('accounts'), dataStep: stage('data'), accessStep: stage('access') });
+  const runner = createCareClosureRunner({ coordinator, mediaStep: stage('media'), accountStep: stage('accounts'), dataStep: stage('data'), accessStep: stage('access'), finalizeStep: finalize && stage('finalize') });
   return { runner, calls, state };
 }
 
@@ -81,6 +81,40 @@ describe('care closure runner', function() {
     const result = await f.runner.run('owner-1', 'op-1');
     expect(result).to.deep.equal({ operationId: 'op-1', cleanupStatus: 'access_revoked', waiting: false, accountDeleted: false });
     expect(f.calls.media + f.calls.accounts + f.calls.data + f.calls.access).to.equal(0);
+  });
+
+  it('runs finalize as the fifth stage and trusts persisted complete status', async function() {
+    const f = factory('prepared', { media: 'media_cleaned', accounts: 'accounts_cleaned', data: 'family_data_cleaned', access: 'access_revoked', finalize: 'complete' }, {});
+    const result = await f.runner.run('owner-1', 'op-1');
+    expect(result).to.deep.equal({ operationId: 'op-1', cleanupStatus: 'complete', waiting: false, accountDeleted: true });
+    expect(f.calls.media + f.calls.accounts + f.calls.data + f.calls.access + f.calls.finalize).to.equal(5);
+  });
+
+  it('resumes account cleanup from a persisted pending status', async function() {
+    const f = factory('account_cleanup_pending', { finalize: 'complete' }, {});
+    const result = await f.runner.run('owner-1', 'op-1');
+    expect(result.accountDeleted).to.equal(true);
+    expect(result.cleanupStatus).to.equal('complete');
+    expect(f.calls.finalize).to.equal(1);
+  });
+
+  it('does not report deletion from a finalize step that only claims complete', async function() {
+    const f = factory('access_revoked', { finalize: () => ({ status: 'complete' }) }, {});
+    const result = await f.runner.run('owner-1', 'op-1');
+    expect(result).to.deep.equal({ operationId: 'op-1', cleanupStatus: 'access_revoked', waiting: false, accountDeleted: false });
+    expect(f.calls.finalize).to.equal(1);
+  });
+
+  it('does not run finalize for a persisted complete terminal state', async function() {
+    const f = factory('complete', {}, {});
+    const result = await f.runner.run('owner-1', 'op-1');
+    expect(result).to.deep.equal({ operationId: 'op-1', cleanupStatus: 'complete', waiting: false, accountDeleted: true });
+    expect(f.calls.finalize).to.equal(0);
+  });
+
+  it('propagates cleanup in progress errors from finalize', async function() {
+    const f = factory('access_revoked', { finalize: () => { throw Object.assign(new Error('cleanup pending'), { code: 'CLOSURE_CLEANUP_IN_PROGRESS' }); } }, {});
+    await expectCode(f.runner.run('owner-1', 'op-1'), 'CLOSURE_CLEANUP_IN_PROGRESS');
   });
 
   it('returns waiting after access reports a pending blocker without advancing', async function() {
