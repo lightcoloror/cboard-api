@@ -9,10 +9,12 @@ describe('legacy user deletion controller care guard', function() {
   let controller;
   let blocker;
   let deletedId;
+  let blockerChecks;
 
   beforeEach(function() {
     blocker = null;
     deletedId = null;
+    blockerChecks = 0;
 
     const User = {
       findByIdAndRemove(id, callback) {
@@ -37,6 +39,7 @@ describe('legacy user deletion controller care guard', function() {
     });
     mockery.registerMock('../helpers/careAccountDeletion', {
       async getCareAccountDeletionBlocker() {
+        blockerChecks += 1;
         return blocker;
       }
     });
@@ -78,8 +81,39 @@ describe('legacy user deletion controller care guard', function() {
   }
 
   function request(id = 'user-1') {
-    return { swagger: { params: { id: { value: id } } } };
+    return {
+      swagger: { params: { id: { value: id } } },
+      user: { id: 'admin-1', role: 'admin' },
+      auth: { id: 'admin-1' }
+    };
   }
+
+  it('rejects a non-admin before checking family ownership or deleting', async function() {
+    const res = response();
+    const req = request();
+    req.user = { id: 'user-1', role: 'user' };
+    req.auth = { id: 'user-1' };
+
+    await controller.removeUser(req, res);
+
+    expect(res.statusCode).to.equal(403);
+    expect(res.body.error.code).to.equal('USER_ACCESS_FORBIDDEN');
+    expect(blockerChecks).to.equal(0);
+    expect(deletedId).to.equal(null);
+  });
+
+  it('rejects an admin with a mismatched auth identity before deletion', async function() {
+    const res = response();
+    const req = request();
+    req.auth = { id: 'different-admin' };
+
+    await controller.removeUser(req, res);
+
+    expect(res.statusCode).to.equal(401);
+    expect(res.body.error.code).to.equal('USER_ACCESS_UNAUTHORIZED');
+    expect(blockerChecks).to.equal(0);
+    expect(deletedId).to.equal(null);
+  });
 
   it('blocks the Swagger-reachable legacy delete when the account owns a family', async function() {
     blocker = {

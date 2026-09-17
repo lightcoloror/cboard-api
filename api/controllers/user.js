@@ -16,6 +16,7 @@ const {
   isDuplicateMainlandChinaPhoneError,
   parseOptionalMainlandChinaPhone
 } = require('../helpers/userPhone');
+const buildRegistrationUserData = require('../helpers/registrationInput');
 const {
   phoneVerificationService
 } = require('../helpers/phoneVerificationRuntime');
@@ -37,6 +38,7 @@ const {
   normalizeNewPassword,
   normalizeResetToken
 } = require('../helpers/passwordReset');
+const { requireAdmin, requireSelfOrAdmin } = require('../helpers/userAccess');
 const { configuredEmailAppOrigin } = require('../helpers/emailLinkOrigin');
 
 const config = require('../../config');
@@ -222,13 +224,13 @@ async function createUser(req, res) {
     delete req.body.phone;
   }
 
+  let serverLocation;
   try {
-    if (!isLocalIp(req.ip)) req.body.location = await findIpLocation(req.ip);
+    if (!isLocalIp(req.ip)) serverLocation = await findIpLocation(req.ip);
   } catch (error) {
     console.error(error.message);
   }
-  req.body.isFirstLogin = true;
-  const user = new User(req.body);
+  const user = new User(buildRegistrationUserData(req.body, serverLocation));
   nev.createTempUser(user, function(err, existingPersistentUser, newTempUser) {
     if (err) {
       if (isDuplicateMainlandChinaPhoneError(err)) {
@@ -506,6 +508,9 @@ function activateUser(req, res) {
 }
 
 async function listUser(req, res) {
+  const access = requireAdmin(req);
+  if (!access.ok) return res.status(access.status).json(access.body);
+
   const { search = '' } = req.query;
   const searchFields = ['name', 'author', 'email'];
   const query =
@@ -524,6 +529,9 @@ async function listUser(req, res) {
 
 async function removeUser(req, res) {
   const id = req.swagger.params.id.value;
+  const access = requireAdmin(req);
+  if (!access.ok) return res.status(access.status).json(access.body);
+
   const careDeletionBlocker = await getCareAccountDeletionBlocker(id);
   if (careDeletionBlocker) {
     return res.status(careDeletionBlocker.status).json({
@@ -544,6 +552,8 @@ async function removeUser(req, res) {
 
 async function getUser(req, res) {
   const id = req.swagger.params.id.value;
+  const access = requireSelfOrAdmin(req, id);
+  if (!access.ok) return res.status(access.status).json(access.body);
 
   try {
     const user = await User.findById(id).exec();
@@ -580,12 +590,8 @@ const UPDATEABLE_FIELDS = [
 
 function updateUser(req, res) {
   const id = req.swagger.params.id.value;
-
-  if (!req.user.isAdmin && req.auth.id !== id) {
-    return res.status(403).json({
-      message: 'You are not authorized to update this user.'
-    });
-  }
+  const access = requireSelfOrAdmin(req, id);
+  if (!access.ok) return res.status(access.status).json(access.body);
 
   User.findById(id).exec(async function(err, user) {
     if (err) {

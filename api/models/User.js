@@ -253,28 +253,49 @@ userSchema.statics = {
    * @param {String} email
    * @param {String} password
    * @param {Function} callback
-   * @api private
-   */
+  * @api private
+  */
   authenticate: function(email, password, callback) {
-    this.findOne({ email: email })
-      .populate('communicators')
-      .populate({ path: 'boards', options: { lean: true } })
-      .exec(function(err, user) {
-        if (err) {
-          return callback(err);
-        } else if (!user) {
-          const err = new Error('User not found.');
-          err.status = 401;
-          return callback(err);
-        }
-        bcrypt.compare(password, user.password, function(err, result) {
-          if (result === true) {
-            return callback(null, user);
-          } else {
-            return callback();
-          }
-        });
+    if (
+      typeof email !== 'string' ||
+      typeof password !== 'string' ||
+      !email.trim() ||
+      password.length === 0
+    ) {
+      const error = new Error('Invalid credentials.');
+      error.status = 401;
+      return callback(error);
+    }
+
+    const exactEmail = email.trim();
+    const canonicalEmail = exactEmail.toLowerCase();
+    const lookup = lookupEmail =>
+      this.findOne({ email: lookupEmail })
+        .populate('communicators')
+        .populate({ path: 'boards', options: { lean: true } })
+        .exec();
+    const authenticateUser = user =>
+      bcrypt.compare(password, user.password, function(err, result) {
+        if (err) return callback(err);
+        if (result === true) return callback(null, user);
+        return callback();
       });
+    const reportMissingUser = () => {
+      const error = new Error('User not found.');
+      error.status = 401;
+      return callback(error);
+    };
+
+    lookup(exactEmail)
+      .then(user => {
+        if (user) return authenticateUser(user);
+        if (canonicalEmail === exactEmail) return reportMissingUser();
+        return lookup(canonicalEmail).then(fallbackUser => {
+          if (!fallbackUser) return reportMissingUser();
+          return authenticateUser(fallbackUser);
+        });
+      })
+      .catch(error => callback(error));
   },
 
   updateUser: async function(user) {

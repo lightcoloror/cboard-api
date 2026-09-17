@@ -298,6 +298,47 @@ describe('user phone registration controller', function() {
     expect(consumedPhoneVerification).to.equal(null);
   });
 
+  it('constructs local registrations from an allowlist and ignores caller-controlled identity fields', async function() {
+    const request = createRequest(undefined);
+    Object.assign(request.body, {
+      email: '  REGISTERED@Example.COM  ',
+      name: 'Allowed Name',
+      password: 'allowed-password',
+      role: 'admin',
+      provider: 'google',
+      authVersion: 77,
+      isFirstLogin: false,
+      _id: '507f1f77bcf86cd799439011',
+      google: { id: 'oauth-id', token: 'oauth-token' },
+      facebook: { id: 'facebook-id', token: 'facebook-token' },
+      apple: { id: 'apple-id', token: 'apple-token' },
+      resetPasswordToken: 'reset-token',
+      resetPasswordExpires: '2099-01-01',
+      location: { city: 'caller-city' }
+    });
+
+    const response = createResponse();
+    await controller.createUser(request, response);
+
+    expect(response.statusCode).to.equal(200);
+    expect(capturedUser).to.include({
+      name: 'Allowed Name',
+      email: 'registered@example.com',
+      password: 'allowed-password',
+      role: 'user',
+      provider: '',
+      authVersion: 0,
+      isFirstLogin: true
+    });
+    expect(capturedUser).not.to.have.property('_id');
+    expect(capturedUser).not.to.have.property('google');
+    expect(capturedUser).not.to.have.property('facebook');
+    expect(capturedUser).not.to.have.property('apple');
+    expect(capturedUser).not.to.have.property('resetPasswordToken');
+    expect(capturedUser).not.to.have.property('resetPasswordExpires');
+    expect(capturedUser).not.to.have.property('location');
+  });
+
   it('consumes a verified phone token without persisting it on the user', async function() {
     const response = createResponse();
     const token = 'a'.repeat(64);
