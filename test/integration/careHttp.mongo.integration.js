@@ -16,6 +16,8 @@ async function main() {
   const databaseName = uri.split('/').pop();
   const mediaRoot = path.join(process.env.TEST_TMP_ROOT || require('os').tmpdir(), databaseName);
   process.env.CARE_COLLABORATION_ENABLED = 'true';
+  process.env.CARE_INVITATION_ACCEPT_ACCOUNT_HOURLY_LIMIT = '2';
+  process.env.CARE_INVITATION_ACCEPT_IP_HOURLY_LIMIT = '20';
   process.env.CARE_NEXT_ENABLED = nextPhase ? 'true' : 'false';
   if (nextPhase) process.env.CARE_AI_PRICE_POLICY = JSON.stringify({ generateCommunicationSentences: { reservationUnits: 5, fixedUnits: 1, tokensPerUnit: 10 } });
   process.env.CARE_ENCRYPTION_ACTIVE_KEY = 'test';
@@ -54,7 +56,7 @@ async function main() {
   const request = async (token, url, method = 'GET', body, headers = {}) => {
     const response = await fetch(base + url, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...headers },
       ...(body ? { body: JSON.stringify(body) } : {}) });
-    return { status: response.status, body: await response.json() };
+    return { status: response.status, body: await response.json(), retryAfter: response.headers.get('retry-after') };
   };
   const tokens = [];
   try {
@@ -177,6 +179,13 @@ async function main() {
     await families.insertOne(familyBackup);
     assert.equal((await request(tokens[2], endpoint)).status, 403, 'orphan invitation must not add a grant');
     assert.equal((await request(tokens[1], endpoint)).status, 200);
+    // The restored family makes this credential valid again, but the account
+    // has already used its two acceptance attempts. Throttling must not grant access.
+    const throttled = await request(tokens[2], acceptPath, 'POST', { token: orphanInvite.body.token });
+    assert.equal(throttled.status, 429);
+    assert.equal(throttled.body.code, 'CARE_INVITATION_ACCEPT_RATE_LIMITED');
+    assert(Number(throttled.retryAfter) > 0);
+    assert.equal((await request(tokens[2], endpoint)).status, 403);
     const list = await request(tokens[0], '/user/sessions'); assert.equal(list.body.items.length, 2);
     assert.equal((await request(tokens[0], '/user/sessions', 'POST', { id: auth.getTokenData(tokens[0]).sid })).status, 200);
     assert.equal((await request(tokens[0], endpoint)).status, 401);
@@ -184,7 +193,7 @@ async function main() {
     await request(tokens[1], '/user/sessions', 'POST', { all: true });
     assert.equal((await request(tokens[1], endpoint)).status, 401);
     console.log(JSON.stringify({ result: 'passed', httpMongo: true, encryptedFileMedia: true, restore: true,
-      nextPhase, orphanFamilyAccessDenied: true, syntheticAiMetering: nextPhase, externalAiProviderExecuted: false,
+      nextPhase, invitationThrottleHttp: true, orphanFamilyAccessDenied: true, syntheticAiMetering: nextPhase, externalAiProviderExecuted: false,
       syntheticOnly: true, productionDatabaseTouched: false }));
   } finally {
     await new Promise(resolve => server.close(resolve));
