@@ -64,6 +64,22 @@ async function invite(f, p, member, grant = ['read', 'library.edit', 'preference
   await f.service.accept(member, v.token); return v;
 }
 describe('patient collaboration security and offline recovery', () => {
+  for (const action of ['invite', 'revokeInvite', 'grant']) {
+    it(`does not let favorite kind bypass ${action} membership permission`, async () => {
+      const f = fixture(); const { profile } = await setup(f);
+      await invite(f, profile.id, 'reader', ['read']);
+      const pending = await f.service.command('familyA', profile.id, {
+        action: 'invite', operationId: newId(), permissions: ['read']
+      });
+      const before = await f.service.snapshot('familyA', profile.id);
+      await assert.rejects(f.service.command('reader', profile.id, {
+        action, kind: 'favorite', operationId: newId(),
+        permissions: ['read', 'library.edit'], member: 'reader',
+        invitationId: pending.invitationId
+      }), error => error.code === 'PROFILE_ACCESS_DENIED');
+      assert.deepEqual(await f.service.snapshot('familyA', profile.id), before);
+    });
+  }
   it('keeps invitation secrets private and rejects revoked credentials without removing other members', async () => {
     const f = fixture(); const { profile } = await setup(f);
     await invite(f, profile.id, 'reader', ['read']);

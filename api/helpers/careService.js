@@ -232,7 +232,9 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
     async command(user, profileId, body) {
       if (!body || !validId(body.operationId)) fail(400, 'INVALID_OPERATION_ID');
       const action = body.action;
-      const permission = ['relationship', 'shareFavorite'].includes(action) || body.kind === 'favorite' ? 'read' : ['invite', 'revokeInvite', 'grant'].includes(action) ? 'members.manage' :
+      // Membership commands must never inherit a resource kind's weaker permission.
+      const permission = ['invite', 'revokeInvite', 'grant'].includes(action) ? 'members.manage' :
+        ['relationship', 'shareFavorite'].includes(action) || (['put', 'delete'].includes(action) && body.kind === 'favorite') ? 'read' :
         body.kind === 'preference' ? 'preferences.edit' : 'library.edit';
       const fingerprint = hash(JSON.stringify(body));
       return mutate(profileId, user, permission, async (state, doc) => {

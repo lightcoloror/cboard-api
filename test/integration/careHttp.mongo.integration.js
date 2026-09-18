@@ -76,6 +76,15 @@ async function main() {
     const invitation = await request(tokens[0], endpoint + '/commands', 'POST', { action: 'invite', operationId: 'invite-one', permissions: ['read', 'library.edit'] });
     assert.equal(invitation.status, 200);
     assert.equal((await request(tokens[2], '/care/invitations/accept', 'POST', { token: invitation.body.token })).status, 200);
+    for (const action of ['invite', 'revokeInvite', 'grant']) {
+      const denied = await request(tokens[2], endpoint + '/commands', 'POST', {
+        action, kind: 'favorite', operationId: `forged-kind-${action}`,
+        permissions: ['read', 'library.edit'], member: b,
+        invitationId: invitation.body.invitationId
+      });
+      assert.equal(denied.status, 403);
+      assert.equal(denied.body.code, 'PROFILE_ACCESS_DENIED');
+    }
     const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
     const asset = { mediaId: 'photo', data: image.toString('base64'), sha256: crypto.createHash('sha256').update(image).digest('hex'), type: 'image/png' };
     assert.equal((await request(tokens[0], endpoint + '/media', 'POST', asset)).status, 200);
