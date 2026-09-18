@@ -35,6 +35,7 @@ const {
   configureApplicationInsights
 } = require('./api/helpers/applicationInsightsPrivacy');
 const { createTrustedProxyTrust } = require('./api/helpers/trustedProxy');
+const { createHttpErrorHandler } = require('./api/helpers/httpErrorResponse');
 
 const app = express();
 // Trust only explicitly configured proxy addresses. The default is false so
@@ -97,6 +98,7 @@ swaggerTools.initializeMiddleware(swaggerConfig, async function (middleware) {
               if (!refreshedUser) {
                 const unavailable = new Error('Authentication storage unavailable');
                 unavailable.statusCode = 503;
+                unavailable.code = 'SESSION_STORAGE_UNAVAILABLE';
                 return cb(unavailable);
               }
               req.user = refreshedUser.toJSON
@@ -113,11 +115,13 @@ swaggerTools.initializeMiddleware(swaggerConfig, async function (middleware) {
         } catch (_) {
           const unavailable = new Error('Authentication storage unavailable');
           unavailable.statusCode = 503;
+          unavailable.code = 'SESSION_STORAGE_UNAVAILABLE';
           return cb(unavailable);
         }
         if (!isRequestValid) {
           const authorizationError = new Error(errorMessage);
           authorizationError.statusCode = req.user ? 403 : 401;
+          authorizationError.code = req.user ? 'USER_ACCESS_FORBIDDEN' : 'LOGIN_REQUIRED';
           cb(authorizationError);
           return
         }
@@ -163,6 +167,7 @@ swaggerTools.initializeMiddleware(swaggerConfig, async function (middleware) {
   app.use(middleware.swaggerRouter(routerConfig));
 
   app.use(middleware.swaggerUi());
+  app.use(createHttpErrorHandler());
 
   Facebook.configureFacebookStrategy(app);
   Google.configureGoogleStrategy(app);
