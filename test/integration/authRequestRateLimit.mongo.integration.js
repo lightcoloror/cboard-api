@@ -15,6 +15,7 @@ if (!uriPattern.test(uri)) {
 }
 
 const config = {
+  invitationAccept: { emailHourlyLimit: 2, ipHourlyLimit: 4 },
   familyCreate: { emailHourlyLimit: 2, ipHourlyLimit: 4 },
   profileCreate: { emailHourlyLimit: 2, ipHourlyLimit: 4 },
   closurePrepare: { emailHourlyLimit: 2, ipHourlyLimit: 4 },
@@ -160,7 +161,7 @@ async function main() {
     const ipState = await ipRuntime.getLimiters('passwordReset').ipHourly.get(hashRateLimitIdentity('ip:203.0.117.9'));
     assert.strictEqual(ipState.consumedPoints, 4);
 
-    for (const operation of ['closurePrepare', 'closureStatus', 'familyCreate', 'profileCreate']) {
+    for (const operation of ['closurePrepare', 'closureStatus', 'familyCreate', 'profileCreate', 'invitationAccept']) {
       const attempts = await Promise.all(Array.from({ length: 3 }, (_, i) =>
         attempt(i % 2 ? runtimeTwo : runtimeOne, operation, '0123456789abcdef01234567', `203.0.122.${i + 1}`)));
       assert.strictEqual(attempts.filter(x => x.outcome === 'accepted').length, 2);

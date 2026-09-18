@@ -36,7 +36,10 @@ exports.createProfile = handler(async (s, u, r) => {
 });
 exports.getProfile = handler((s, u, r) => s.snapshot(u, profile(r), r.query.since === undefined ? -1 : Number(r.query.since)));
 exports.command = handler((s, u, r) => s.command(u, profile(r), r.body));
-exports.acceptInvitation = handler((s, u, r) => s.accept(u, r.body.token));
+exports.acceptInvitation = handler(async (s, u, r) => {
+  await consumeAuthRequestLimits({ limiters: getAuthRequestLimiters('invitationAccept'), operation: 'invitationAccept', email: u, ip: r.ip });
+  return s.accept(u, r.body.token);
+});
 exports.getAudit = handler((s, u, r) => s.audit(u, profile(r)));
 exports.uploadMedia = handler((s, u, r) => s.upload(u, profile(r), r.body));
 exports.getMedia = handler((s, u, r) => s.download(u, profile(r), r.swagger.params.mediaId.value));

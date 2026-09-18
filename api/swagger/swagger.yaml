@@ -786,6 +786,12 @@ paths:
           description: Access revoked or denied
         '409':
           description: Version conflict or concurrent change; retain local edit
+        '429':
+          description: Invitation acceptance rate limit exceeded
+          headers:
+            Retry-After:
+              type: integer
+              description: Seconds before retry
         '503':
           description: Storage or feature unavailable
   /care/profiles/{profileId}:

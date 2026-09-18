@@ -17,6 +17,12 @@ const OPERATIONS = Object.freeze({
     emailEnv: 'CARE_PROFILE_CREATE_ACCOUNT_HOURLY_LIMIT', ipEnv: 'CARE_PROFILE_CREATE_IP_HOURLY_LIMIT',
     emailDefault: 30, ipDefault: 60
   }),
+  invitationAccept: Object.freeze({
+    codePrefix: 'CARE_INVITATION_ACCEPT', keyPrefix: 'care_invitation_accept',
+    emailTable: 'careInvitationAcceptAccountHourlyLimits', ipTable: 'careInvitationAcceptIpHourlyLimits',
+    emailEnv: 'CARE_INVITATION_ACCEPT_ACCOUNT_HOURLY_LIMIT', ipEnv: 'CARE_INVITATION_ACCEPT_IP_HOURLY_LIMIT',
+    emailDefault: 10, ipDefault: 30
+  }),
   closureConfirm: Object.freeze({
     codePrefix: 'CLOSURE_CONFIRM', keyPrefix: 'closure_confirm',
     emailTable: 'closureConfirmAccountHourlyLimits', ipTable: 'closureConfirmIpHourlyLimits',

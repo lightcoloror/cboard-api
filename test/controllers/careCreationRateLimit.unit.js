@@ -11,7 +11,7 @@ describe('family and patient creation throttling', function() {
   beforeEach(function() {
     original = process.env.CARE_COLLABORATION_ENABLED; process.env.CARE_COLLABORATION_ENABLED = 'true';
     writes = []; policies = {};
-    for (const operation of ['familyCreate', 'profileCreate']) policies[operation] = {
+    for (const operation of ['familyCreate', 'profileCreate', 'invitationAccept']) policies[operation] = {
       emailHourly: new RateLimiterMemory({ points: 1, duration: 3600 }),
       ipHourly: new RateLimiterMemory({ points: 2, duration: 3600 })
     };
@@ -19,6 +19,7 @@ describe('family and patient creation throttling', function() {
     mockery.registerMock('../helpers/careRuntime', { createRuntime: () => ({
       createFamily: async (u, body) => { writes.push(['family', u, body]); return { id: 'family' }; },
       createProfile: async (u, body) => { writes.push(['profile', u, body]); return { id: 'profile' }; },
+      accept: async (u, token) => { writes.push(['invitation', u, token]); return { id: 'profile' }; },
       families: async () => []
     }) });
     mockery.registerMock('../helpers/authRequestRateLimit', { ...limits, getAuthRequestLimiters: op => policies[op] });
@@ -31,12 +32,14 @@ describe('family and patient creation throttling', function() {
   async function call(method, user = 'owner', ip = '192.0.2.1') {
     const res = { headers: {}, set(k, v) { this.headers[k] = v; return this; },
       status(s) { this.code = s; return this; }, json(v) { this.body = v; return this; } };
-    await controller[method]({ user: { id: user }, ip, body: { name: 'synthetic' } }, res);
+    await controller[method]({ user: { id: user }, ip,
+      body: method === 'acceptInvitation' ? { token: 'synthetic-invitation' } : { name: 'synthetic' } }, res);
     return res;
   }
   for (const [method, operation, code] of [
     ['createFamily', 'familyCreate', 'CARE_FAMILY_CREATE'],
-    ['createProfile', 'profileCreate', 'CARE_PROFILE_CREATE']
+    ['createProfile', 'profileCreate', 'CARE_PROFILE_CREATE'],
+    ['acceptInvitation', 'invitationAccept', 'CARE_INVITATION_ACCEPT']
   ]) {
     it(`${method} stops repeated account requests before writes and emits retry information`, async function() {
       expect((await call(method)).code).to.equal(200);
@@ -65,9 +68,9 @@ describe('family and patient creation throttling', function() {
     expect((await call('createProfile')).body.code).to.equal('CARE_DISABLED');
     expect(writes).to.have.length(1);
   });
-  it('documents 429 with Retry-After for both authenticated creation endpoints', function() {
+  it('documents 429 with Retry-After for creation and invitation acceptance endpoints', function() {
     const spec = YAML.load('./api/swagger/swagger.yaml');
-    for (const path of ['/care/families', '/care/profiles']) {
+    for (const path of ['/care/families', '/care/profiles', '/care/invitations/accept']) {
       expect(spec.paths[path].post.responses['429'].headers['Retry-After'].type).to.equal('integer');
     }
   });
