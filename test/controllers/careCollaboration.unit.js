@@ -64,6 +64,42 @@ async function invite(f, p, member, grant = ['read', 'library.edit', 'preference
   await f.service.accept(member, v.token); return v;
 }
 describe('patient collaboration security and offline recovery', () => {
+  it('keeps invitation secrets private and rejects revoked credentials without removing other members', async () => {
+    const f = fixture(); const { profile } = await setup(f);
+    await invite(f, profile.id, 'reader', ['read']);
+    const pending = await f.service.command('familyA', profile.id, {
+      action: 'invite', operationId: newId(), permissions: ['read']
+    });
+    const metadata = (await f.service.snapshot('familyA', profile.id)).invitations
+      .find(item => item.invitationId === pending.invitationId);
+    assert.deepEqual(Object.keys(metadata).sort(),
+      ['acceptedBy', 'expiresAt', 'invitationId', 'permissions', 'revoked']);
+    assert.equal(metadata.revoked, false);
+    assert.equal((await f.service.snapshot('reader', profile.id)).invitations, undefined);
+    const revoke = { action: 'revokeInvite', operationId: newId(), invitationId: pending.invitationId };
+    await assert.rejects(f.service.command('reader', profile.id, revoke),
+      error => error.code === 'PROFILE_ACCESS_DENIED');
+    await f.service.command('familyA', profile.id, revoke);
+    await f.service.command('familyA', profile.id, revoke);
+    await assert.rejects(f.service.accept('newMember', pending.token),
+      error => error.code === 'INVALID_INVITATION');
+    assert.deepEqual((await f.service.snapshot('reader', profile.id)).permissions, ['read']);
+    const after = await f.service.snapshot('familyA', profile.id);
+    assert.equal(after.invitations.find(item => item.invitationId === pending.invitationId).revoked, true);
+    assert.equal(after.members.newMember, undefined);
+    const pendingAfterExpiry = await f.service.command('familyA', profile.id, {
+      action: 'invite', operationId: newId(), permissions: ['read']
+    });
+    const gated = createCareService({ store: f.store, encryption: f.encryption,
+      media: f.media, enforceEntitlements: true });
+    await assert.rejects(gated.command('familyA', profile.id, command('not-entitled')),
+      error => error.code === 'SUBSCRIPTION_EXPIRED');
+    await gated.command('familyA', profile.id, { action: 'revokeInvite',
+      operationId: newId(), invitationId: pendingAfterExpiry.invitationId });
+    await assert.rejects(f.service.accept('newMember', pendingAfterExpiry.token),
+      error => error.code === 'INVALID_INVITATION');
+  });
+
   it('uses atomic profile creation without separate communicator or profile writes', async () => {
     const atomicProfile = { calls: [] };
     const f = fixture({ atomicProfile });
