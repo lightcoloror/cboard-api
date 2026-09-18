@@ -64,6 +64,30 @@ async function invite(f, p, member, grant = ['read', 'library.edit', 'preference
   await f.service.accept(member, v.token); return v;
 }
 describe('patient collaboration security and offline recovery', () => {
+  it('rejects noncanonical base64 before quota reservation or encrypted storage', async () => {
+    const f = fixture();
+    const { family, profile } = await setup(f);
+    const quota = createCareMediaQuota({ store: f.store, encryption: f.encryption,
+      config: resolveCareMediaQuotaConfig({ CARE_FAMILY_MEDIA_QUOTA_BYTES: '100', CARE_FAMILY_MEDIA_QUOTA_MAX_FILES: '2' }) });
+    const service = createCareService({ store: f.store, encryption: f.encryption, media: f.media, mediaQuota: quota });
+    const bytes = Buffer.from('89504e470d0a1a0a', 'hex');
+    const canonical = bytes.toString('base64');
+    for (const data of [canonical + ' '.repeat(1024 * 1024), canonical + '!!!', canonical.replace(/=+$/, '')]) {
+      await assert.rejects(service.upload('familyA', profile.id, {
+        mediaId: 'canonical-photo', data, type: 'image/png',
+        sha256: crypto.createHash('sha256').update(bytes).digest('hex')
+      }), error => error.code === 'INVALID_MEDIA');
+      assert.equal(Object.keys(f.blobs).length, 0);
+      assert.equal(f.encryption.open(f.families[family.id].sealed, `family:${family.id}`).mediaQuota, undefined);
+    }
+    const asset = { mediaId: 'canonical-photo', data: canonical, type: 'image/png',
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    await service.upload('familyA', profile.id, asset);
+    assert.equal((await service.upload('familyA', profile.id, asset)).reused, true);
+    assert.equal(Object.keys(f.blobs).length, 1);
+    assert.equal((await service.download('familyA', profile.id, asset.mediaId)).data, canonical);
+  });
+
   for (const action of ['invite', 'revokeInvite', 'grant']) {
     it(`does not let favorite kind bypass ${action} membership permission`, async () => {
       const f = fixture(); const { profile } = await setup(f);

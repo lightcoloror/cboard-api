@@ -89,7 +89,20 @@ async function main() {
     }
     const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
     const asset = { mediaId: 'photo', data: image.toString('base64'), sha256: crypto.createHash('sha256').update(image).digest('hex'), type: 'image/png' };
+    const familyStateBeforeInvalidMedia = await mongoose.connection.collection('carefamilies').find({}).toArray();
+    const profileStateBeforeInvalidMedia = await mongoose.connection.collection('careprofiles').find({}).toArray();
+    const mediaFiles = async () => fs.readdir(mediaRoot).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+    const filesBeforeInvalidMedia = await mediaFiles();
+    for (const data of [asset.data + ' '.repeat(1024 * 1024), asset.data + '!!!', asset.data.replace(/=+$/, '')]) {
+      const rejected = await request(tokens[0], endpoint + '/media', 'POST', { ...asset, data });
+      assert.equal(rejected.status, 400);
+      assert.equal(rejected.body.code, 'INVALID_MEDIA');
+    }
+    assert.deepEqual(await mongoose.connection.collection('carefamilies').find({}).toArray(), familyStateBeforeInvalidMedia);
+    assert.deepEqual(await mongoose.connection.collection('careprofiles').find({}).toArray(), profileStateBeforeInvalidMedia);
+    assert.deepEqual(await mediaFiles(), filesBeforeInvalidMedia);
     assert.equal((await request(tokens[0], endpoint + '/media', 'POST', asset)).status, 200);
+    assert.equal((await request(tokens[0], endpoint + '/media', 'POST', asset)).body.reused, true);
     const op = { action: 'put', kind: 'tile', resourceId: 'water', operationId: 'water-one', baseVersion: 0, value: { label: '喝水', mediaId: 'photo' } };
     const concurrent = await Promise.all([request(tokens[2], endpoint + '/commands', 'POST', op), request(tokens[2], endpoint + '/commands', 'POST', op)]);
     assert(concurrent.every(r => r.status === 200)); assert.deepEqual(concurrent[0].body, concurrent[1].body);
@@ -193,7 +206,7 @@ async function main() {
     await request(tokens[1], '/user/sessions', 'POST', { all: true });
     assert.equal((await request(tokens[1], endpoint)).status, 401);
     console.log(JSON.stringify({ result: 'passed', httpMongo: true, encryptedFileMedia: true, restore: true,
-      nextPhase, invitationThrottleHttp: true, orphanFamilyAccessDenied: true, syntheticAiMetering: nextPhase, externalAiProviderExecuted: false,
+      nextPhase, canonicalMediaValidationHttp: true, invitationThrottleHttp: true, orphanFamilyAccessDenied: true, syntheticAiMetering: nextPhase, externalAiProviderExecuted: false,
       syntheticOnly: true, productionDatabaseTouched: false }));
   } finally {
     await new Promise(resolve => server.close(resolve));

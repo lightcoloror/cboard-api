@@ -886,6 +886,7 @@ paths:
     x-swagger-router-controller: care
     post:
       operationId: uploadMedia
+      description: Upload a PNG, JPEG or WebP image. The data field must use canonical padded standard base64 without whitespace or ignored characters. Invalid encoding is rejected before quota reservation or storage.
       security:
         - Bearer: []
       parameters:

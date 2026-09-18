@@ -379,6 +379,10 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
       if (!validId(body.mediaId) || typeof body.data !== 'string' || !/^[a-f0-9]{64}$/.test(body.sha256 || '') ||
           !['image/png', 'image/jpeg', 'image/webp'].includes(body.type) || body.data.length > 6 * 1024 * 1024) fail(400, 'INVALID_MEDIA');
       const buffer = Buffer.from(body.data, 'base64');
+      // Node's base64 decoder ignores junk/whitespace. We store the submitted
+      // text inside the encrypted envelope, so accepting it would let a tiny
+      // charged image occupy megabytes of unaccounted storage.
+      if (buffer.toString('base64') !== body.data) fail(400, 'INVALID_MEDIA');
       if (!buffer.length || buffer.length > 4 * 1024 * 1024 || hash(buffer) !== body.sha256) fail(400, 'MEDIA_CHECKSUM_MISMATCH');
       const magic = body.type === 'image/png' ? buffer.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) :
         body.type === 'image/jpeg' ? buffer[0] === 255 && buffer[1] === 216 && buffer[2] === 255 :
