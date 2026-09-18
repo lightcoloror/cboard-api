@@ -156,6 +156,39 @@ describe('patient collaboration security and offline recovery', () => {
     const other = await setup(f, 'familyB');
     await assert.rejects(f.service.favoriteOriginal('familyB', other.profile.id, sourceUpdate), e => e.code === 'FAVORITE_SOURCE_NOT_FOUND');
   });
+  it('persists only strict built-in image references without registering media', async () => {
+    const f = fixture(); const { profile } = await setup(f);
+    const builtinImage = { catalog: 'cboard-default-v1', boardId: 'pi-core-words-v1', tileId: 'pi-core-want' };
+
+    await f.service.command('familyA', profile.id, command('builtin-tile', { label: '要', builtinImage }));
+    assert.deepEqual((await f.service.snapshot('familyA', profile.id)).resources[0].value.builtinImage, builtinImage);
+
+    const original = { operationId: newId(), action: 'put', resourceId: 'builtin-original', baseVersion: 0,
+      value: { sentence: '内置图卡', output: [{ id: 'pi-core-want', label: '要', builtinImage }] } };
+    await f.service.favorite('familyA', profile.id, original);
+    assert.deepEqual((await f.service.favorites('familyA', profile.id)).items[0].value.output[0].builtinImage, builtinImage);
+
+    const shared = await f.service.command('familyA', profile.id, { action: 'shareFavorite', operationId: newId(),
+      resourceId: 'builtin-shared', sourceId: 'builtin-original', sourceVersion: 1 });
+    await f.service.favoriteOriginal('familyA', profile.id, { ...original, operationId: newId(), baseVersion: 1,
+      sharedId: 'builtin-shared', sharedVersion: shared.resource.version,
+      value: { sentence: '更新内置图卡', output: [{ id: 'pi-core-want', label: '要', builtinImage }] } });
+    assert.deepEqual((await f.service.favorites('familyA', profile.id)).items[0].value.output[0].builtinImage, builtinImage);
+
+    await assert.rejects(
+      f.service.command('familyA', profile.id, command('bad-builtin', { label: '坏图卡', builtinImage: { ...builtinImage, url: 'https://example.test/image.png' } })),
+      error => error.code === 'INVALID_BUILTIN_IMAGE'
+    );
+    await assert.rejects(
+      f.service.favorite('familyA', profile.id, { operationId: newId(), action: 'put', resourceId: 'mixed-builtin', baseVersion: 0,
+        value: { sentence: '混合图卡', builtinImage, mediaId: 'unregistered-media' } }),
+      error => error.code === 'INVALID_BUILTIN_IMAGE'
+    );
+    await assert.rejects(
+      f.service.command('familyA', profile.id, command('non-string-mixed-builtin', { label: '坏图卡', builtinImage, mediaId: { id: 'not-media' } })),
+      error => error.code === 'INVALID_BUILTIN_IMAGE'
+    );
+  });
   it('preserves the creator role and default entry without changing the owner grant', async () => {
     const f = fixture();
     const family = await f.service.createFamily('creator', { name: 'Synthetic family' });

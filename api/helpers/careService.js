@@ -15,6 +15,27 @@ function mediaReferences(value, ids = new Set(), depth = 0) {
   }
   return ids;
 }
+function validateBuiltinImageReferences(value, depth = 0) {
+  if (depth > 24) fail(400, 'INVALID_VALUE_DEPTH');
+  if (!value || typeof value !== 'object') return;
+  if (Object.prototype.hasOwnProperty.call(value, 'builtinImage')) {
+    const reference = value.builtinImage;
+    const keys = reference && typeof reference === 'object' && !Array.isArray(reference)
+      ? Object.keys(reference) : [];
+    if (
+      keys.length !== 3 ||
+      keys.some(key => !['catalog', 'boardId', 'tileId'].includes(key)) ||
+      reference.catalog !== 'cboard-default-v1' ||
+      !validId(reference.boardId) ||
+      !validId(reference.tileId) ||
+      ['mediaId', 'image', 'url'].some(key =>
+        Object.prototype.hasOwnProperty.call(value, key) &&
+        value[key] !== null && value[key] !== ''
+      )
+    ) fail(400, 'INVALID_BUILTIN_IMAGE');
+  }
+  for (const item of Object.values(value)) validateBuiltinImageReferences(item, depth + 1);
+}
 function text(value, max = 100) {
   if (typeof value !== 'string' || !value.trim() || value.length > max) fail(400, 'INVALID_TEXT');
   return value.trim();
@@ -128,6 +149,7 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
     async favorite(user, profileId, body) {
       const { doc, state } = await load(profileId, user);
       await checkEntitlement(doc.familyId, 'write');
+      if (body.action === 'put') validateBuiltinImageReferences(body.value);
       await pinFavoriteMedia(profileId, user, body.value);
       return favorites.write(user, user, body, profileId);
     },
@@ -270,6 +292,7 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
           if (action === 'put') {
             if (!body.value || typeof body.value !== 'object' || Array.isArray(body.value) ||
               Buffer.byteLength(JSON.stringify(body.value)) > 256 * 1024) fail(400, 'INVALID_VALUE');
+            validateBuiltinImageReferences(body.value);
             for (const mediaId of mediaReferences(body.value)) {
               if (!validId(mediaId) || !accessibleMedia(state, user, mediaId)) fail(400, 'MEDIA_NOT_READY');
             }
@@ -306,6 +329,7 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
       if (body.sharedVersion !== shared.version) fail(409, 'SHARED_FAVORITE_CHANGED');
       // This endpoint authorizes precisely the original linked to this shared
       // item, never an arbitrary account or public template supplied by a client.
+      if (body.action === 'put') validateBuiltinImageReferences(body.value);
       await pinFavoriteMedia(profileId, user, body.value);
       return favorites.write(shared.source.owner, user, { ...body, resourceId: shared.source.id }, profileId,
         { sharedId: body.sharedId, sharedVersion: body.sharedVersion });

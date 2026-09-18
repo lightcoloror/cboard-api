@@ -9,6 +9,21 @@ describe('care Swagger contract', () => {
     assert.deepEqual(schema.properties.role.enum, ['patient', 'relative', 'professional']);
     assert.equal(schema.properties.role.type, 'string');
   });
+  it('documents the strict local built-in image reference for every favorite write path', () => {
+    const spec = YAML.load(path.join(__dirname, '../../api/swagger/swagger.yaml'));
+    const reference = spec.definitions.CareBuiltinImageReference;
+    assert.equal(reference.additionalProperties, false);
+    assert.deepEqual(reference.required, ['catalog', 'boardId', 'tileId']);
+    assert.deepEqual(reference.properties.catalog.enum, ['cboard-default-v1']);
+    for (const [route, method] of [
+      ['/care/profiles/{profileId}/favorites', 'post'],
+      ['/care/profiles/{profileId}/favorite-original', 'post'],
+      ['/care/profiles/{profileId}/commands', 'post']
+    ]) {
+      const schema = spec.paths[route][method].parameters.find(p => p.in === 'body').schema;
+      assert.equal(schema['x-builtinImageReference'].$ref, '#/definitions/CareBuiltinImageReference');
+    }
+  });
   it('documents both deletion routes without a user-content response', () => {
     const spec = YAML.load(path.join(__dirname, '../../api/swagger/swagger.yaml'));
     for (const route of ['/user/{id}', '/account/{id}']) {

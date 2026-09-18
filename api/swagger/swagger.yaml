@@ -565,6 +565,9 @@ paths:
           required: true
           schema:
             type: object
+            description: Favorite writes may recursively contain builtinImage references. Private media uses mediaId; a builtinImage reference never includes a URL or mediaId.
+            x-builtinImageReference:
+              $ref: '#/definitions/CareBuiltinImageReference'
       responses:
         '200':
           description: Personal favorites scoped to the authenticated account and patient
@@ -588,6 +591,9 @@ paths:
           required: true
           schema:
             type: object
+            description: Favorite writes may recursively contain builtinImage references. Private media uses mediaId; a builtinImage reference never includes a URL or mediaId.
+            x-builtinImageReference:
+              $ref: '#/definitions/CareBuiltinImageReference'
       responses:
         '200':
           description: Explicit family administrator update of the linked member original
@@ -826,6 +832,9 @@ paths:
           required: true
           schema:
             type: object
+            description: Resource writes may recursively contain builtinImage references. Private media uses mediaId; a builtinImage reference never includes a URL or mediaId.
+            x-builtinImageReference:
+              $ref: '#/definitions/CareBuiltinImageReference'
       responses:
         '200':
           description: Authorized result
@@ -3076,6 +3085,28 @@ paths:
             $ref: "#/definitions/ErrorResponse"
 # complex objects have schema definitions
 definitions:
+  CareBuiltinImageReference:
+    type: object
+    additionalProperties: false
+    required:
+      - catalog
+      - boardId
+      - tileId
+    properties:
+      catalog:
+        type: string
+        enum:
+          - cboard-default-v1
+      boardId:
+        type: string
+        minLength: 1
+        maxLength: 80
+        pattern: '^[A-Za-z0-9_-]+$'
+      tileId:
+        type: string
+        minLength: 1
+        maxLength: 80
+        pattern: '^[A-Za-z0-9_-]+$'
   ClosureConfirmRequest:
     type: object
     additionalProperties: false

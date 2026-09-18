@@ -84,6 +84,19 @@ async function main() {
     assert(concurrent.every(r => r.status === 200)); assert.deepEqual(concurrent[0].body, concurrent[1].body);
     assert.equal((await request(tokens[1], endpoint)).body.resources[0].value.label, '喝水');
     assert.equal((await request(tokens[2], endpoint + '/media/photo')).body.data, asset.data);
+    const builtinImage = { catalog: 'cboard-default-v1', boardId: 'pi-core-words-v1', tileId: 'pi-core-want' };
+    const builtinPut = { action: 'put', kind: 'tile', resourceId: 'builtin-tile', operationId: 'builtin-put', baseVersion: 0,
+      value: { label: '要', builtinImage } };
+    assert.equal((await request(tokens[0], endpoint + '/commands', 'POST', builtinPut)).status, 200);
+    assert.deepEqual((await request(tokens[0], endpoint)).body.resources.find(resource => resource.id === 'builtin-tile').value.builtinImage, builtinImage);
+    assert.equal((await request(tokens[0], endpoint + '/commands', 'POST', { ...builtinPut, action: 'delete', operationId: 'builtin-delete', baseVersion: 1, value: null })).status, 200);
+    const favoriteDelete = { resourceId: 'builtin-favorite-delete', operationId: 'builtin-favorite-put', action: 'put', baseVersion: 0,
+      value: { sentence: '内置图卡删除', builtinImage } };
+    assert.equal((await request(tokens[0], endpoint + '/favorites', 'POST', favoriteDelete)).status, 200);
+    assert.equal((await request(tokens[0], endpoint + '/favorites', 'POST', { ...favoriteDelete, action: 'delete', operationId: 'builtin-favorite-delete', baseVersion: 1, value: null })).status, 200);
+    const deletedBuiltinFavorite = (await request(tokens[0], endpoint + '/favorites')).body.items;
+    assert(deletedBuiltinFavorite.some(item => item.id === favoriteDelete.resourceId && item.deleted === true));
+    assert.equal(deletedBuiltinFavorite.filter(item => !item.deleted).length, 0);
     if (nextPhase) {
       assert.equal((await request(tokens[2], '/care/context', 'PUT', { profileId: profile.body.id })).status, 200);
       assert.equal((await request(tokens[2], '/care/context')).body.selectedProfileId, profile.body.id);
@@ -91,7 +104,9 @@ async function main() {
       assert.equal((await request(tokens[0], endpoint + '/entitlements')).body.state, 'active');
       const favorite = { resourceId: 'own-favorite', operationId: 'favorite-one', action: 'put', baseVersion: 0, value: { sentence: '合成个人收藏', mediaId: 'photo' } };
       assert.equal((await request(tokens[2], endpoint + '/favorites', 'POST', favorite)).status, 200);
-      assert.equal((await request(tokens[0], endpoint + '/favorites')).body.items.length, 0);
+      const ownerFavorites = (await request(tokens[0], endpoint + '/favorites')).body.items;
+      assert(ownerFavorites.every(item => item.deleted === true));
+      assert(ownerFavorites.some(item => item.id === favoriteDelete.resourceId));
       assert(!(await request(tokens[0], endpoint)).body.resources.some(r => r.id === 'own-favorite'));
       assert.equal((await request(tokens[2], endpoint + '/commands', 'POST', { action: 'shareFavorite', operationId: 'share-one', sourceId: 'own-favorite', sourceVersion: 1, resourceId: 'shared-favorite' })).status, 200);
       assert.equal((await request(tokens[0], endpoint + '/commands', 'POST', { action: 'put', operationId: 'shared-edit', kind: 'favorite', resourceId: 'shared-favorite', baseVersion: 1, value: { sentence: '合成家庭修改' } })).status, 200);
