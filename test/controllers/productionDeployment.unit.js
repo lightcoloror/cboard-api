@@ -4,17 +4,26 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const chai = require('chai');
+const YAML = require('yamljs');
 const {
   validateProductionDeployment
 } = require('../../scripts/checkProductionDeployment');
 
 const expect = chai.expect;
+const projectRoot = path.resolve(__dirname, '../..');
 
 function createEnvironment(overrides = {}) {
   const mongoPassword = 'mongo-password-1234567890abcdef';
   const values = {
     API_DOMAIN: 'api.picinterpreter.test',
     ACME_EMAIL: 'admin@picinterpreter.test',
+    BIND_ADDRESS: '0.0.0.0',
+    HTTP_PORT: '80',
+    HTTPS_PORT: '443',
+    CADDYFILE: './Caddyfile',
+    DEPLOYMENT_PROJECT_NAME: 'cboard-api-production',
+    DEBIAN_MIRROR: 'http://deb.debian.org/debian',
+    DEBIAN_SECURITY_MIRROR: 'http://deb.debian.org/debian-security',
     MONGO_USERNAME: 'cboard',
     MONGO_PASSWORD: mongoPassword,
     MONGO_URL:
@@ -53,7 +62,7 @@ function createEnvironment(overrides = {}) {
     .join('\n');
 }
 
-function runChecker(overrides) {
+function runChecker(overrides, options = {}) {
   const tempRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), 'cboard-production-config-')
   );
@@ -61,7 +70,8 @@ function runChecker(overrides) {
   fs.writeFileSync(envPath, createEnvironment(overrides));
   try {
     return validateProductionDeployment({
-      environmentPath: envPath
+      environmentPath: envPath,
+      ...options
     });
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -69,10 +79,58 @@ function runChecker(overrides) {
 }
 
 describe('Production deployment checker', function() {
+  it('passes authentication mail settings through compose using production config names', function() {
+    const compose = YAML.load(
+      path.join(projectRoot, 'deploy/docker-compose.production.yml')
+    );
+    expect(compose.services.api.environment.EMAIL_FROM).to.equal(
+      '${EMAIL_FROM:-}'
+    );
+    expect(compose.services.api.environment.AUTH_EMAIL_APP_URL).to.equal(
+      '${AUTH_EMAIL_APP_URL:-}'
+    );
+
+    const configPath = require.resolve('../../config/env/production');
+    const previousFrom = process.env.EMAIL_FROM;
+    const previousOrigin = process.env.AUTH_EMAIL_APP_URL;
+    process.env.EMAIL_FROM = 'auth@example.test';
+    process.env.AUTH_EMAIL_APP_URL = 'https://app.example.test';
+    delete require.cache[configPath];
+    try {
+      const productionConfig = require(configPath);
+      expect(productionConfig.emailTransport.from).to.equal('auth@example.test');
+      expect(productionConfig.AUTH_EMAIL_APP_URL).to.equal(
+        'https://app.example.test'
+      );
+    } finally {
+      if (previousFrom === undefined) delete process.env.EMAIL_FROM;
+      else process.env.EMAIL_FROM = previousFrom;
+      if (previousOrigin === undefined) delete process.env.AUTH_EMAIL_APP_URL;
+      else process.env.AUTH_EMAIL_APP_URL = previousOrigin;
+      delete require.cache[configPath];
+    }
+  });
+
   it('accepts an explicit private Azure library configuration', function() {
     const errors = runChecker();
 
     expect(errors).to.deep.equal([]);
+  });
+
+  it('rejects external Mongo targets disguised in query values and ambiguous authentication', function() {
+    const authority = 'cboard:mongo-password-1234567890abcdef@mongo:27017/';
+    for (const uri of [
+      `mongodb://other:password@external.invalid:27017/db?authSource=admin&replicaSet=care-rs&appName=${authority}`,
+      `mongodb://${authority}db?authSource=other&authSource=admin`,
+      `mongodb://${authority}db?authSource=admin&AUTHSOURCE=other`,
+      `mongodb://${authority}db?authSource=administrator`,
+      `mongodb://${authority}db?authSource=admin#ignored`,
+      'not-a-uri'
+    ]) {
+      const errors = runChecker({ MONGO_URL: uri });
+      expect(errors.some(error => error.startsWith('MONGO_URL must use'))).to.equal(true);
+      expect(errors.join(' ')).not.to.include('mongo-password-1234567890abcdef');
+    }
   });
 
   it('accepts the minimal production profile without purchased optional services', function() {
@@ -91,6 +149,62 @@ describe('Production deployment checker', function() {
     });
 
     expect(errors).to.deep.equal([]);
+  });
+
+  it('accepts only a loopback-bound private deployment profile', function() {
+    const privateValues = {
+      API_DOMAIN: 'private.localhost',
+      ACME_EMAIL: 'private-predeploy@localhost.invalid',
+      BIND_ADDRESS: '127.0.0.1',
+      HTTP_PORT: '18080',
+      HTTPS_PORT: '18443',
+      CADDYFILE: './Caddyfile.local',
+      DEPLOYMENT_PROJECT_NAME: 'cboard-api-private',
+      DEBIAN_MIRROR: 'http://mirrors.cloud.tencent.com/debian',
+      DEBIAN_SECURITY_MIRROR: 'http://mirrors.cloud.tencent.com/debian-security'
+    };
+    const privateErrors = runChecker(privateValues, { privateMode: true });
+    const publicBindErrors = runChecker(
+      { ...privateValues, BIND_ADDRESS: '0.0.0.0' },
+      { privateMode: true }
+    );
+    const untrustedMirrorErrors = runChecker(
+      { ...privateValues, DEBIAN_MIRROR: 'https://mirror.invalid/debian' },
+      { privateMode: true }
+    );
+
+    expect(privateErrors).to.deep.equal([]);
+    expect(publicBindErrors).to.include(
+      'Private deployment must bind only to 127.0.0.1.'
+    );
+    expect(untrustedMirrorErrors).to.include(
+      'Tencent private deployment must use the official Tencent Debian mirrors.'
+    );
+  });
+
+  it('rejects unsafe or ambiguous private deployment ports', function() {
+    const privateValues = {
+      API_DOMAIN: 'private.localhost',
+      ACME_EMAIL: 'private-predeploy@localhost.invalid',
+      BIND_ADDRESS: '127.0.0.1',
+      HTTP_PORT: '443',
+      HTTPS_PORT: '443',
+      CADDYFILE: './Caddyfile.local',
+      DEPLOYMENT_PROJECT_NAME: 'cboard-api-private',
+      DEBIAN_MIRROR: 'http://mirrors.cloud.tencent.com/debian',
+      DEBIAN_SECURITY_MIRROR: 'http://mirrors.cloud.tencent.com/debian-security'
+    };
+    const errors = runChecker(privateValues, { privateMode: true });
+
+    expect(errors).to.include(
+      'HTTP_PORT must be a private high port between 1024 and 65535.'
+    );
+    expect(errors).to.include(
+      'HTTPS_PORT must be a private high port between 1024 and 65535.'
+    );
+    expect(errors).to.include(
+      'Private HTTP_PORT and HTTPS_PORT must be different.'
+    );
   });
 
   it('rejects a partially configured Azure private library', function() {

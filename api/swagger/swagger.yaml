@@ -1606,7 +1606,7 @@ paths:
     x-swagger-router-controller: media
     post:
       operationId: uploadMedia
-      description: Uploads media files and returns a set of urls.
+      description: Legacy media upload. Disabled during public trial; patient media must use the authorized profile media endpoint with storage quota enforcement.
       security:
         - Bearer: []
       x-security-scopes:
@@ -1621,6 +1621,8 @@ paths:
           description: Success
           schema:
             $ref: "#/definitions/MediaResponse"
+        "403":
+          description: LEGACY_MEDIA_UPLOAD_DISABLED during public trial. Use private patient profile media upload.
         default:
           description: Error
           schema:

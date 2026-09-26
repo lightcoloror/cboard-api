@@ -46,6 +46,15 @@ function isSupportedMediaUpload(uploadedFile) {
 }
 
 async function uploadMedia(req, res) {
+  if (process.env.CARE_PUBLIC_TRIAL_ENABLED === 'true') {
+    res.set('Cache-Control', 'no-store');
+    return res.status(403).json({
+      code: 'LEGACY_MEDIA_UPLOAD_DISABLED',
+      message:
+        'Legacy public media uploads are disabled; use patient profile private media.'
+    });
+  }
+
   let url = null;
 
   try {

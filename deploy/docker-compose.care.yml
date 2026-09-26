@@ -1,0 +1,44 @@
+services:
+  mongo:
+    command:
+      - --replSet
+      - care-rs
+      - --keyFile
+      - /run/secrets/care-mongo-key
+      - --bind_ip_all
+    volumes:
+      - type: volume
+        source: mongo_data
+        target: /data/db
+      - type: bind
+        source: ${CARE_MONGO_KEY_FILE:?Set CARE_MONGO_KEY_FILE}
+        target: /run/secrets/care-mongo-key
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet
+          --username "$$MONGO_INITDB_ROOT_USERNAME"
+          --password "$$MONGO_INITDB_ROOT_PASSWORD"
+          --authenticationDatabase admin
+          --eval "quit(db.hello().isWritablePrimary ? 0 : 2)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  api:
+    environment:
+      CARE_MEDIA_ROOT: /data/care-media
+      CARE_CLOSURE_MONGO_URI: ${MONGO_URL:?Set MONGO_URL}
+      CARE_CLOSURE_WORKER_ENABLED: ${CARE_CLOSURE_WORKER_ENABLED:-false}
+    volumes:
+      - type: volume
+        source: care_media
+        target: /data/care-media
+
+volumes:
+  care_media:

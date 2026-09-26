@@ -7,10 +7,32 @@ const OPERATIONS = new Set([
   'recognizeCommunicationDialectAudio', 'recognizeCommunicationImageText',
   'suggestCommunicationPictogramMetadata', 'generateCommunicationPictogram', 'removeCommunicationImageBackground'
 ]);
+
+function validPrice(price) {
+  return Boolean(price) &&
+    Number.isSafeInteger(price.reservationUnits) && price.reservationUnits >= 1 &&
+    Number.isSafeInteger(price.fixedUnits) && price.fixedUnits >= 0 &&
+    price.fixedUnits <= price.reservationUnits &&
+    (price.tokensPerUnit === undefined ||
+      (Number.isSafeInteger(price.tokensPerUnit) && price.tokensPerUnit >= 1));
+}
+
+function validateCareAiPricePolicy(prices, operation) {
+  if (!prices || typeof prices !== 'object' || Array.isArray(prices)) return false;
+  if (operation !== undefined) return validPrice(prices[operation]);
+  return [...OPERATIONS].every(name => validPrice(prices[name]));
+}
+
 function createCareAiMetering({ env = process.env, runtimeFactory, authorizeProfile } = {}) {
   return async (req, res, next) => {
     const operation = req.swagger && req.swagger.operation && req.swagger.operation.operationId;
-    if (env.CARE_NEXT_ENABLED !== 'true' || !OPERATIONS.has(operation)) return next();
+    if (!OPERATIONS.has(operation)) return next();
+    // Public trial must never silently fall back to legacy account billing.
+    if (env.CARE_PUBLIC_TRIAL_ENABLED === 'true' && env.CARE_NEXT_ENABLED !== 'true') {
+      res.set('Cache-Control', 'no-store');
+      return res.status(503).json({ code: 'CARE_TRIAL_CONFIGURATION_INVALID' });
+    }
+    if (env.CARE_NEXT_ENABLED !== 'true') return next();
     try {
       if (!req.user) fail(401, 'LOGIN_REQUIRED');
       const actor = String(req.user.id);
@@ -20,10 +42,8 @@ function createCareAiMetering({ env = process.env, runtimeFactory, authorizeProf
       if (!fundingId || !profileId || !requestId) fail(400, 'EXPLICIT_FUNDING_REQUIRED');
       let prices;
       try { prices = JSON.parse(env.CARE_AI_PRICE_POLICY || '{}'); } catch (_) { fail(503, 'AI_PRICE_POLICY_INVALID'); }
+      if (!validateCareAiPricePolicy(prices, operation)) fail(503, 'AI_PRICE_POLICY_NOT_CONFIGURED');
       const price = prices[operation];
-      if (!price || !Number.isSafeInteger(price.reservationUnits) || price.reservationUnits < 1 ||
-          !Number.isSafeInteger(price.fixedUnits) || price.fixedUnits < 0 || price.fixedUnits > price.reservationUnits ||
-          (price.tokensPerUnit !== undefined && (!Number.isSafeInteger(price.tokensPerUnit) || price.tokensPerUnit < 1))) fail(503, 'AI_PRICE_POLICY_NOT_CONFIGURED');
       const runtime = require('./careBudgetRuntime');
       await (authorizeProfile || runtime.authorizeProfile)(actor, profileId, fundingId, true);
       const service = (runtimeFactory || runtime.createRuntime)();
@@ -57,4 +77,4 @@ function createCareAiMetering({ env = process.env, runtimeFactory, authorizeProf
     }
   };
 }
-module.exports = { createCareAiMetering, OPERATIONS };
+module.exports = { createCareAiMetering, OPERATIONS, validateCareAiPricePolicy };

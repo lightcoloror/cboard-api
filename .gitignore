@@ -51,4 +51,8 @@ test-results.xml
 # Environment variables
 .env.development
 deploy/.env.production
+deploy/.env.private
+deploy/.env.care
+deploy/.care-maintenance.*.lock
 deploy/backups/
+deploy/.restore-security-review-required.*

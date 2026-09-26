@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('assert').strict;
 const { EventEmitter } = require('events');
-const { createCareAiMetering } = require('../../api/helpers/careAiMetering');
+const { createCareAiMetering, OPERATIONS } = require('../../api/helpers/careAiMetering');
 function fixture() {
   const calls = []; let receipt = null;
   const service = {
@@ -17,6 +17,35 @@ function fixture() {
   return { middleware, req, res, calls };
 }
 describe('AI quota request lifecycle', () => {
+  it('refuses every online AI operation when trial and family billing flags disagree', async () => {
+    for (const enabled of [undefined, 'false']) {
+      const middleware = createCareAiMetering({ env: {
+        CARE_PUBLIC_TRIAL_ENABLED: 'true', CARE_NEXT_ENABLED: enabled
+      }, runtimeFactory: () => assert.fail('must not reserve'),
+      authorizeProfile: () => assert.fail('must not authorize') });
+      for (const operationId of OPERATIONS) {
+        const f = fixture();
+        const headers = {};
+        f.res.set = (key, value) => { headers[key] = value; return f.res; };
+        f.req.swagger.operation.operationId = operationId;
+        await middleware(f.req, f.res, () => assert.fail('must not call provider'));
+        assert.equal(f.res.statusCode, 503);
+        assert.equal(f.res.body.code, 'CARE_TRIAL_CONFIGURATION_INVALID');
+        assert.equal(headers['Cache-Control'], 'no-store');
+      }
+    }
+  });
+  it('preserves non-AI requests and explicitly non-trial legacy behavior', async () => {
+    for (const [env, operationId] of [
+      [{ CARE_PUBLIC_TRIAL_ENABLED: 'true' }, 'health'],
+      [{ CARE_PUBLIC_TRIAL_ENABLED: 'false' }, 'generateCommunicationSentences']
+    ]) {
+      const f = fixture(); let continued = false;
+      f.req.swagger.operation.operationId = operationId;
+      await createCareAiMetering({ env })(f.req, f.res, () => { continued = true; });
+      assert.equal(continued, true);
+    }
+  });
   it('releases validation or configuration failures before any provider execution', async () => {
     const f = fixture(); await f.middleware(f.req, f.res, () => {});
     f.res.statusCode = 503; f.res.emit('finish'); await Promise.resolve();

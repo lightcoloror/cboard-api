@@ -2,9 +2,35 @@
 
 const fs = require('fs');
 const path = require('path');
+const { configuredEmailAppOrigin } = require('../api/helpers/emailLinkOrigin');
+const { validateCareDeploymentConfiguration } = require('./checkCareDeploymentConfiguration');
 
 const projectRoot = path.resolve(__dirname, '..');
 const deployRoot = path.join(projectRoot, 'deploy');
+
+function validateDeploymentEmailConfiguration(env) {
+  const present = key => typeof env[key] === 'string' && Boolean(env[key].trim());
+  const required = env.CARE_PUBLIC_TRIAL_ENABLED === 'true';
+  if (!required && !['EMAIL_FROM', 'SENDGRID_API_KEY', 'AUTH_EMAIL_APP_URL'].some(present)) return [];
+  const errors = [];
+  for (const key of ['EMAIL_FROM', 'SENDGRID_API_KEY']) {
+    if (!present(key)) errors.push(`Registration email requires ${key}.`);
+  }
+  if (present('EMAIL_FROM') && /[\r\n]/.test(env.EMAIL_FROM)) {
+    errors.push('EMAIL_FROM must not contain line breaks.');
+  }
+  const placeholder = /replace|change[-_ ]?me|example\.com|your[-_]/i;
+  ['EMAIL_FROM', 'SENDGRID_API_KEY'].forEach(key => {
+    if (present(key) && placeholder.test(env[key])) {
+      errors.push(`${key} still contains a placeholder value.`);
+    }
+  });
+  if (!configuredEmailAppOrigin({
+    env: 'production', AUTH_EMAIL_APP_URL: env.AUTH_EMAIL_APP_URL,
+    CBOARD_APP_URL: env.CBOARD_APP_URL
+  })) errors.push('Registration email requires an HTTPS application origin without credentials, path, query or fragment.');
+  return errors;
+}
 
 function parseEnv(source) {
   return source.split(/\r?\n/).reduce((values, line) => {
@@ -32,7 +58,8 @@ function readProjectFile(relativePath) {
 
 function validateProductionDeployment({
   environmentPath,
-  exampleMode = false
+  exampleMode = false,
+  privateMode = false
 } = {}) {
   const envPath = environmentPath
     ? path.resolve(environmentPath)
@@ -47,10 +74,17 @@ function validateProductionDeployment({
     'deploy/docker-compose.production.yml',
     'deploy/Caddyfile',
     'deploy/Caddyfile.local',
+    'deploy/scripts/bootstrap-lighthouse.sh',
     'deploy/scripts/deploy.sh',
+    'deploy/scripts/deploy-private.sh',
+    'deploy/scripts/docker-runtime.sh',
     'deploy/scripts/health-check.sh',
+    'deploy/scripts/health-check-private.sh',
+    'deploy/scripts/prepare-private-env.sh',
+    'deploy/scripts/verify-private-persistence.sh',
     'deploy/scripts/backup-mongo.sh',
-    'deploy/scripts/restore-mongo.sh'
+    'deploy/scripts/restore-mongo.sh',
+    'scripts/createPrivateEnvironment.js'
   ];
 
   requiredFiles.forEach(relativePath => {
@@ -68,6 +102,8 @@ function validateProductionDeployment({
   const env = fs.existsSync(envPath)
     ? parseEnv(fs.readFileSync(envPath, 'utf8'))
     : {};
+  errors.push(...validateDeploymentEmailConfiguration(env));
+  errors.push(...validateCareDeploymentConfiguration(env));
   const requiredKeys = [
     'API_DOMAIN',
     'ACME_EMAIL',
@@ -76,6 +112,7 @@ function validateProductionDeployment({
     'MONGO_URL',
     'API_SESSION_SECRET',
     'JWT_SECRET',
+    'DEPLOYMENT_PROJECT_NAME',
     'PHONE_VERIFICATION_REQUIRED',
     'COMMUNICATION_ENHANCEMENT_RATE_LIMIT_ENABLED',
     'COMMUNICATION_ENHANCEMENT_POINTS_PER_MINUTE',
@@ -89,6 +126,40 @@ function validateProductionDeployment({
   requiredKeys.forEach(key => {
     if (!env[key]) errors.push(`Missing required environment key: ${key}`);
   });
+
+  if (privateMode) {
+    if (env.BIND_ADDRESS !== '127.0.0.1') {
+      errors.push('Private deployment must bind only to 127.0.0.1.');
+    }
+    if (env.CADDYFILE !== './Caddyfile.local') {
+      errors.push('Private deployment must use deploy/Caddyfile.local.');
+    }
+    if (env.DEPLOYMENT_PROJECT_NAME !== 'cboard-api-private') {
+      errors.push(
+        'Private deployment must use the isolated cboard-api-private Compose project.'
+      );
+    }
+    if (
+      env.DEBIAN_MIRROR !== 'http://mirrors.cloud.tencent.com/debian' ||
+      env.DEBIAN_SECURITY_MIRROR !==
+        'http://mirrors.cloud.tencent.com/debian-security'
+    ) {
+      errors.push(
+        'Tencent private deployment must use the official Tencent Debian mirrors.'
+      );
+    }
+    ['HTTP_PORT', 'HTTPS_PORT'].forEach(key => {
+      const value = Number(env[key]);
+      if (!Number.isInteger(value) || value < 1024 || value > 65535) {
+        errors.push(
+          `${key} must be a private high port between 1024 and 65535.`
+        );
+      }
+    });
+    if (env.HTTP_PORT && env.HTTPS_PORT && env.HTTP_PORT === env.HTTPS_PORT) {
+      errors.push('Private HTTP_PORT and HTTPS_PORT must be different.');
+    }
+  }
 
   if (
     env.API_DOMAIN &&
@@ -280,11 +351,15 @@ function validateProductionDeployment({
     const expectedAuthority =
       `${encodeURIComponent(env.MONGO_USERNAME || '')}:` +
       `${encodeURIComponent(env.MONGO_PASSWORD || '')}@mongo:27017/`;
-    if (
-      !env.MONGO_URL.startsWith('mongodb://') ||
-      !env.MONGO_URL.includes(expectedAuthority) ||
-      !env.MONGO_URL.includes('authSource=admin')
-    ) {
+    let validMongoTarget = false;
+    try {
+      const uri = new URL(env.MONGO_URL);
+      validMongoTarget = env.MONGO_URL.startsWith(`mongodb://${expectedAuthority}`) &&
+        uri.protocol === 'mongodb:' && uri.hostname === 'mongo' && uri.port === '27017' &&
+        !uri.hash && [...uri.searchParams.keys()].filter(key => key.toLowerCase() === 'authsource').length === 1 &&
+        uri.searchParams.get('authSource') === 'admin';
+    } catch (_) { /* Report only the fixed error below, never a credential URI. */ }
+    if (!validMongoTarget) {
       errors.push(
         'MONGO_URL must use the configured credentials, internal mongo host, and authSource=admin.'
       );
@@ -334,6 +409,18 @@ function validateProductionDeployment({
       'Dockerfile must install production dependencies from yarn.lock.'
     );
   }
+  if (
+    !dockerfile.includes('python3') ||
+    !dockerfile.includes('make') ||
+    !dockerfile.includes('g++') ||
+    !dockerfile.includes('DEBIAN_MIRROR') ||
+    !dockerfile.includes('Acquire::ForceIPv4=true') ||
+    !dockerfile.includes('ca-certificates')
+  ) {
+    errors.push(
+      'Dockerfile dependency stage must support native addon source builds.'
+    );
+  }
   if (!dockerfile.includes('/health')) {
     errors.push('Dockerfile must health-check the public readiness endpoint.');
   }
@@ -344,6 +431,15 @@ function validateProductionDeployment({
   }
 
   const compose = readProjectFile('deploy/docker-compose.production.yml');
+  if (!compose.includes('${BIND_ADDRESS:-0.0.0.0}')) {
+    errors.push('Caddy host ports must support an explicit bind address.');
+  }
+  if (
+    !compose.includes('DEBIAN_MIRROR') ||
+    !compose.includes('DEBIAN_SECURITY_MIRROR')
+  ) {
+    errors.push('The API build must accept explicit Debian mirror arguments.');
+  }
   if (/^\s*-\s*["']?\d+:27017/m.test(compose)) {
     errors.push('MongoDB must not publish port 27017 to the host.');
   }
@@ -398,7 +494,7 @@ function validateProductionDeployment({
 
   const deployScript = readProjectFile('deploy/scripts/deploy.sh');
   if (
-    !deployScript.includes('checkProductionDeployment.js') ||
+    !deployScript.includes('run_deployment_check production') ||
     !deployScript.includes('health-check.sh')
   ) {
     errors.push(
@@ -406,11 +502,55 @@ function validateProductionDeployment({
     );
   }
 
+  const privateDeployScript = readProjectFile(
+    'deploy/scripts/deploy-private.sh'
+  );
+  if (
+    !privateDeployScript.includes('run_deployment_check private') ||
+    !privateDeployScript.includes('health-check-private.sh')
+  ) {
+    errors.push(
+      'The private deployment script must validate the private profile and run its loopback health check.'
+    );
+  }
+
+  const privateHealthScript = readProjectFile(
+    'deploy/scripts/health-check-private.sh'
+  );
+  if (
+    !privateHealthScript.includes('127.0.0.1') ||
+    !privateHealthScript.includes('--resolve')
+  ) {
+    errors.push(
+      'The private health check must verify the loopback-only HTTPS endpoint.'
+    );
+  }
+
+  const bootstrapScript = readProjectFile(
+    'deploy/scripts/bootstrap-lighthouse.sh'
+  );
+  if (
+    !bootstrapScript.includes('download.docker.com/linux/ubuntu') ||
+    !bootstrapScript.includes('dist-upgrade -y') ||
+    !bootstrapScript.includes('docker-compose-plugin') ||
+    !bootstrapScript.includes('mirror.ccs.tencentyun.com') ||
+    !bootstrapScript.includes('log-driver') ||
+    !bootstrapScript.includes('swapon /swapfile') ||
+    !bootstrapScript.includes('PasswordAuthentication no') ||
+    !bootstrapScript.includes('ufw allow OpenSSH')
+  ) {
+    errors.push(
+      'The Lighthouse bootstrap must install Docker and configure bounded logs, swap, key-only SSH, and an SSH-only firewall.'
+    );
+  }
+
   const backupScript = readProjectFile('deploy/scripts/backup-mongo.sh');
   if (
     !backupScript.includes('mongodump') ||
     !backupScript.includes('umask 077') ||
-    !backupScript.includes('BACKUP_RETENTION_DAYS')
+    !backupScript.includes('BACKUP_RETENTION_DAYS') ||
+    !backupScript.includes('resolve_docker_command') ||
+    !backupScript.includes('DEPLOYMENT_PROJECT_NAME')
   ) {
     errors.push(
       'The MongoDB backup script must create private compressed backups with retention.'
@@ -421,7 +561,9 @@ function validateProductionDeployment({
   if (
     !restoreScript.includes('CONFIRM_RESTORE=RESTORE') ||
     !restoreScript.includes('mongorestore') ||
-    !restoreScript.includes('--drop')
+    !restoreScript.includes('--drop') ||
+    !restoreScript.includes('resolve_docker_command') ||
+    !restoreScript.includes('DEPLOYMENT_PROJECT_NAME')
   ) {
     errors.push(
       'The MongoDB restore script must require explicit confirmation before a complete restore.'
@@ -441,6 +583,7 @@ function validateProductionDeployment({
 
 function runCli() {
   const exampleMode = process.argv.includes('--example');
+  const privateMode = process.argv.includes('--private');
   const requestedEnvPath = process.argv
     .slice(2)
     .find(argument => !argument.startsWith('--'));
@@ -449,7 +592,8 @@ function runCli() {
     : undefined;
   const errors = validateProductionDeployment({
     environmentPath,
-    exampleMode
+    exampleMode,
+    privateMode
   });
 
   if (errors.length) {
@@ -461,7 +605,11 @@ function runCli() {
 
   console.log(
     `Production deployment ${
-      exampleMode ? 'template' : 'configuration'
+      exampleMode
+        ? 'template'
+        : privateMode
+        ? 'private configuration'
+        : 'configuration'
     } is valid.`
   );
 }
@@ -472,5 +620,6 @@ if (require.main === module) {
 
 module.exports = {
   parseEnv,
+  validateDeploymentEmailConfiguration,
   validateProductionDeployment
 };
