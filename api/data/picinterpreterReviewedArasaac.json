@@ -6,6 +6,11 @@
   "caseCount": 41,
   "license": "PicInterpreter GPL-3.0-or-later; ARASAAC pictograms CC BY-NC-SA 4.0",
   "aliases": {
+    "尿片": "尿布",
+    "一点点": "少许",
+    "家里人": "家人",
+    "困难": "困难的",
+    "安静": "安静的",
     "一点": "少许",
     "然后": "以后",
     "慢慢": "慢的",

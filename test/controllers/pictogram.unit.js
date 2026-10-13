@@ -14,6 +14,14 @@ const reviewedArasaac = require('../../api/data/picinterpreterReviewedArasaac.js
 const expect = chai.expect;
 
 describe('Pictogram search helper', function() {
+  it('keeps restored lookup aliases in sync with the clients and preserves source words', async function() {
+    const search = createPictogramSearch({ http: { get: async () => { throw new Error('synthetic provider unavailable'); } } });
+    for (const [token, id] of [['家里人', 2392], ['困难', 4629], ['安静', 37828], ['尿片', 2863], ['一点点', 7209]]) {
+      const results = await search.searchRuntimePictograms([token]);
+      expect(results[0].token).to.equal(token);
+      expect(results[0].pictogram.source.originalId).to.equal(String(id));
+    }
+  });
   it('keeps the reviewed PicInterpreter index bounded and traceable', function() {
     const concepts = Object.keys(reviewedArasaac.concepts);
 
@@ -21,7 +29,7 @@ describe('Pictogram search helper', function() {
     expect(reviewedArasaac.caseCount).to.equal(41);
     expect(reviewedArasaac.sourceSha256).to.match(/^[A-F0-9]{64}$/);
     expect(concepts).to.have.length(138);
-    expect(Object.keys(reviewedArasaac.aliases)).to.have.length(21);
+    expect(Object.keys(reviewedArasaac.aliases)).to.have.length(26);
     Object.entries(reviewedArasaac.aliases).forEach(([alias, concept]) => {
       expect(alias.trim()).to.equal(alias);
       expect(concepts).to.include(concept);

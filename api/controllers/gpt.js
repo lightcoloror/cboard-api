@@ -1,4 +1,5 @@
 const { createCommunicationAi } = require('../helpers/communicationAi');
+const { validateResegmentSource } = require('../helpers/resegmentationContract');
 const {
   createCommunicationAiProvider
 } = require('../helpers/communicationAiProvider');
@@ -256,6 +257,7 @@ function sendCommunicationAiError(res, error) {
   const status = error && Number.isInteger(error.status) ? error.status : 502;
   return res.status(status).json({
     error: {
+      ...(error && error.code ? { code: error.code } : {}),
       message: (error && error.message) || 'Communication AI request failed'
     }
   });
@@ -314,6 +316,21 @@ async function generateCommunicationPictogram(req, res) {
 }
 
 async function resegmentCommunicationText(req, res) {
+  setCommunicationPrivateResponseHeaders(res);
+  if (!validateResegmentSource(req.body && req.body.text)) {
+    return sendCommunicationAiError(res, {
+      status: 400,
+      code: 'AI_RESEGMENT_INVALID_SOURCE',
+      message: 'text must contain 1-120 Unicode code points'
+    });
+  }
+  if (req.body.contractVersion !== undefined && ![1, 2].includes(req.body.contractVersion)) {
+    return sendCommunicationAiError(res, {
+      status: 400,
+      code: 'AI_RESEGMENT_UNSUPPORTED_VERSION',
+      message: 'Unsupported resegmentation contract'
+    });
+  }
   const communicationAi = getCommunicationAi(req);
   if (!communicationAi) {
     return sendCommunicationAiError(res, {

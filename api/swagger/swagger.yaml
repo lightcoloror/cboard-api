@@ -5293,6 +5293,9 @@ definitions:
     required:
       - text
     properties:
+      contractVersion:
+        type: integer
+        enum: [1, 2]
       text:
         type: string
         minLength: 1
@@ -5314,12 +5317,47 @@ definitions:
     required:
       - tokens
       - provider
+      - contractVersion
+      - sourceText
+      - offsetUnit
+      - segments
+      - requiresConfirmation
     properties:
+      contractVersion:
+        type: integer
+        enum: [2]
+      sourceText:
+        type: string
+      offsetUnit:
+        type: string
+        enum: [unicode-code-point]
+      requiresConfirmation:
+        type: boolean
+        enum: [true]
       tokens:
         type: array
-        maxItems: 12
+        minItems: 1
+        maxItems: 120
         items:
           type: string
+          minLength: 1
+      segments:
+        type: array
+        minItems: 1
+        maxItems: 120
+        items:
+          type: object
+          required: [start, end, surface]
+          properties:
+            start:
+              type: integer
+              minimum: 0
+            end:
+              type: integer
+              minimum: 1
+            surface:
+              type: string
+              minLength: 1
       provider:
         type: string
   CommunicationDialectNormalizationRequest:
