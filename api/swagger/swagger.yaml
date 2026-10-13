@@ -4087,6 +4087,11 @@ definitions:
       - synonyms
       - source
     properties:
+      label:
+        type: string
+        description: Source label, reviewed concept label, or neutral image identifier. Never an inferred translation of the query.
+      semantics:
+        $ref: "#/definitions/PictogramSemantics"
       id:
         type: string
       imageUrl:
@@ -4118,6 +4123,44 @@ definitions:
         type: integer
       lastUsedAt:
         type: integer
+  PictogramSemantics:
+    type: object
+    description: Candidate provenance, not a context disambiguation or visual verification result. Unverified candidates require caregiver confirmation; old clients must be upgraded together.
+    properties:
+      schemaVersion:
+        type: integer
+        enum: [1]
+      mappingVersion:
+        type: string
+      queryText:
+        type: string
+      lookupText:
+        type: string
+      sourceLanguage:
+        type: string
+      sourceLabels:
+        type: array
+        items:
+          type: string
+      sourceDefinitions:
+        type: array
+        items:
+          type: string
+      sourceCategories:
+        type: array
+        items:
+          type: string
+      queryConceptId:
+        type: string
+        x-nullable: true
+      conceptId:
+        type: string
+        x-nullable: true
+      relation:
+        type: string
+        enum: [conflict, reviewed, unverified]
+      requiresReview:
+        type: boolean
   PictogramSource:
     type: object
     required:
