@@ -78,6 +78,22 @@ describe('Source-preserving resegmentation HTTP contract', function() {
     expect(upstream.isDone()).to.equal(true);
   });
 
+  it('sends fixed development examples separately from the current user text', async function() {
+    const text = '请帮忙';
+    let sent;
+    const upstream = nock('https://resegmentation.example.invalid')
+      .post('/v1/chat/completions', body => { sent = body; return true; })
+      .reply(200, { choices: [{ message: { content: JSON.stringify({ tokens: [text] }) }, finish_reason: 'stop' }] });
+    await request(app).post('/gpt/communication/resegment').send({ text }).expect(200);
+    expect(upstream.isDone()).to.equal(true);
+    expect(sent.messages[0].role).to.equal('system');
+    expect(sent.messages[0].content).to.include('不是不想吃饭');
+    expect(sent.messages[0].content).to.include('眼镜盒不是眼镜');
+    expect(sent.messages[0].content).to.include('我今晚不回家吃饭');
+    expect(JSON.parse(sent.messages[1].content).text).to.equal(text);
+    expect(sent.messages).to.have.length(2);
+  });
+
   it('rejects lost negation with a stable code while accounting for actual provider usage', async function() {
     provider(['打针']);
     const response = await request(app).post('/gpt/communication/resegment')
