@@ -12,6 +12,7 @@ const {
 } = require('./pictogramAttribution');
 const { normalizePublicPictogramImage } = require('./pictogramImage');
 const { createGlobalSymbolsProvider } = require('./globalSymbols');
+const { buildArasaacSemanticFields, buildPictogramSemantics, rankPictogramCandidates, getSemanticCandidateQueries, assessPictogramCandidate } = require('./pictogramSemantics');
 
 const ARASAAC_API = 'https://api.arasaac.org/v1';
 const ARASAAC_STATIC = 'https://static.arasaac.org/pictograms';
@@ -107,14 +108,12 @@ function stableId(provider, originalId, token) {
   return `runtime_${provider}_${hash}`;
 }
 
-function buildArasaacPictogram(token, query, locale, id) {
+function buildArasaacPictogram(token, query, locale, id, item = {}) {
+  const semanticFields = buildArasaacSemanticFields(token, query, locale, id, item);
   return {
     id: stableId('arasaac', String(id), token),
     imageUrl: `/pictograms/arasaac/${id}/image`,
-    labels: {
-      zh: [token],
-      en: [locale === 'en' ? query : getEnglishFallback(token)].filter(Boolean)
-    },
+    ...semanticFields,
     categoryId: 'daily',
     categoryIds: ['daily'],
     synonyms: [],
@@ -248,13 +247,14 @@ function buildOpenSymbolsPictogram(
   return {
     id: stableId('opensymbols', originalId, token),
     imageUrl: `/pictograms/opensymbols/${imageToken}/image`,
+    label: String(item.name || '').trim() || `图片 #${originalId}`,
+    semantics: buildPictogramSemantics({
+      token, query, locale, provider: 'opensymbols', originalId,
+      sourceLabels: [item.name]
+    }),
     labels: {
-      zh: [token],
-      en: [
-        locale === 'en'
-          ? String(item.name || query).trim()
-          : getEnglishFallback(token)
-      ].filter(Boolean)
+      zh: locale === 'zh' && item.name ? [item.name] : [],
+      en: locale === 'en' && item.name ? [item.name] : []
     },
     categoryId: 'daily',
     categoryIds: ['daily'],
@@ -314,6 +314,7 @@ function createPictogramSearch(options) {
         : undefined,
     apiV2: options && options.globalSymbolsApiV2,
     apiV1: options && options.globalSymbolsApiV1,
+    allowLegacyRuntime: options && options.globalSymbolsAllowLegacyRuntime,
     cacheTtlMs: searchCacheTtlMs,
     negativeCacheTtlMs,
     maxCacheEntries: maxSearchCacheEntries
@@ -373,24 +374,26 @@ function createPictogramSearch(options) {
         }
 
         const seen = new Set();
-        return reviewedIds
+        const candidates = rankPictogramCandidates(token, reviewedIds
           .concat(items.map(item => Number(item && (item._id || item.id))))
           .filter(id => {
             if (!Number.isInteger(id) || id <= 0 || seen.has(id)) return false;
             seen.add(id);
             return true;
           })
-          .slice(0, MAX_PICTOGRAM_CANDIDATES_PER_TOKEN)
-          .map(id => buildArasaacPictogram(token, normalizedQuery, locale, id));
+          .map(id => buildArasaacPictogram(token, normalizedQuery, locale, id,
+            items.find(item => Number(item && (item._id || item.id)) === id) || {})),
+          { limit: MAX_PICTOGRAM_CANDIDATES_PER_TOKEN });
+        if (candidates.length) return candidates;
       } catch (error) {
         if (reviewedIds.length) break;
         // Continue to the broad endpoint, then the existing language fallback.
       }
     }
 
-    return reviewedIds.map(id =>
+    return rankPictogramCandidates(token, reviewedIds.map(id =>
       buildArasaacPictogram(token, normalizedQuery, locale, id)
-    );
+    ), { limit: MAX_PICTOGRAM_CANDIDATES_PER_TOKEN });
   }
 
   async function getOpenSymbolsAccessToken(rejectedAccessToken = null) {
@@ -487,9 +490,8 @@ function createPictogramSearch(options) {
       if (!pictogram || seen.has(pictogram.id)) continue;
       seen.add(pictogram.id);
       pictograms.push(pictogram);
-      if (pictograms.length >= MAX_PICTOGRAM_CANDIDATES_PER_TOKEN) break;
     }
-    return pictograms;
+    return rankPictogramCandidates(token, pictograms, { limit: MAX_PICTOGRAM_CANDIDATES_PER_TOKEN });
   }
 
   async function searchOpenSymbols(token) {
@@ -506,16 +508,20 @@ function createPictogramSearch(options) {
       token,
       query,
       locale,
-      limit: MAX_PICTOGRAM_CANDIDATES_PER_TOKEN
+      // A bounded retrieval pool; semantic filtering happens before the UI cap.
+      limit: 20
     });
-    return items.map(item => ({
+    return rankPictogramCandidates(token, items.map(item => ({
       id: stableId('globalsymbols', item.originalId, token),
       imageUrl: item.imageUrl,
+      label: item.label || `图片 #${item.originalId}`,
+      semantics: buildPictogramSemantics({
+        token, query, locale, provider: 'globalsymbols', originalId: item.originalId,
+        sourceLabels: [item.label]
+      }),
       labels: {
-        zh: [token],
-        en: [locale === 'en' ? item.label : getEnglishFallback(token)].filter(
-          Boolean
-        )
+        zh: locale === 'zh' && item.label ? [item.label] : [],
+        en: locale === 'en' && item.label ? [item.label] : []
       },
       categoryId: 'daily',
       categoryIds: ['daily'],
@@ -523,7 +529,7 @@ function createPictogramSearch(options) {
       source: item.source,
       usageCount: 0,
       lastUsedAt: Date.now()
-    }));
+    })), { limit: MAX_PICTOGRAM_CANDIDATES_PER_TOKEN });
   }
 
   async function searchGlobalSymbols(token) {
@@ -536,19 +542,38 @@ function createPictogramSearch(options) {
   }
 
   async function searchOne(token) {
-    const chineseResult = await requestArasaac(token, token, 'zh');
-    if (chineseResult.length) return chineseResult;
+    // A partial scene (night without today, arrival without home) must not
+    // prevent later providers from returning a more complete candidate.
+    const pool = [];
+    const collect = items => {
+      pool.push(...items);
+      return rankPictogramCandidates(token, pool, { limit: MAX_PICTOGRAM_CANDIDATES_PER_TOKEN });
+    };
+    const hasStrong = items => items.some(item => {
+      const assessment = assessPictogramCandidate(token, item);
+      return assessment.eligible &&
+        (assessment.tier <= 2 || assessment.reason === 'source-label-match');
+    });
+    let ranked = collect(await requestArasaac(token, token, 'zh'));
+    if (hasStrong(ranked)) return ranked;
 
     const fallback = getEnglishFallback(token);
     if (fallback) {
-      const englishResult = await requestArasaac(token, fallback, 'en');
-      if (englishResult.length) return englishResult;
+      ranked = collect(await requestArasaac(token, fallback, 'en'));
+      if (hasStrong(ranked)) return ranked;
     }
 
-    const globalSymbolsResult = await searchGlobalSymbols(token);
-    if (globalSymbolsResult.length) return globalSymbolsResult;
+    // Reuse the same source-aware candidate filter and image proxy; collect
+    // audited strong and approximate choices without granting auto-adoption.
+    for (const query of getSemanticCandidateQueries(token)) {
+      ranked = collect(await requestArasaac(token, query, 'en'));
+    }
+    if (hasStrong(ranked)) return ranked;
 
-    return searchOpenSymbols(token);
+    ranked = collect(await searchGlobalSymbols(token));
+    if (hasStrong(ranked)) return ranked;
+
+    return collect(await searchOpenSymbols(token));
   }
 
   async function searchOneCached(token) {

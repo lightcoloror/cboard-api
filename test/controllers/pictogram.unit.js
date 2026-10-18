@@ -14,6 +14,14 @@ const reviewedArasaac = require('../../api/data/picinterpreterReviewedArasaac.js
 const expect = chai.expect;
 
 describe('Pictogram search helper', function() {
+  it('keeps restored lookup aliases in sync with the clients and preserves source words', async function() {
+    const search = createPictogramSearch({ http: { get: async () => { throw new Error('synthetic provider unavailable'); } } });
+    for (const [token, id] of [['家里人', 2392], ['困难', 4629], ['安静', 37828], ['尿片', 2863], ['一点点', 7209]]) {
+      const results = await search.searchRuntimePictograms([token]);
+      expect(results[0].token).to.equal(token);
+      expect(results[0].pictogram.source.originalId).to.equal(String(id));
+    }
+  });
   it('keeps the reviewed PicInterpreter index bounded and traceable', function() {
     const concepts = Object.keys(reviewedArasaac.concepts);
 
@@ -21,7 +29,7 @@ describe('Pictogram search helper', function() {
     expect(reviewedArasaac.caseCount).to.equal(41);
     expect(reviewedArasaac.sourceSha256).to.match(/^[A-F0-9]{64}$/);
     expect(concepts).to.have.length(138);
-    expect(Object.keys(reviewedArasaac.aliases)).to.have.length(21);
+    expect(Object.keys(reviewedArasaac.aliases)).to.have.length(26);
     Object.entries(reviewedArasaac.aliases).forEach(([alias, concept]) => {
       expect(alias.trim()).to.equal(alias);
       expect(concepts).to.include(concept);
@@ -61,7 +69,7 @@ describe('Pictogram search helper', function() {
         get: async function get() {
           requestCount += 1;
           return {
-            data: [{ _id: 999 }, { _id: 2248 }, { _id: 888 }, { _id: 777 }]
+            data: [999, 2248, 888, 777].map(_id => ({ _id, keywords: [{ keyword: '水' }] }))
           };
         }
       }
@@ -114,7 +122,7 @@ describe('Pictogram search helper', function() {
           urls.push(url);
           if (url.includes('/zh/')) return { data: [] };
           if (url.includes('/en/bestsearch/banana')) {
-            return { data: [{ _id: 123 }] };
+            return { data: [{ _id: 123, keywords: [{ keyword: 'banana' }] }] };
           }
           return { data: [] };
         }
@@ -142,7 +150,7 @@ describe('Pictogram search helper', function() {
           urls.push(url);
           if (url.includes('/zh/')) return { data: [] };
           if (url.includes('/en/bestsearch/')) {
-            return { data: [{ _id: urls.length }] };
+            return { data: [{ _id: urls.length, keywords: [{ keyword: decodeURIComponent(url.split('/').pop()) }] }] };
           }
           return { data: [] };
         }
@@ -173,7 +181,7 @@ describe('Pictogram search helper', function() {
         get: async function get(url) {
           urls.push(url);
           if (url.includes('/zh/')) return { data: [] };
-          return { data: [{ _id: urls.length }] };
+          return { data: [{ _id: urls.length, keywords: [{ keyword: decodeURIComponent(url.split('/').pop()) }] }] };
         }
       }
     });
@@ -214,7 +222,7 @@ describe('Pictogram search helper', function() {
           urls.push(url);
           return url.includes('/bestsearch/')
             ? { data: [] }
-            : { data: [{ _id: 456 }] };
+            : { data: [{ _id: 456, keywords: [{ keyword: '香蕉' }] }] };
         }
       }
     });
@@ -244,7 +252,7 @@ describe('Pictogram search helper', function() {
               data: [
                 {
                   id: 42,
-                  text: '杯子',
+                  text: '合成杯',
                   language: 'zho',
                   picto: {
                     id: 314,
@@ -271,7 +279,7 @@ describe('Pictogram search helper', function() {
       }
     });
 
-    const results = await search.searchRuntimePictograms(['不存在词']);
+    const results = await search.searchRuntimePictograms(['合成杯']);
 
     expect(results).to.have.length(1);
     expect(results[0].pictogram.source).to.include({
@@ -301,7 +309,7 @@ describe('Pictogram search helper', function() {
               { _id: 104 },
               { _id: 105 },
               { _id: 'invalid' }
-            ]
+            ].map(item => ({ ...item, keywords: [{ keyword: '未审核词' }] }))
           };
         }
       }
@@ -321,9 +329,9 @@ describe('Pictogram search helper', function() {
     const search = createPictogramSearch({
       maxSearchCacheEntries: 1,
       http: {
-        get: async function get() {
+        get: async function get(url) {
           requestCount += 1;
-          return { data: [{ _id: requestCount }] };
+          return { data: [{ _id: requestCount, keywords: [{ keyword: decodeURIComponent(url.split('/').pop()) }] }] };
         }
       }
     });
@@ -412,7 +420,7 @@ describe('Pictogram search helper', function() {
                 {
                   id: 2,
                   symbol_key: 'apple-symbol',
-                  name: 'apple',
+                  name: 'banana',
                   repo_key: 'mulberry',
                   license: 'CC BY-SA 2.0 UK',
                   license_url:
@@ -490,6 +498,7 @@ describe('Pictogram search helper', function() {
               data: [
                 {
                   symbol_key: name,
+                  name,
                   repo_key: 'mulberry',
                   license: 'CC BY-SA 2.0 UK',
                   image_url: `https://d123.cloudfront.net/${encodeURIComponent(
@@ -542,6 +551,7 @@ describe('Pictogram search helper', function() {
               data: [
                 {
                   symbol_key: name,
+                  name,
                   repo_key: 'mulberry',
                   license: 'CC BY-SA 2.0 UK',
                   image_url: `https://d123.cloudfront.net/${encodeURIComponent(

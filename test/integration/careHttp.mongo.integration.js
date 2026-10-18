@@ -43,8 +43,8 @@ async function main() {
       api.use(require('../../api/helpers/careAiMetering').createCareAiMetering());
       const aiPath = Object.keys(spec.paths).find(p => spec.paths[p].post && spec.paths[p].post.operationId === 'generateCommunicationSentences');
       api.post(aiPath, async (req, res) => {
-        await req.careUsage.observe({ totalTokens: 20 });
-        res.status(200).json({ synthetic: true, sentences: ['合成一句', '合成二句', '合成三句'] });
+        await req.careUsage.observe({ reported: true, totalTokens: 20 });
+        res.status(200).json({ candidates: ['合成一句', '合成二句', '合成三句'], provider: 'cboard-api-ai', isOfflineFallback: false });
       });
     }
     api.use(middleware.swaggerRouter({ controllers: path.join(root, 'api/controllers'), ignoreMissingHandlers: true }));
@@ -56,7 +56,7 @@ async function main() {
   const request = async (token, url, method = 'GET', body, headers = {}) => {
     const response = await fetch(base + url, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...headers },
       ...(body ? { body: JSON.stringify(body) } : {}) });
-    return { status: response.status, body: await response.json(), retryAfter: response.headers.get('retry-after') };
+    return { status: response.status, body: await response.json(), retryAfter: response.headers.get('retry-after'), replayed: response.headers.get('x-care-idempotency-replayed') };
   };
   const tokens = [];
   try {
@@ -144,7 +144,8 @@ async function main() {
       const headers = { 'x-care-funding-id': 'synthetic-funding', 'x-care-profile-id': profile.body.id, 'idempotency-key': 'synthetic-ai-one' };
       assert.equal((await request(tokens[2], aiPath, 'POST', { labels: ['合成'] })).body.code, 'EXPLICIT_FUNDING_REQUIRED');
       assert.equal((await request(tokens[2], aiPath, 'POST', { labels: ['合成'] }, headers)).status, 200);
-      assert.equal((await request(tokens[2], aiPath, 'POST', { labels: ['合成'] }, headers)).status, 409);
+      const replay = await request(tokens[2], aiPath, 'POST', { labels: ['合成'] }, headers);
+      assert.equal(replay.status, 200); assert.equal(replay.replayed, 'true');
       for (let attempt = 0; attempt < 30; attempt++) {
         if ((await budget.snapshot('synthetic-funding', b, profile.body.id)).weeklyUsed === 2) break;
         await new Promise(resolve => setTimeout(resolve, 20));

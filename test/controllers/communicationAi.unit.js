@@ -24,8 +24,8 @@ function createClient(content, onCreate, response = {}) {
   return {
     chat: {
       completions: {
-        create: async function create(request) {
-          if (onCreate) onCreate(request);
+        create: async function create(request, options) {
+          if (onCreate) onCreate(request, options);
           return {
             choices: [{ message: { content } }],
             ...response
@@ -37,6 +37,39 @@ function createClient(content, onCreate, response = {}) {
 }
 
 describe('Communication AI helper', function() {
+  it('preserves ordered repeated person markers in the actual provider payload', async function() {
+    let sent;
+    const ai = createCommunicationAi({ client: createClient('⟦P1⟧叫⟦P2⟧找⟦P1⟧。', request => { sent = request; }) });
+    const result = await ai.generateSentenceCandidates({ pictogramLabels: ['⟦P1⟧', '叫', '⟦P2⟧', '找', '⟦P1⟧'] });
+    expect(sent.messages[1].content).to.equal('图卡标签：⟦P1⟧、叫、⟦P2⟧、找、⟦P1⟧');
+    expect(sent.messages[0].content).to.include('顺序与出现次数');
+    expect(result.candidates).to.deep.equal(['⟦P1⟧叫⟦P2⟧找⟦P1⟧。']);
+  });
+  it('passes bounded sentence options and never retries an uncertain provider call', async function() {
+    let sent;
+    const ai = createCommunicationAi({
+      client: createClient('我想喝水。\n请给我水。\n我需要喝水。', (body, options) => { sent = { body, options }; }),
+      sentenceRequestOptions: { enable_thinking: false, max_tokens: 2048, response_format: { type: 'text' } }
+    });
+    const result = await ai.generateSentenceCandidates({ pictogramLabels: ['我', '喝水'], candidateCount: 3 });
+    expect(result.candidates).to.have.length(3);
+    expect(sent.body).to.include({ enable_thinking: false, max_tokens: 2048 });
+    expect(sent.body.response_format).to.deep.equal({ type: 'text' });
+    expect(sent.options).to.deep.equal({ maxRetries: 0 });
+  });
+
+  it('records usage but rejects a provider-truncated sentence instead of speaking it', async function() {
+    const observed = [];
+    const ai = createCommunicationAi({
+      client: createClient('', null, { choices: [{ message: { content: '我不想' }, finish_reason: 'length' }],
+        usage: { total_tokens: 25 } }),
+      onUsage: event => observed.push(event)
+    });
+    try { await ai.generateSentenceCandidates({ pictogramLabels: ['我', '不', '吃饭'] });
+      throw new Error('expected failure');
+    } catch (error) { expect(error.code).to.equal('AI_SENTENCE_INCOMPLETE_RESPONSE'); }
+    expect(observed).to.have.length(1);
+  });
   it('bounds and de-duplicates public label input', function() {
     const labels = [' 水 ', '水'];
     for (let index = 0; index < 20; index += 1) labels.push(`词${index}`);
@@ -49,11 +82,13 @@ describe('Communication AI helper', function() {
 
   it('cleans numbered sentence candidates and respects the requested count', async function() {
     let upstreamRequest;
+    let upstreamOptions;
     const ai = createCommunicationAi({
       client: createClient(
         '1. 我想喝水。\n- 请给我水。\n3. 我想喝水。',
-        request => {
+        (request, options) => {
           upstreamRequest = request;
+          upstreamOptions = options;
         }
       ),
       model: 'compatible-model'
@@ -66,6 +101,7 @@ describe('Communication AI helper', function() {
     expect(result.candidates).to.deep.equal(['我想喝水。', '请给我水。']);
     expect(result.isOfflineFallback).to.equal(false);
     expect(upstreamRequest.model).to.equal('compatible-model');
+    expect(upstreamOptions).to.deep.equal({ maxRetries: 0 });
   });
 
   it('reports provider token usage before returning a parsed result', async function() {
@@ -164,14 +200,63 @@ describe('Communication AI helper', function() {
     expect(normalizeCommunicationScene('任意位置')).to.equal(null);
   });
 
-  it('parses JSON resegmentation and rejects words outside the local catalog', function() {
+  it('preserves ordered occurrences including words outside the pictogram catalog', function() {
     expect(
       parseResegmentTokens('```json\n["我", "不开心", "不存在"]\n```', [
         '我',
         '不开心',
         '喝水'
       ])
-    ).to.deep.equal(['我', '不开心']);
+    ).to.deep.equal(['我', '不开心', '不存在']);
+    expect(parseResegmentTokens('["别","打针","打针"]', ['打针']))
+      .to.deep.equal(['别', '打针', '打针']);
+    expect(parseResegmentTokens('provider error')).to.deep.equal([]);
+    expect(parseResegmentTokens('["水",null]')).to.deep.equal([]);
+  });
+
+  it('returns source-bound v2 spans without deduplication, filtering or a 12-token cutoff', async function() {
+    const tokens = ['别', '打针', '，', ...Array(13).fill('喝水'), '🙂'];
+    let request;
+    const ai = createCommunicationAi({ client: createClient(JSON.stringify({ tokens }), value => { request = value; }) });
+    const result = await ai.resegmentText({ contractVersion: 2, text: tokens.join(''), pictogramVocabulary: ['打针', '喝水'] });
+    expect(result.tokens).to.deep.equal(tokens);
+    expect(result.contractVersion).to.equal(2);
+    expect(result.sourceText).to.equal(tokens.join(''));
+    expect(result.requiresConfirmation).to.equal(true);
+    expect(result.segments[result.segments.length - 1]).to.deep.equal({ start: 30, end: 31, surface: '🙂' });
+    expect(JSON.parse(request.messages[1].content).text).to.equal(tokens.join(''));
+  });
+
+  for (const [text, tokens] of [
+    ['别打针', ['打针']],
+    ['喝水喝水', ['喝水']],
+    ['我不是不想吃饭', ['我', '想', '吃饭']],
+    ['先吃药再喝水', ['先', '喝水', '再', '吃药']],
+    ['水？', ['水']],
+    ['喝 水', ['喝', '水']]
+  ]) {
+    it(`rejects source alteration: ${text}`, async function() {
+      const ai = createCommunicationAi({ client: createClient(JSON.stringify(tokens)) });
+      try {
+        await ai.resegmentText({ text });
+        throw new Error('expected validation failure');
+      } catch (error) {
+        expect(error.status).to.equal(502);
+        expect(error.code).to.equal('AI_RESEGMENT_SOURCE_MISMATCH');
+      }
+    });
+  }
+
+  it('rejects oversized input before calling the provider instead of truncating', async function() {
+    let calls = 0;
+    const ai = createCommunicationAi({ client: createClient('[]', () => { calls += 1; }) });
+    try {
+      await ai.resegmentText({ text: '水'.repeat(121) });
+      throw new Error('expected invalid input');
+    } catch (error) {
+      expect(error.code).to.equal('AI_RESEGMENT_INVALID_SOURCE');
+    }
+    expect(calls).to.equal(0);
   });
 
   it('returns source-preserving editable Cantonese normalization', async function() {

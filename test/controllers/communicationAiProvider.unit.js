@@ -4,6 +4,8 @@ const chai = require('chai');
 const {
   createCommunicationAiProvider,
   normalizeTimeout,
+  resolveResegmentRequestOptions,
+  resolveSentenceRequestOptions,
   resolveCommunicationAiConfig
 } = require('../../api/helpers/communicationAiProvider');
 
@@ -34,6 +36,55 @@ function createSdkHarness() {
 }
 
 describe('Communication AI provider configuration', function () {
+  it('reuses sentence provider limits without inheriting the tokens JSON schema', function () {
+    const inherited = JSON.stringify({ enable_thinking: false, max_tokens: 2048, response_format: 'json_schema' });
+    expect(resolveSentenceRequestOptions(undefined, inherited)).to.deep.equal({
+      enable_thinking: false, max_tokens: 2048, response_format: { type: 'text' }
+    });
+    expect(resolveSentenceRequestOptions('{"max_tokens":512,"thinking_mode":"disabled"}', inherited))
+      .to.deep.equal({ max_tokens: 512, thinking: { type: 'disabled' } });
+    expect(resolveSentenceRequestOptions(undefined, undefined)).to.deep.equal({});
+    for (const raw of ['{"model":"secret"}', '{"response_format":"json_object"}', 'null']) {
+      expect(() => resolveSentenceRequestOptions(raw, inherited)).to.throw('Invalid server sentence request options')
+        .with.property('code', 'AI_SENTENCE_CONFIGURATION_INVALID');
+    }
+  });
+  it('adapts bounded server options without accepting model or message overrides', function () {
+    expect(resolveResegmentRequestOptions(undefined)).to.deep.equal({});
+    expect(resolveResegmentRequestOptions('')).to.deep.equal({});
+    expect(resolveResegmentRequestOptions(JSON.stringify({
+      enable_thinking: false, max_tokens: 2048, response_format: 'json_object'
+    }))).to.deep.equal({ enable_thinking: false, max_tokens: 2048,
+      response_format: { type: 'json_object' } });
+    expect(resolveResegmentRequestOptions('{"thinking_mode":"disabled","response_format":"text"}'))
+      .to.deep.equal({ thinking: { type: 'disabled' }, response_format: { type: 'text' } });
+    const schema = resolveResegmentRequestOptions('{"response_format":"json_schema"}').response_format;
+    expect(schema.json_schema.schema.required).to.deep.equal(['tokens']);
+    expect(schema.json_schema.schema.additionalProperties).to.equal(false);
+    expect(resolveResegmentRequestOptions('{"reasoning_effort":"high","thinking_budget":2048}'))
+      .to.deep.equal({ reasoning_effort: 'high', thinking_budget: 2048 });
+  });
+
+  it('fails closed on malformed or unbounded options without echoing their contents', function () {
+    const invalid = ['bad-secret', 'null', '[]', '{"model":"bad-secret"}',
+      '{"messages":[]}', '{"baseURL":"https://bad-secret"}', '{"stream":true}',
+      '{"max_tokens":8193}', '{"max_tokens":"2048"}', '{"max_tokens":1.5}',
+      '{"thinking_budget":127}', '{"enable_thinking":"false"}',
+      '{"reasoning_effort":"unlimited"}', '{"thinking_mode":"auto"}',
+      '{"enable_thinking":false,"thinking_mode":"disabled"}',
+      '{"enable_thinking":false,"reasoning_effort":"high"}',
+      '{"thinking_mode":"disabled","thinking_budget":2048}',
+      '{"response_format":{"type":"json_object"}}'];
+    invalid.forEach(value => {
+      try { resolveResegmentRequestOptions(value); throw new Error('expected rejection'); }
+      catch (error) {
+        expect(error.code).to.equal('AI_RESEGMENT_CONFIGURATION_INVALID');
+        expect(error.status).to.equal(503);
+        expect(error.message).not.to.include('bad-secret');
+      }
+    });
+  });
+
   it('restores PicInterpreter OpenAI-compatible environment variables', function () {
     const harness = createSdkHarness();
     const provider = createCommunicationAiProvider({

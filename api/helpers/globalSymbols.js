@@ -174,6 +174,11 @@ function createGlobalSymbolsProvider(options = {}) {
   ).trim();
   const apiV2 = normalizeBaseUrl(options.apiV2, DEFAULT_API_V2);
   const apiV1 = normalizeBaseUrl(options.apiV1, DEFAULT_API_V1);
+  // Temporary, explicit bridge for the documented public v1 API. A configured
+  // v2 key always wins; authentication failures never downgrade to anonymous.
+  const allowLegacyRuntime = options.allowLegacyRuntime === undefined
+    ? process.env.GLOBALSYMBOLS_LEGACY_RUNTIME_ENABLED === 'true'
+    : options.allowLegacyRuntime === true;
   const cacheTtlMs = normalizePositiveInteger(
     options.cacheTtlMs,
     DEFAULT_CACHE_TTL_MS
@@ -282,6 +287,41 @@ function createGlobalSymbolsProvider(options = {}) {
     };
   }
 
+  async function addSymbolsetAttribution(labels) {
+    if (!labels.some(item => item && item.picto &&
+      item.picto.symbolset_id != null && !item.picto.symbolset)) {
+      return labels;
+    }
+    // Both live v1 and v2 labels can omit the expanded symbolset object.
+    // Resolve metadata through the same authenticated API version as search.
+    const key = `${apiKey ? 'v2' : 'legacy-v1'}:symbolsets`;
+    let symbolsets = readCache(key);
+    if (!symbolsets) {
+      if (!inFlight.has(key)) {
+        const pending = Promise.resolve()
+          .then(() => http.get(`${apiKey ? apiV2 : apiV1}/symbolsets`, {
+            timeout: timeoutMs, headers: {
+              Accept: 'application/json',
+              ...(apiKey ? { 'X-Api-Key': apiKey } : {})
+            }
+          }))
+          .then(response => Array.isArray(response && response.data) ? response.data : [])
+          .catch(() => [])
+          .then(value => { writeCache(key, value); return value; })
+          .finally(() => { if (inFlight.get(key) === pending) inFlight.delete(key); });
+        inFlight.set(key, pending);
+      }
+      symbolsets = await inFlight.get(key);
+    }
+    const byId = new Map(symbolsets.filter(item => item && item.id != null)
+      .map(item => [String(item.id), item]));
+    return labels.map(item => {
+      if (!item || !item.picto || item.picto.symbolset) return item;
+      const symbolset = byId.get(String(item.picto.symbolset_id));
+      return symbolset ? { ...item, picto: { ...item.picto, symbolset } } : item;
+    });
+  }
+
   async function searchLabels({ query, language, limit = MAX_RESULTS } = {}) {
     const normalizedQuery = normalizeQuery(query);
     if (!normalizedQuery) return [];
@@ -296,22 +336,23 @@ function createGlobalSymbolsProvider(options = {}) {
       normalizedLimit,
       false
     );
-    return labels
+    return (await addSymbolsetAttribution(labels))
       .map(normalizeLabel)
       .filter(Boolean)
       .slice(0, normalizedLimit);
   }
 
   async function searchRuntimePictograms({ token, query, locale, limit = 4 }) {
-    if (!apiKey || !proxySecret) return [];
+    if ((!apiKey && !allowLegacyRuntime) || !proxySecret) return [];
     const normalizedQuery = normalizeQuery(query);
     if (!normalizedQuery) return [];
-    const labels = await requestLabels(
+    let labels = await requestLabels(
       normalizedQuery,
       normalizeLanguage(locale),
-      Math.min(4, normalizePositiveInteger(limit, 4)),
-      true
+      Math.min(MAX_RESULTS, normalizePositiveInteger(limit, 4)),
+      !allowLegacyRuntime
     );
+    labels = await addSymbolsetAttribution(labels);
     return labels
       .map(normalizeLabel)
       .filter(item => item && item.pictogramAttribution)
@@ -364,7 +405,8 @@ function createGlobalSymbolsProvider(options = {}) {
   }
 
   return {
-    configured: Boolean(apiKey && proxySecret),
+    configured: Boolean((apiKey || allowLegacyRuntime) && proxySecret),
+    mode: apiKey ? 'v2' : allowLegacyRuntime ? 'legacy-v1' : 'disabled',
     compatibilityConfigured: Boolean(proxySecret),
     loadImage,
     searchLabels,

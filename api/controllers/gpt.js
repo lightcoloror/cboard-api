@@ -1,6 +1,9 @@
 const { createCommunicationAi } = require('../helpers/communicationAi');
+const { validateResegmentSource } = require('../helpers/resegmentationContract');
 const {
-  createCommunicationAiProvider
+  createCommunicationAiProvider,
+  resolveResegmentRequestOptions,
+  resolveSentenceRequestOptions
 } = require('../helpers/communicationAiProvider');
 const {
   createCommunicationPictogramGenerationProvider
@@ -115,12 +118,14 @@ async function recordCommunicationAiUsage(req, provider, event) {
   }
 }
 
-function getCommunicationAi(req) {
+function getCommunicationAi(req, resegmentRequestOptions, sentenceRequestOptions) {
   const provider = getCommunicationAiProvider();
   return provider
     ? createCommunicationAi({
         client: provider.client,
         model: provider.model,
+        resegmentRequestOptions,
+        sentenceRequestOptions,
         onUsage: event => recordCommunicationAiUsage(req, provider, event)
       })
     : null;
@@ -256,6 +261,7 @@ function sendCommunicationAiError(res, error) {
   const status = error && Number.isInteger(error.status) ? error.status : 502;
   return res.status(status).json({
     error: {
+      ...(error && error.code ? { code: error.code } : {}),
       message: (error && error.message) || 'Communication AI request failed'
     }
   });
@@ -267,15 +273,18 @@ function setCommunicationPrivateResponseHeaders(res) {
 }
 
 async function generateCommunicationSentences(req, res) {
-  const communicationAi = getCommunicationAi(req);
-  if (!communicationAi) {
-    return sendCommunicationAiError(res, {
-      status: 503,
-      message: 'Communication AI is not configured'
-    });
-  }
-
+  setCommunicationPrivateResponseHeaders(res);
   try {
+    const options = resolveSentenceRequestOptions(
+      process.env.AI_SENTENCE_REQUEST_OPTIONS, process.env.AI_RESEGMENT_REQUEST_OPTIONS
+    );
+    const communicationAi = getCommunicationAi(req, undefined, options);
+    if (!communicationAi) {
+      return sendCommunicationAiError(res, {
+        status: 503,
+        message: 'Communication AI is not configured'
+      });
+    }
     if (req.careUsage) req.careUsage.markProviderStarted();
     return res
       .status(200)
@@ -314,15 +323,30 @@ async function generateCommunicationPictogram(req, res) {
 }
 
 async function resegmentCommunicationText(req, res) {
-  const communicationAi = getCommunicationAi(req);
-  if (!communicationAi) {
+  setCommunicationPrivateResponseHeaders(res);
+  if (!validateResegmentSource(req.body && req.body.text)) {
     return sendCommunicationAiError(res, {
-      status: 503,
-      message: 'Communication AI is not configured'
+      status: 400,
+      code: 'AI_RESEGMENT_INVALID_SOURCE',
+      message: 'text must contain 1-120 Unicode code points'
     });
   }
-
+  if (req.body.contractVersion !== undefined && ![1, 2].includes(req.body.contractVersion)) {
+    return sendCommunicationAiError(res, {
+      status: 400,
+      code: 'AI_RESEGMENT_UNSUPPORTED_VERSION',
+      message: 'Unsupported resegmentation contract'
+    });
+  }
   try {
+    const options = resolveResegmentRequestOptions(process.env.AI_RESEGMENT_REQUEST_OPTIONS);
+    const communicationAi = getCommunicationAi(req, options);
+    if (!communicationAi) {
+      return sendCommunicationAiError(res, {
+        status: 503,
+        message: 'Communication AI is not configured'
+      });
+    }
     if (req.careUsage) req.careUsage.markProviderStarted();
     return res.status(200).json(await communicationAi.resegmentText(req.body));
   } catch (error) {

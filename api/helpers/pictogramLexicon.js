@@ -1,10 +1,12 @@
 'use strict';
 
 const reviewedArasaac = require('../data/picinterpreterReviewedArasaac.json');
+const { getConceptEnglishQuery } = require('./pictogramSemantics');
 
 const MAX_REVIEWED_ARASAAC_IDS = 4;
 
-// English terms verified against ARASAAC provide a fallback when Chinese search has no result.
+// Retrieval hints only, never proof of semantic equivalence. Qualified concepts
+// override historical broad translations before these compatibility fallbacks.
 const ENGLISH_FALLBACKS = {
   我: 'I',
   你: 'you',
@@ -170,6 +172,8 @@ function getReviewedArasaacIds(token) {
 module.exports = {
   getReviewedArasaacIds,
   getEnglishFallback: function getEnglishFallback(token) {
+    const qualified = getConceptEnglishQuery(token);
+    if (qualified) return qualified;
     const canonicalToken = ENGLISH_FALLBACK_ALIASES[token] || token;
     return ENGLISH_FALLBACKS[canonicalToken];
   }
