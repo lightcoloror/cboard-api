@@ -48,7 +48,7 @@ describe('Communication AI helper', function() {
   it('passes bounded sentence options and never retries an uncertain provider call', async function() {
     let sent;
     const ai = createCommunicationAi({
-      client: createClient('我想喝水。\n请给我水。\n我需要喝水。', (body, options) => { sent = { body, options }; }),
+      client: createClient('我喝水。\n我的意思是：我喝水。\n我想表达的是：我喝水。', (body, options) => { sent = { body, options }; }),
       sentenceRequestOptions: { enable_thinking: false, max_tokens: 2048, response_format: { type: 'text' } }
     });
     const result = await ai.generateSentenceCandidates({ pictogramLabels: ['我', '喝水'], candidateCount: 3 });
@@ -85,7 +85,7 @@ describe('Communication AI helper', function() {
     let upstreamOptions;
     const ai = createCommunicationAi({
       client: createClient(
-        '1. 我想喝水。\n- 请给我水。\n3. 我想喝水。',
+        '1. 我想喝水。\n- 我的意思是：我想喝水。\n3. 我想喝水。',
         (request, options) => {
           upstreamRequest = request;
           upstreamOptions = options;
@@ -98,7 +98,7 @@ describe('Communication AI helper', function() {
       candidateCount: 2
     });
 
-    expect(result.candidates).to.deep.equal(['我想喝水。', '请给我水。']);
+    expect(result.candidates).to.deep.equal(['我想喝水。', '我的意思是：我想喝水。']);
     expect(result.isOfflineFallback).to.equal(false);
     expect(upstreamRequest.model).to.equal('compatible-model');
     expect(upstreamOptions).to.deep.equal({ maxRetries: 0 });
@@ -151,7 +151,7 @@ describe('Communication AI helper', function() {
   it('uses only bounded candidate feedback as preference data', async function() {
     let upstreamRequest;
     const ai = createCommunicationAi({
-      client: createClient('我想喝水。', request => {
+      client: createClient('喝水。', request => {
         upstreamRequest = request;
       })
     });
@@ -183,7 +183,7 @@ describe('Communication AI helper', function() {
   it('injects only a fixed caregiver-selected scene into the prompt', async function() {
     let upstreamRequest;
     const ai = createCommunicationAi({
-      client: createClient('我想继续训练。', request => {
+      client: createClient('继续训练。', request => {
         upstreamRequest = request;
       })
     });

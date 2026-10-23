@@ -118,6 +118,21 @@ async function main() {
     const authenticate = require('../../api/helpers/authenticateBearer').createBearerAuthenticator({ auth, sessions,
       users: { getById: id => mongoose.connection.collection('test_users').findOne({ id }) } });
 
+    // Faults are confined to this isolated test HTTP instance. All reservation,
+    // encryption, CAS and replay still use the real Mongo-backed runtime.
+    const completionFaults = new Map();
+    function meteringRuntime() {
+      const service = budgetRuntime.createRuntime();
+      const complete = service.complete;
+      return { ...service, async complete(fundingId, actor, requestId, ...args) {
+        const fault = completionFaults.get(requestId);
+        completionFaults.delete(requestId);
+        if (fault === 'before') throw new Error('synthetic completion storage failure');
+        const result = await complete(fundingId, actor, requestId, ...args);
+        if (fault === 'after') throw new Error('synthetic completion acknowledgement loss');
+        return result;
+      } };
+    }
     async function startApi() {
       const app = express(); app.use(express.json({ limit: '1mb' }));
       // These controls exist only in this test entrypoint, never in app.js.
@@ -133,7 +148,7 @@ async function main() {
           catch (_) { const error = new Error('Synthetic authentication unavailable'); error.statusCode = 503; return cb(error); }
           const error = new Error('Unauthorized'); error.statusCode = 401; return cb(error);
         } }));
-        app.use(createCareAiMetering());
+        app.use(createCareAiMetering({ runtimeFactory: meteringRuntime }));
         app.use(middleware.swaggerValidator());
         app.post('/gpt/communication/resegment', controller.resegmentCommunicationText);
         app.post('/gpt/communication/sentences', controller.generateCommunicationSentences);
@@ -172,7 +187,7 @@ async function main() {
     }
     const paths = { resegment: '/gpt/communication/resegment', sentences: '/gpt/communication/sentences' };
     const bodies = { resegment: { text: '别打针', contractVersion: 2 }, sentences: { pictogramLabels: ['我', '喝水'], candidateCount: 2 } };
-    const content = kind => kind === 'resegment' ? '{"tokens":["别","打针"]}' : '我想喝水。\n请给我水。';
+    const content = kind => kind === 'resegment' ? '{"tokens":["别","打针"]}' : '我喝水。\n我的意思是：我喝水。';
     const idFor = value => `cai_${crypto.createHash('sha256').update(value).digest('hex')}`;
     const submit = (f, kind, id, body = bodies[kind]) => send(base, paths[kind], { ...f, id, body });
     const snapshot = f => budgetRuntime.createRuntime().snapshot(f.funding, f.actor, f.profile);
@@ -294,6 +309,34 @@ async function main() {
       assert.equal(await usageCount(unknown), 0); assert.equal(provider.stats.calls - unknownCalls, 1);
       cases.push(`${kind}: real-upstream-timeout-stays-pending`);
 
+      for (const phase of ['before', 'after']) {
+        const storage = await fixture(`${kind}-storage-${phase}`);
+        const storageId = idFor(`${kind}-storage-${phase}`);
+        const storageCalls = provider.stats.calls;
+        completionFaults.set(storageId, phase);
+        provider.enqueue({ content: content(kind) });
+        const failed = await submit(storage, kind, storageId).promise;
+        assert.equal(failed.status, 503);
+        assert.equal(failed.body.code, 'AI_RESPONSE_PERSISTENCE_UNAVAILABLE');
+        await new Promise(resolve => server.close(resolve)); server = null;
+        await mongoose.disconnect(); await connect(); await startApi();
+        const retry = await submit(storage, kind, storageId).promise;
+        if (phase === 'before') {
+          assert.equal(retry.status, 409);
+          assert.equal(retry.body.code, 'AI_REQUEST_PENDING_RECONCILIATION');
+          assert.equal((await receipt(storage, storageId)).status, 'reserved');
+          assert.equal((await snapshot(storage)).weeklyUsed, 10);
+        } else {
+          assert.equal(retry.status, 200);
+          assert.equal(retry.headers['x-care-idempotency-replayed'], 'true');
+          assert.equal((await receipt(storage, storageId)).status, 'settled');
+          assert.equal((await snapshot(storage)).weeklyUsed, 3);
+        }
+        assert.equal(provider.stats.calls - storageCalls, 1);
+        assert.equal(await usageCount(storage), 1);
+        cases.push(`${kind}: completion-${phase}-write-failure-restart-no-second-execution`);
+      }
+
       const other = await fixture(`${kind}-other-family`);
       const isolatedCalls = provider.stats.calls;
       const wrongProfile = await submit({ ...f, profile: other.profile }, kind, id).promise;
@@ -313,7 +356,7 @@ async function main() {
     let sentenceRequest;
     const threeCalls = provider.stats.calls;
     const threeBody = { pictogramLabels: ['我', '喝水'], candidateCount: 3 };
-    provider.enqueue({ content: '我想喝水。\n请给我水。\n我需要喝水。', observeRequest: value => { sentenceRequest = value; } });
+    provider.enqueue({ content: '我喝水。\n我的意思是：我喝水。\n我想表达的是：我喝水。', observeRequest: value => { sentenceRequest = value; } });
     const threeId = idFor('sentence-options-three');
     const firstThree = await submit(three, 'sentences', threeId, threeBody).promise;
     assert.equal(firstThree.status, 200); assert.equal(firstThree.body.candidates.length, 3);
@@ -332,7 +375,7 @@ async function main() {
     provider.assertConsumed();
     const rawFunding = await budgetRuntime.Funding.find({}).lean().exec();
     const raw = JSON.stringify(rawFunding);
-    for (const text of ['别打针', '我想喝水', 'synthetic-care-ai-provider']) assert(!raw.includes(text), 'funding storage must remain encrypted');
+    for (const text of ['别打针', '我喝水', 'synthetic-care-ai-provider']) assert(!raw.includes(text), 'funding storage must remain encrypted');
     cases.push('funding-results-encrypted-at-rest');
     await new Promise(resolve => server.close(resolve)); server = null;
     await provider.close(); provider = null;

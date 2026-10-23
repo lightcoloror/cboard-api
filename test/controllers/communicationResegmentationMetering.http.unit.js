@@ -152,6 +152,62 @@ describe('Resegmentation HTTP family-budget settlement', function() {
       ...(reported ? { usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } } : {})
     });
   }
+  function submitSentence(id, body = { pictogramLabels: ['我', '痛'], candidateCount: 3 }) {
+    return request(app).post('/gpt/communication/sentences')
+      .set('X-Care-Funding-Id', 'synthetic-funding')
+      .set('X-Care-Profile-Id', 'synthetic-profile')
+      .set('Idempotency-Key', id).send(body);
+  }
+
+  it('replays semantic rejection and its known charge after restart without retrying the provider', async function() {
+    const upstream = nock(origin).post('/v1/chat/completions').reply(200, {
+      choices: [{ message: { content: '我好痛。\n我现在很痛。' }, finish_reason: 'stop' }],
+      usage: { total_tokens: 30 }
+    });
+    const first = await submitSentence('sentence-drift').expect(502);
+    assert.equal(first.body.error.code, 'AI_SENTENCE_MEANING_MISMATCH');
+    assert.equal((await snapshot()).weeklyUsed, 3);
+    assert.equal((await snapshot()).pendingRequests.length, 0);
+    budget = createCareBudget(budgetOptions);
+    const retry = await submitSentence('sentence-drift').expect(502);
+    assert.deepEqual(retry.body, first.body);
+    assert.equal(retry.headers['x-care-idempotency-replayed'], 'true');
+    assert.equal(recorded.length, 1); assert.equal(completionWrites, 1);
+    assert.equal((await snapshot()).weeklyUsed, 3); assert(upstream.isDone());
+  });
+
+  it('restores only faithful anonymous-person candidates with one charge after losing a completed response', async function() {
+    const body = { pictogramLabels: ['⟦P1⟧', '今晚', '不', '回家', '吃饭'], candidateCount: 3 };
+    const upstream = nock(origin).post('/v1/chat/completions', payload => {
+      assert(payload.messages[1].content.includes('⟦P1⟧'));
+      assert(!JSON.stringify(payload).includes('image'));
+      return true;
+    }).reply(200, {
+      choices: [{ message: { content: '⟦P1⟧回家不吃饭。\n⟦P1⟧今晚不回家吃饭。\n我的意思是：⟦P1⟧今晚不回家吃饭。' }, finish_reason: 'stop' }],
+      usage: { total_tokens: 30 }
+    });
+    await submitSentence('sentence-person-recovery', body).expect(200);
+    // Discard the first body, then recreate the service over the same store.
+    budget = createCareBudget(budgetOptions);
+    const retry = await submitSentence('sentence-person-recovery', body).expect(200);
+    assert.deepEqual(retry.body.candidates, ['⟦P1⟧今晚不回家吃饭。', '我的意思是：⟦P1⟧今晚不回家吃饭。']);
+    assert.equal(retry.headers['x-care-idempotency-replayed'], 'true');
+    assert.equal(recorded.length, 1); assert.equal(completionWrites, 1);
+    assert.equal((await snapshot()).weeklyUsed, 3); assert(upstream.isDone());
+    assert(!JSON.stringify(docs).includes('今晚'), 'result stays encrypted in the receipt store');
+  });
+
+  it('keeps sentence timeouts pending across service recreation and repeated clicks', async function() {
+    let count = 0;
+    const upstream = nock(origin).post('/v1/chat/completions', () => { count += 1; return true; })
+      .replyWithError({ code: 'ETIMEDOUT', message: 'synthetic timeout' });
+    await submitSentence('sentence-timeout').expect(502);
+    budget = createCareBudget(budgetOptions);
+    const retries = await Promise.all([submitSentence('sentence-timeout'), submitSentence('sentence-timeout')]);
+    retries.forEach(value => { assert.equal(value.status, 409); assert.equal(value.body.code, 'AI_REQUEST_PENDING_RECONCILIATION'); });
+    assert.equal(count, 1); assert.equal(recorded.length, 0);
+    assert.equal((await snapshot()).pendingRequests.length, 1); assert(upstream.isDone());
+  });
   async function snapshot(restart = false) {
     await Promise.all(settlements);
     return (restart ? createCareBudget(budgetOptions) : budget)
@@ -321,7 +377,7 @@ describe('Resegmentation HTTP family-budget settlement', function() {
 
   it('also replays sentence generation without another SDK request or charge', async function() {
     const upstream = nock(origin).post('/v1/chat/completions').reply(200, {
-      choices: [{ message: { content: '我想喝水。\n请给我水。' }, finish_reason: 'stop' }], usage: { total_tokens: 30 }
+      choices: [{ message: { content: '我喝水。\n我的意思是：我喝水。' }, finish_reason: 'stop' }], usage: { total_tokens: 30 }
     });
     const send = () => request(app).post('/gpt/communication/sentences')
       .set('X-Care-Funding-Id', 'synthetic-funding').set('X-Care-Profile-Id', 'synthetic-profile')
@@ -336,7 +392,7 @@ describe('Resegmentation HTTP family-budget settlement', function() {
     process.env.AI_RESEGMENT_REQUEST_OPTIONS = '{"enable_thinking":false,"max_tokens":2048,"response_format":"json_schema"}';
     const upstream = nock(origin).post('/v1/chat/completions', body =>
       body.enable_thinking === false && body.max_tokens === 2048 && body.response_format.type === 'text'
-    ).reply(200, { choices: [{ message: { content: '我想喝水。\n我需要喝水。\n请给我水。' }, finish_reason: 'stop' }], usage: { total_tokens: 30 } });
+    ).reply(200, { choices: [{ message: { content: '我喝水。\n我的意思是：我喝水。\n我想表达的是：我喝水。' }, finish_reason: 'stop' }], usage: { total_tokens: 30 } });
     const send = () => request(app).post('/gpt/communication/sentences')
       .set('X-Care-Funding-Id', 'synthetic-funding').set('X-Care-Profile-Id', 'synthetic-profile')
       .set('Idempotency-Key', 'cai_' + 'b'.repeat(64)).send({ pictogramLabels: ['我', '喝水'], candidateCount: 3 });

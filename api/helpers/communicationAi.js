@@ -6,6 +6,7 @@ const {
   readResegmentTokens,
   normalizeResegmentResponse
 } = require('./resegmentationContract');
+const { filterFaithfulExpressionCandidates } = require('./phraseSuggestions');
 
 const MAX_LABELS = 12;
 const MAX_LABEL_LENGTH = 24;
@@ -146,7 +147,7 @@ function parseSentenceCandidates(content, candidateCount) {
         line
           .replace(/^\s*(?:[-*•]|\d+[.)、])\s*/, '')
           .replace(/^['"“”]+|['"“”]+$/g, '')
-      ),
+      ).filter(line => line.length <= MAX_TEXT_LENGTH),
     count,
     MAX_TEXT_LENGTH
   );
@@ -321,6 +322,9 @@ function createCommunicationAi({ client, model, onUsage, resegmentRequestOptions
           content:
             `你是辅助失语症患者表达的 AAC 助手。根据按顺序给出的图卡标签生成 ${candidateCount} 个简短、自然且不改变原意的中文句子。` +
             '每行只输出一个候选句，不要编号、解释或添加标签中没有的新事实。' +
+            '逐字保留图卡标签的内容和次序，只补句末标点；可用“我的意思是：”或“我想表达的是：”引出原话。' +
+            '不得擅加主体、动作、愿望、程度、时间、数量或疑问；不够三个时返回较少候选，不为凑数改意。' +
+            '例如图卡“我、痛”可输出“我痛。”“我的意思是：我痛。”“我想表达的是：我痛。”，不能输出“我好痛”“我现在很痛”。' +
             '⟦P数字⟧ 是匿名人物代号，必须逐字保留，所有代号的顺序与出现次数必须与图卡标签相同，不得改写为姓名、亲属或代词。' +
             scenePrompt +
             contextPrompt +
@@ -351,8 +355,14 @@ function createCommunicationAi({ client, model, onUsage, resegmentRequestOptions
       throw error;
     }
 
+    const faithful = filterFaithfulExpressionCandidates(labels, candidates);
+    if (!faithful.length) {
+      const error = createHttpError('AI candidates did not preserve the selected expression', 502);
+      error.code = 'AI_SENTENCE_MEANING_MISMATCH';
+      throw error;
+    }
     return {
-      candidates,
+      candidates: faithful,
       provider: 'cboard-api-ai',
       isOfflineFallback: false
     };
