@@ -4,6 +4,8 @@ const valid = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(v) && !
 const positive = v => Number.isSafeInteger(v) && v > 0;
 const clone = v => JSON.parse(JSON.stringify(v));
 const PACK_TYPES = ['trial', 'initial_bonus', 'purchased'];
+const MAX_COMPLETION_BYTES = 64 * 1024;
+const COMPLETION_TTL_MS = DAY;
 // One encrypted funding document is the atomic boundary for balance, delegate
 // caps and durable receipts. No process-local lock is used for charging.
 function createCareBudget({ store, encryption, now = Date.now }) {
@@ -16,8 +18,16 @@ function createCareBudget({ store, encryption, now = Date.now }) {
   async function mutate(id, fn, context = {}) {
     for (let attempt = 0; attempt < 12; attempt++) {
       const { doc, state } = await load(id);
+      // Expired text is never replayed. Remove it at the next ledger mutation;
+      // keep the receipt tombstone so expiry can never trigger another charge.
+      let pruned = false;
+      for (const receipt of Object.values(state.receipts || {})) {
+        if (receipt.response && Number.isSafeInteger(receipt.responseExpiresAt) && now() >= receipt.responseExpiresAt) {
+          delete receipt.response; pruned = true;
+        }
+      }
       const result = fn(state);
-      if (result.noWrite) return result.value;
+      if (result.noWrite && !pruned) return result.value;
       if (Buffer.byteLength(JSON.stringify(state)) > 5 * 1024 * 1024) fail(413, 'FUNDING_CAPACITY_REACHED');
       if (await store.cas(id, doc.rev, { rev: doc.rev + 1, members: Object.keys(state.grants).filter(u => !state.grants[u].revoked), sealed: encryption.seal(state, `funding:${id}`) }, context)) return result.value;
     }
@@ -48,6 +58,26 @@ function createCareBudget({ store, encryption, now = Date.now }) {
       if (!p) fail(503, 'FUNDING_LEDGER_CORRUPT');
       p.used += amount;
     }
+  }
+  function settleReceipt(receipt, state, actualUnits, evidenceId) {
+    if (receipt.status !== 'reserved') {
+      if (receipt.actual !== actualUnits) fail(409, 'SETTLEMENT_MISMATCH');
+      return false;
+    }
+    if (actualUnits > receipt.reserved) fail(409, 'USAGE_EXCEEDS_RESERVATION');
+    let refund = receipt.reserved - actualUnits;
+    for (const a of [...receipt.allocations].reverse()) {
+      const amount = Math.min(refund, a.amount); apply(state, a, -amount); refund -= amount;
+      if (!refund) break;
+    }
+    state.delegateUsed[receipt.delegateKey] -= receipt.reserved - actualUnits;
+    receipt.status = actualUnits === 0 ? 'released' : 'settled'; receipt.actual = actualUnits; receipt.settledAt = now();
+    if (evidenceId) receipt.reconciliationEvidence = evidenceId;
+    return true;
+  }
+  function validateSettlement(actualUnits, evidenceId) {
+    if (!Number.isSafeInteger(actualUnits) || actualUnits < 0) fail(400, 'INVALID_SETTLEMENT');
+    if (evidenceId !== undefined && !valid(evidenceId)) fail(400, 'INVALID_RECONCILIATION_EVIDENCE');
   }
   return {
     // Called only by trusted provisioning, never from a client supplied plan.
@@ -132,27 +162,38 @@ function createCareBudget({ store, encryption, now = Date.now }) {
       }, { mode: 'reserve', actor, profileId });
     },
     async settle(id, actor, requestId, actualUnits, evidenceId) {
-      if (!Number.isSafeInteger(actualUnits) || actualUnits < 0) fail(400, 'INVALID_SETTLEMENT');
-      if (evidenceId !== undefined && !valid(evidenceId)) fail(400, 'INVALID_RECONCILIATION_EVIDENCE');
+      validateSettlement(actualUnits, evidenceId);
       return mutate(id, state => {
         const receipt = state.receipts[`${actor}:${requestId}`];
         if (!receipt) fail(404, 'USAGE_NOT_FOUND');
-        if (receipt.status !== 'reserved') {
-          if (receipt.actual !== actualUnits) fail(409, 'SETTLEMENT_MISMATCH');
-          return { noWrite: true, value: clone(receipt) };
+        const changed = settleReceipt(receipt, state, actualUnits, evidenceId);
+        return { noWrite: !changed, value: clone(receipt) };
+      }, { mode: 'settle', actor, requestId });
+    },
+    // Text responses only: the caller supplies its allowlisted public payload.
+    // Result + refund share one encrypted CAS, before any HTTP bytes are sent.
+    async complete(id, actor, requestId, actualUnits, response) {
+      validateSettlement(actualUnits);
+      if (!response || !Number.isInteger(response.status) || response.status < 200 || response.status > 599 ||
+          !response.body || typeof response.body !== 'object' || Array.isArray(response.body) ||
+          Object.keys(response).some(key => !['status', 'body'].includes(key))) fail(500, 'AI_RESPONSE_NOT_PERSISTABLE');
+      const serialized = JSON.stringify(response);
+      if (Buffer.byteLength(serialized) > MAX_COMPLETION_BYTES) fail(503, 'AI_RESPONSE_TOO_LARGE');
+      const completion = JSON.parse(serialized);
+      return mutate(id, state => {
+        const receipt = state.receipts[`${actor}:${requestId}`];
+        if (!receipt) fail(404, 'USAGE_NOT_FOUND');
+        if (receipt.response && JSON.stringify(receipt.response) !== serialized) fail(409, 'AI_RESPONSE_MISMATCH');
+        const settled = settleReceipt(receipt, state, actualUnits);
+        const changed = !receipt.response && receipt.responseSavedAt === undefined;
+        if (changed) {
+          receipt.response = completion;
+          receipt.responseSavedAt = now();
+          receipt.responseExpiresAt = now() + COMPLETION_TTL_MS;
         }
-        if (actualUnits > receipt.reserved) fail(409, 'USAGE_EXCEEDS_RESERVATION');
-        let refund = receipt.reserved - actualUnits;
-        for (const a of [...receipt.allocations].reverse()) {
-          const amount = Math.min(refund, a.amount); apply(state, a, -amount); refund -= amount;
-          if (!refund) break;
-        }
-        state.delegateUsed[receipt.delegateKey] -= receipt.reserved - actualUnits;
-        receipt.status = actualUnits === 0 ? 'released' : 'settled'; receipt.actual = actualUnits; receipt.settledAt = now();
-        if (evidenceId) receipt.reconciliationEvidence = evidenceId;
-        return { value: clone(receipt) };
+        return { noWrite: !settled && !changed, value: clone(receipt) };
       }, { mode: 'settle', actor, requestId });
     }
   };
 }
-module.exports = { createCareBudget, PACK_TYPES };
+module.exports = { createCareBudget, PACK_TYPES, MAX_COMPLETION_BYTES, COMPLETION_TTL_MS };

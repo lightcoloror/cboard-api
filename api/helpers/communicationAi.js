@@ -6,6 +6,7 @@ const {
   readResegmentTokens,
   normalizeResegmentResponse
 } = require('./resegmentationContract');
+const { filterFaithfulExpressionCandidates } = require('./phraseSuggestions');
 
 const MAX_LABELS = 12;
 const MAX_LABEL_LENGTH = 24;
@@ -82,7 +83,7 @@ function createHttpError(message, status) {
   return error;
 }
 
-function normalizeStringList(values, maxItems, maxLength) {
+function normalizeStringList(values, maxItems, maxLength, preserveOccurrences = false) {
   const normalized = [];
   const seen = new Set();
 
@@ -92,7 +93,7 @@ function normalizeStringList(values, maxItems, maxLength) {
       .replace(/\s+/g, ' ')
       .slice(0, maxLength);
 
-    if (!item || seen.has(item) || normalized.length >= maxItems) return;
+    if (!item || (!preserveOccurrences && seen.has(item)) || normalized.length >= maxItems) return;
 
     seen.add(item);
     normalized.push(item);
@@ -146,7 +147,7 @@ function parseSentenceCandidates(content, candidateCount) {
         line
           .replace(/^\s*(?:[-*•]|\d+[.)、])\s*/, '')
           .replace(/^['"“”]+|['"“”]+$/g, '')
-      ),
+      ).filter(line => line.length <= MAX_TEXT_LENGTH),
     count,
     MAX_TEXT_LENGTH
   );
@@ -245,7 +246,7 @@ function getResponseMessageText(message) {
     .join('\n');
 }
 
-function createCommunicationAi({ client, model, onUsage }) {
+function createCommunicationAi({ client, model, onUsage, resegmentRequestOptions = {}, sentenceRequestOptions = {} }) {
   if (!client || !client.chat || !client.chat.completions) {
     throw new TypeError(
       'Communication AI requires an OpenAI-compatible client'
@@ -270,7 +271,8 @@ function createCommunicationAi({ client, model, onUsage }) {
     const labels = normalizeStringList(
       input && input.pictogramLabels,
       MAX_LABELS,
-      MAX_LABEL_LENGTH
+      MAX_LABEL_LENGTH,
+      true
     );
     if (!labels.length) {
       throw createHttpError('pictogramLabels is required', 400);
@@ -320,6 +322,10 @@ function createCommunicationAi({ client, model, onUsage }) {
           content:
             `你是辅助失语症患者表达的 AAC 助手。根据按顺序给出的图卡标签生成 ${candidateCount} 个简短、自然且不改变原意的中文句子。` +
             '每行只输出一个候选句，不要编号、解释或添加标签中没有的新事实。' +
+            '逐字保留图卡标签的内容和次序，只补句末标点；可用“我的意思是：”或“我想表达的是：”引出原话。' +
+            '不得擅加主体、动作、愿望、程度、时间、数量或疑问；不够三个时返回较少候选，不为凑数改意。' +
+            '例如图卡“我、痛”可输出“我痛。”“我的意思是：我痛。”“我想表达的是：我痛。”，不能输出“我好痛”“我现在很痛”。' +
+            '⟦P数字⟧ 是匿名人物代号，必须逐字保留，所有代号的顺序与出现次数必须与图卡标签相同，不得改写为姓名、亲属或代词。' +
             scenePrompt +
             contextPrompt +
             feedbackPrompt
@@ -330,8 +336,9 @@ function createCommunicationAi({ client, model, onUsage }) {
         }
       ],
       max_tokens: 200,
-      temperature: 0.5
-    });
+      temperature: 0.5,
+      ...sentenceRequestOptions
+    }, { maxRetries: 0 });
     await recordResponseUsage('sentence-candidates', response);
     const candidates = parseSentenceCandidates(
       response &&
@@ -342,12 +349,20 @@ function createCommunicationAi({ client, model, onUsage }) {
       candidateCount
     );
 
-    if (!candidates.length) {
-      throw createHttpError('AI returned no sentence candidates', 502);
+    if (!candidates.length || (response.choices[0] && response.choices[0].finish_reason === 'length')) {
+      const error = createHttpError('AI returned no complete sentence candidates', 502);
+      error.code = 'AI_SENTENCE_INCOMPLETE_RESPONSE';
+      throw error;
     }
 
+    const faithful = filterFaithfulExpressionCandidates(labels, candidates);
+    if (!faithful.length) {
+      const error = createHttpError('AI candidates did not preserve the selected expression', 502);
+      error.code = 'AI_SENTENCE_MEANING_MISMATCH';
+      throw error;
+    }
     return {
-      candidates,
+      candidates: faithful,
       provider: 'cboard-api-ai',
       isOfflineFallback: false
     };
@@ -388,6 +403,7 @@ function createCommunicationAi({ client, model, onUsage }) {
             '你是中文 AAC 分词助手，只提出原文分块建议，不改写或概括。' +
             '返回严格 JSON 对象 {"tokens":["原文片段"]}，片段按顺序连接必须逐字等于原文，包括空格、标点和重复。' +
             '保留所有否定、疑问、人称、数量、时间、条件及先后；不得用近义词替换。' +
+            '⟦P数字⟧ 是匿名人物代号，每个代号必须单独作为一个完整片段原样保留，不得拆开、删除或合并。' +
             '按适合图卡的表达单位切分，完整动作和固定求助表达不要拆得过细，也不要把不同角色和动作都塞进一块。' +
             '自由否定与动作分开；保留双重否定次序，不机械拆开固定表达。' +
             '粒度示例（不是待处理输入）：我今晚不回家吃饭→{"tokens":["我","今晚","不","回家","吃饭"]}；' +
@@ -403,8 +419,9 @@ function createCommunicationAi({ client, model, onUsage }) {
         }
       ],
       max_tokens: 1024,
-      temperature: 0.1
-    });
+      temperature: 0.1,
+      ...resegmentRequestOptions
+    }, { maxRetries: 0 });
     await recordResponseUsage('resegment', response);
     const tokens = parseResegmentTokens(
       response &&

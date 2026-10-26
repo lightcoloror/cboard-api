@@ -15,7 +15,7 @@ describe('Source-preserving resegmentation HTTP contract', function() {
   let app;
   let starts;
   let events;
-  const keys = ['AI_API_KEY', 'AI_BASE_URL', 'AI_MODEL'];
+  const keys = ['AI_API_KEY', 'AI_BASE_URL', 'AI_MODEL', 'AI_RESEGMENT_REQUEST_OPTIONS'];
   const saved = {};
   const originalUsage = usage.settleAndRecordCommunicationAiUsage;
 
@@ -44,7 +44,7 @@ describe('Source-preserving resegmentation HTTP contract', function() {
       done();
     });
   });
-  beforeEach(function() { starts = 0; events = []; });
+  beforeEach(function() { starts = 0; events = []; delete process.env.AI_RESEGMENT_REQUEST_OPTIONS; });
   afterEach(function() { nock.cleanAll(); });
   after(function() {
     usage.settleAndRecordCommunicationAiUsage = originalUsage;
@@ -121,5 +121,53 @@ describe('Source-preserving resegmentation HTTP contract', function() {
     const response = await request(app).post('/gpt/communication/resegment').send({ text }).expect(200);
     expect(response.body.sourceText).to.equal(text);
     expect(response.body.segments[0].end).to.equal(120);
+  });
+
+  it('sends configured domestic-model options through the real SDK but ignores client overrides', async function() {
+    process.env.AI_RESEGMENT_REQUEST_OPTIONS = JSON.stringify({
+      enable_thinking: false, max_tokens: 2048, response_format: 'json_object'
+    });
+    let sent;
+    const upstream = nock('https://resegmentation.example.invalid')
+      .post('/v1/chat/completions', body => { sent = body; return true; })
+      .reply(200, { choices: [{ message: { content: '{"tokens":["请帮忙"]}' }, finish_reason: 'stop' }] });
+    await request(app).post('/gpt/communication/resegment').send({
+      text: '请帮忙', model: 'untrusted-model', enable_thinking: true,
+      resegmentRequestOptions: { max_tokens: 99999 }
+    }).expect(200);
+    expect(upstream.isDone()).to.equal(true);
+    expect(sent).to.include({ model: 'synthetic-model', enable_thinking: false, max_tokens: 2048 });
+    expect(sent.response_format).to.deep.equal({ type: 'json_object' });
+    expect(sent).not.to.have.property('extra_body');
+  });
+
+  it('applies a config change on the next request and still rejects changed source text', async function() {
+    process.env.AI_RESEGMENT_REQUEST_OPTIONS = '{"response_format":"json_schema"}';
+    let sent;
+    nock('https://resegmentation.example.invalid').post('/v1/chat/completions', body => {
+      sent = body; return true;
+    }).reply(200, { choices: [{ message: { content: '{"tokens":["打针"]}' }, finish_reason: 'stop' }] });
+    const response = await request(app).post('/gpt/communication/resegment').send({ text: '别打针' }).expect(502);
+    expect(sent.response_format.type).to.equal('json_schema');
+    expect(response.body.error.code).to.equal('AI_RESEGMENT_SOURCE_MISMATCH');
+  });
+
+  it('rejects invalid server options before provider-start and without leaking configuration', async function() {
+    process.env.AI_RESEGMENT_REQUEST_OPTIONS = '{"model":"secret-value"}';
+    const response = await request(app).post('/gpt/communication/resegment').send({ text: '喝水' }).expect(503);
+    expect(response.body.error.code).to.equal('AI_RESEGMENT_CONFIGURATION_INVALID');
+    expect(JSON.stringify(response.body)).not.to.include('secret-value');
+    expect(starts).to.equal(0);
+  });
+
+  it('does not silently repeat a failed paid provider call', async function() {
+    let calls = 0;
+    const upstream = nock('https://resegmentation.example.invalid')
+      .post('/v1/chat/completions').reply(() => { calls += 1; return [500, { error: { message: 'synthetic failure' } }]; });
+    await request(app).post('/gpt/communication/resegment').send({ text: '喝水' }).expect(500);
+    expect(upstream.isDone()).to.equal(true);
+    expect(calls).to.equal(1);
+    expect(starts).to.equal(1);
+    expect(events).to.have.length(0);
   });
 });

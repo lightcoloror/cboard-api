@@ -7,6 +7,7 @@ const {
 } = require('../../api/helpers/globalSymbols');
 
 const expect = chai.expect;
+const { createPictogramSearch } = require('../../api/helpers/pictogramSearch');
 
 function createV2Label(overrides = {}) {
   const { picto: pictoOverrides = {}, ...labelOverrides } = overrides;
@@ -39,6 +40,21 @@ function createV2Label(overrides = {}) {
 }
 
 describe('Global Symbols provider', function() {
+  it('retrieves a bounded pool so four unrelated labels do not hide a usable fifth image', async function() {
+    const limits=[];
+    const search=createPictogramSearch({apiKey:'unused',opensymbolsSecret:'',
+      globalSymbolsApiKey:'synthetic-test-key',globalSymbolsProxySecret:'synthetic-test-secret',
+      http:{get:async(url,options)=>{
+        if(url.includes('api.arasaac.org'))return {data:[]};
+        limits.push(options.params.limit);
+        return {data:['离家','家','停车','公园','回家'].map((text,index)=>
+          createV2Label({text,picto:{id:400+index}}))};
+      }}});
+    const result=await search.searchRuntimePictograms(['回家']);
+    expect(limits).to.deep.equal([20]);
+    expect(result.map(row=>row.pictogram.source.originalId)).to.deep.equal(['404']);
+    expect(result[0].pictogram.semantics.requiresReview).to.equal(true);
+  });
   it('uses v2 server credentials and returns signed, attributed PNG candidates', async function() {
     const calls = [];
     const provider = createGlobalSymbolsProvider({

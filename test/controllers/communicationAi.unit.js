@@ -24,8 +24,8 @@ function createClient(content, onCreate, response = {}) {
   return {
     chat: {
       completions: {
-        create: async function create(request) {
-          if (onCreate) onCreate(request);
+        create: async function create(request, options) {
+          if (onCreate) onCreate(request, options);
           return {
             choices: [{ message: { content } }],
             ...response
@@ -37,6 +37,39 @@ function createClient(content, onCreate, response = {}) {
 }
 
 describe('Communication AI helper', function() {
+  it('preserves ordered repeated person markers in the actual provider payload', async function() {
+    let sent;
+    const ai = createCommunicationAi({ client: createClient('⟦P1⟧叫⟦P2⟧找⟦P1⟧。', request => { sent = request; }) });
+    const result = await ai.generateSentenceCandidates({ pictogramLabels: ['⟦P1⟧', '叫', '⟦P2⟧', '找', '⟦P1⟧'] });
+    expect(sent.messages[1].content).to.equal('图卡标签：⟦P1⟧、叫、⟦P2⟧、找、⟦P1⟧');
+    expect(sent.messages[0].content).to.include('顺序与出现次数');
+    expect(result.candidates).to.deep.equal(['⟦P1⟧叫⟦P2⟧找⟦P1⟧。']);
+  });
+  it('passes bounded sentence options and never retries an uncertain provider call', async function() {
+    let sent;
+    const ai = createCommunicationAi({
+      client: createClient('我喝水。\n我的意思是：我喝水。\n我想表达的是：我喝水。', (body, options) => { sent = { body, options }; }),
+      sentenceRequestOptions: { enable_thinking: false, max_tokens: 2048, response_format: { type: 'text' } }
+    });
+    const result = await ai.generateSentenceCandidates({ pictogramLabels: ['我', '喝水'], candidateCount: 3 });
+    expect(result.candidates).to.have.length(3);
+    expect(sent.body).to.include({ enable_thinking: false, max_tokens: 2048 });
+    expect(sent.body.response_format).to.deep.equal({ type: 'text' });
+    expect(sent.options).to.deep.equal({ maxRetries: 0 });
+  });
+
+  it('records usage but rejects a provider-truncated sentence instead of speaking it', async function() {
+    const observed = [];
+    const ai = createCommunicationAi({
+      client: createClient('', null, { choices: [{ message: { content: '我不想' }, finish_reason: 'length' }],
+        usage: { total_tokens: 25 } }),
+      onUsage: event => observed.push(event)
+    });
+    try { await ai.generateSentenceCandidates({ pictogramLabels: ['我', '不', '吃饭'] });
+      throw new Error('expected failure');
+    } catch (error) { expect(error.code).to.equal('AI_SENTENCE_INCOMPLETE_RESPONSE'); }
+    expect(observed).to.have.length(1);
+  });
   it('bounds and de-duplicates public label input', function() {
     const labels = [' 水 ', '水'];
     for (let index = 0; index < 20; index += 1) labels.push(`词${index}`);
@@ -49,11 +82,13 @@ describe('Communication AI helper', function() {
 
   it('cleans numbered sentence candidates and respects the requested count', async function() {
     let upstreamRequest;
+    let upstreamOptions;
     const ai = createCommunicationAi({
       client: createClient(
-        '1. 我想喝水。\n- 请给我水。\n3. 我想喝水。',
-        request => {
+        '1. 我想喝水。\n- 我的意思是：我想喝水。\n3. 我想喝水。',
+        (request, options) => {
           upstreamRequest = request;
+          upstreamOptions = options;
         }
       ),
       model: 'compatible-model'
@@ -63,9 +98,10 @@ describe('Communication AI helper', function() {
       candidateCount: 2
     });
 
-    expect(result.candidates).to.deep.equal(['我想喝水。', '请给我水。']);
+    expect(result.candidates).to.deep.equal(['我想喝水。', '我的意思是：我想喝水。']);
     expect(result.isOfflineFallback).to.equal(false);
     expect(upstreamRequest.model).to.equal('compatible-model');
+    expect(upstreamOptions).to.deep.equal({ maxRetries: 0 });
   });
 
   it('reports provider token usage before returning a parsed result', async function() {
@@ -115,7 +151,7 @@ describe('Communication AI helper', function() {
   it('uses only bounded candidate feedback as preference data', async function() {
     let upstreamRequest;
     const ai = createCommunicationAi({
-      client: createClient('我想喝水。', request => {
+      client: createClient('喝水。', request => {
         upstreamRequest = request;
       })
     });
@@ -147,7 +183,7 @@ describe('Communication AI helper', function() {
   it('injects only a fixed caregiver-selected scene into the prompt', async function() {
     let upstreamRequest;
     const ai = createCommunicationAi({
-      client: createClient('我想继续训练。', request => {
+      client: createClient('继续训练。', request => {
         upstreamRequest = request;
       })
     });

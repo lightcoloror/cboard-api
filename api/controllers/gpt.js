@@ -1,7 +1,9 @@
 const { createCommunicationAi } = require('../helpers/communicationAi');
 const { validateResegmentSource } = require('../helpers/resegmentationContract');
 const {
-  createCommunicationAiProvider
+  createCommunicationAiProvider,
+  resolveResegmentRequestOptions,
+  resolveSentenceRequestOptions
 } = require('../helpers/communicationAiProvider');
 const {
   createCommunicationPictogramGenerationProvider
@@ -116,12 +118,14 @@ async function recordCommunicationAiUsage(req, provider, event) {
   }
 }
 
-function getCommunicationAi(req) {
+function getCommunicationAi(req, resegmentRequestOptions, sentenceRequestOptions) {
   const provider = getCommunicationAiProvider();
   return provider
     ? createCommunicationAi({
         client: provider.client,
         model: provider.model,
+        resegmentRequestOptions,
+        sentenceRequestOptions,
         onUsage: event => recordCommunicationAiUsage(req, provider, event)
       })
     : null;
@@ -269,15 +273,18 @@ function setCommunicationPrivateResponseHeaders(res) {
 }
 
 async function generateCommunicationSentences(req, res) {
-  const communicationAi = getCommunicationAi(req);
-  if (!communicationAi) {
-    return sendCommunicationAiError(res, {
-      status: 503,
-      message: 'Communication AI is not configured'
-    });
-  }
-
+  setCommunicationPrivateResponseHeaders(res);
   try {
+    const options = resolveSentenceRequestOptions(
+      process.env.AI_SENTENCE_REQUEST_OPTIONS, process.env.AI_RESEGMENT_REQUEST_OPTIONS
+    );
+    const communicationAi = getCommunicationAi(req, undefined, options);
+    if (!communicationAi) {
+      return sendCommunicationAiError(res, {
+        status: 503,
+        message: 'Communication AI is not configured'
+      });
+    }
     if (req.careUsage) req.careUsage.markProviderStarted();
     return res
       .status(200)
@@ -331,15 +338,15 @@ async function resegmentCommunicationText(req, res) {
       message: 'Unsupported resegmentation contract'
     });
   }
-  const communicationAi = getCommunicationAi(req);
-  if (!communicationAi) {
-    return sendCommunicationAiError(res, {
-      status: 503,
-      message: 'Communication AI is not configured'
-    });
-  }
-
   try {
+    const options = resolveResegmentRequestOptions(process.env.AI_RESEGMENT_REQUEST_OPTIONS);
+    const communicationAi = getCommunicationAi(req, options);
+    if (!communicationAi) {
+      return sendCommunicationAiError(res, {
+        status: 503,
+        message: 'Communication AI is not configured'
+      });
+    }
     if (req.careUsage) req.careUsage.markProviderStarted();
     return res.status(200).json(await communicationAi.resegmentText(req.body));
   } catch (error) {

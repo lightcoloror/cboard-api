@@ -8,6 +8,82 @@ const DEFAULT_AI_TIMEOUT_MS = 15000;
 const MIN_AI_TIMEOUT_MS = 1000;
 const MAX_AI_TIMEOUT_MS = 60000;
 
+// Adapt VKP's bounded provider options to the existing JS SDK. This is
+// server configuration, never request-body input or a model-routing override.
+function resolveResegmentRequestOptions(value) {
+  if (value === undefined || value === '') return {};
+  const invalid = () => Object.assign(
+    new Error('Invalid server resegmentation request options'),
+    { status: 503, code: 'AI_RESEGMENT_CONFIGURATION_INVALID' }
+  );
+  let raw;
+  try { raw = JSON.parse(value); } catch (_) { throw invalid(); }
+  const allowed = ['enable_thinking', 'thinking_budget', 'reasoning_effort',
+    'thinking_mode', 'max_tokens', 'response_format'];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) ||
+      Object.keys(raw).some(key => !allowed.includes(key))) throw invalid();
+  const options = {};
+  for (const key of ['max_tokens', 'thinking_budget']) {
+    if (raw[key] !== undefined) {
+      if (!Number.isInteger(raw[key]) || raw[key] < 128 || raw[key] > 8192)
+        throw invalid();
+      options[key] = raw[key];
+    }
+  }
+  if (raw.enable_thinking !== undefined) {
+    if (typeof raw.enable_thinking !== 'boolean') throw invalid();
+    options.enable_thinking = raw.enable_thinking;
+  }
+  if (raw.thinking_mode !== undefined) {
+    if (!['enabled', 'disabled'].includes(raw.thinking_mode) ||
+        raw.enable_thinking !== undefined) throw invalid();
+    options.thinking = { type: raw.thinking_mode };
+  }
+  if (raw.reasoning_effort !== undefined) {
+    if (!['low', 'medium', 'high', 'max'].includes(raw.reasoning_effort))
+      throw invalid();
+    options.reasoning_effort = raw.reasoning_effort;
+  }
+  if ((raw.enable_thinking === false || raw.thinking_mode === 'disabled') &&
+      (raw.thinking_budget !== undefined || raw.reasoning_effort !== undefined))
+    throw invalid();
+  if (raw.response_format !== undefined) {
+    if (!['text', 'json_object', 'json_schema'].includes(raw.response_format))
+      throw invalid();
+    options.response_format = { type: raw.response_format };
+    if (raw.response_format === 'json_schema') {
+      // Same tokens schema used in the frozen VKP comparison; source/order
+      // validation still happens independently in resegmentationContract.
+      options.response_format.json_schema = {
+        name: 'tuyujia_segmentation', strict: true,
+        schema: { type: 'object', properties: {
+          tokens: { type: 'array', items: { type: 'string' } }
+        }, required: ['tokens'], additionalProperties: false }
+      };
+    }
+  }
+  return options;
+}
+
+// Sentence generation shares the existing bounded provider configuration,
+// but its established wire contract is one sentence per line, not tokens JSON.
+function resolveSentenceRequestOptions(value, resegmentValue) {
+  const explicit = value !== undefined && value !== '';
+  let options;
+  try {
+    options = resolveResegmentRequestOptions(explicit ? value : resegmentValue);
+    if (explicit && options.response_format && options.response_format.type !== 'text') {
+      throw new Error('Sentence output must use the existing text contract');
+    }
+  } catch (_) {
+    throw Object.assign(new Error('Invalid server sentence request options'), {
+      status: 503, code: 'AI_SENTENCE_CONFIGURATION_INVALID'
+    });
+  }
+  if (options.response_format) options.response_format = { type: 'text' };
+  return options;
+}
+
 function normalizeText(value) {
   return String(value || '').trim();
 }
@@ -109,5 +185,7 @@ module.exports = {
   createCommunicationAiProvider,
   normalizeBaseUrl,
   normalizeTimeout,
+  resolveResegmentRequestOptions,
+  resolveSentenceRequestOptions,
   resolveCommunicationAiConfig
 };

@@ -77,4 +77,38 @@ describe('durable family and institutional weekly AI budget', () => {
     await assert.rejects(f.service.reserve('family', request('one')), e => e.code === 'FUNDING_ACCESS_DENIED');
     await assert.rejects(f.service.reserve('unknown', request('one')), e => e.code === 'FUNDING_ACCESS_DENIED');
   });
+
+  it('commits completion and settlement atomically and makes concurrent completion idempotent', async () => {
+    const f = fixture(); await setup(f); await f.service.reserve('family', request('completion'));
+    const response = { status: 200, body: { candidates: ['我想喝水'] } };
+    await Promise.all([f.service.complete('family', 'therapist', 'completion', 7, response),
+      f.service.complete('family', 'therapist', 'completion', 7, response)]);
+    const restarted = createCareBudget(f.options);
+    const duplicate = await restarted.reserve('family', request('completion'));
+    assert.deepEqual(duplicate.response, response); assert.equal(duplicate.actual, 7);
+    assert.equal((await restarted.snapshot('family', 'therapist', 'patient')).weeklyUsed, 7);
+    await assert.rejects(restarted.complete('family', 'therapist', 'completion', 7,
+      { status: 200, body: { candidates: ['different'] } }), e => e.code === 'AI_RESPONSE_MISMATCH');
+    await assert.rejects(restarted.complete('family', 'therapist', 'completion', 0, response), e => e.code === 'SETTLEMENT_MISMATCH');
+  });
+  it('rejects oversized or header-bearing results before settlement and keeps the reservation', async () => {
+    const f = fixture(); await setup(f); await f.service.reserve('family', request('oversized'));
+    await assert.rejects(f.service.complete('family', 'therapist', 'oversized', 7,
+      { status: 200, body: { text: 'x'.repeat(65536) } }), e => e.code === 'AI_RESPONSE_TOO_LARGE');
+    await assert.rejects(f.service.complete('family', 'therapist', 'oversized', 7,
+      { status: 200, body: {}, headers: { Authorization: 'synthetic-secret' } }), e => e.code === 'AI_RESPONSE_NOT_PERSISTABLE');
+    assert.equal((await f.service.snapshot('family', 'therapist', 'patient')).weeklyUsed, 20);
+    assert.equal((await f.service.snapshot('family', 'therapist', 'patient')).pendingRequests.length, 1);
+  });
+  it('removes expired completion bodies but keeps the financial receipt and never restores the body', async () => {
+    const f = fixture(); await setup(f); await f.service.reserve('family', request('expiry'));
+    const response = { status: 200, body: { candidates: ['我想喝水'] } };
+    await f.service.complete('family', 'therapist', 'expiry', 7, response);
+    f.time(2 * DAY);
+    const duplicate = await f.service.reserve('family', request('expiry'));
+    assert.equal(duplicate.status, 'settled'); assert.equal(duplicate.response, undefined);
+    await f.service.complete('family', 'therapist', 'expiry', 7, response);
+    assert.equal((await f.service.reserve('family', request('expiry'))).response, undefined);
+    assert.equal((await f.service.snapshot('family', 'therapist', 'patient')).weeklyUsed, 7);
+  });
 });
