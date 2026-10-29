@@ -155,12 +155,25 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
     },
     async context(user, body) {
       if (!store.getAccount) fail(503, 'ACCOUNT_STORE_UNAVAILABLE');
+      let expectedSelectionVersion = body && body.expectedSelectionVersion;
+      if (expectedSelectionVersion !== undefined &&
+        (!Number.isSafeInteger(expectedSelectionVersion) || expectedSelectionVersion < 0)) {
+        fail(400, 'INVALID_CONTEXT_VERSION');
+      }
       for (let attempt = 0; attempt < 8; attempt++) {
         const doc = await store.getAccount(user);
         const state = doc ? encryption.open(doc.sealed, `account:${user}`) : { selectedProfileId: null };
+        const selectionVersion = state.selectionVersion === undefined ? 0 : state.selectionVersion;
+        if (!Number.isSafeInteger(selectionVersion) || selectionVersion < 0) fail(503, 'INVALID_CONTEXT_VERSION');
         if (body !== undefined) {
+          // Account.rev also changes for favorites. Retry those unrelated CAS
+          // conflicts, but never replay an old selection over a newer intent.
+          if (expectedSelectionVersion === undefined) expectedSelectionVersion = selectionVersion;
+          if (selectionVersion !== expectedSelectionVersion) fail(409, 'CARE_CONTEXT_CHANGED');
           if (body.profileId !== null) await load(body.profileId, user);
+          if (selectionVersion === Number.MAX_SAFE_INTEGER) fail(409, 'CARE_CONTEXT_VERSION_LIMIT');
           state.selectedProfileId = body.profileId;
+          state.selectionVersion = selectionVersion + 1;
           const value = { _id: user, rev: doc ? doc.rev + 1 : 0, sealed: encryption.seal(state, `account:${user}`) };
           const accountContext = body.profileId === null ? {} : { mode: 'select-profile', profileId: body.profileId };
           if (!(doc ? await store.casAccount(user, doc.rev, value, accountContext) : await store.createAccount(value, accountContext))) continue;
@@ -168,10 +181,10 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
         if (state.selectedProfileId) {
           try { await load(state.selectedProfileId, user); } catch (e) {
             if (!['PROFILE_ACCESS_DENIED', 'FAMILY_CLOSING', 'FAMILY_CLOSED'].includes(e.code)) throw e;
-            return { selectedProfileId: null };
+            return { selectedProfileId: null, selectionVersion: state.selectionVersion === undefined ? 0 : state.selectionVersion };
           }
         }
-        return { selectedProfileId: state.selectedProfileId };
+        return { selectedProfileId: state.selectedProfileId, selectionVersion: state.selectionVersion === undefined ? 0 : state.selectionVersion };
       }
       fail(409, 'RETRY_CONCURRENT_CHANGE');
     },

@@ -665,7 +665,7 @@ paths:
         - Bearer: []
       responses:
         '200':
-          description: Selected accessible profile, or null; contains no authorization credentials
+          description: Selected accessible profile, or null, and its selectionVersion; contains no authorization credentials
     put:
       operationId: setContext
       security:
@@ -680,11 +680,18 @@ paths:
             properties:
               profileId:
                 type: string
+                x-nullable: true
+              expectedSelectionVersion:
+                type: integer
+                minimum: 0
+                description: Optional version from GET context. A conflicting selection is rejected; unrelated favorite writes do not change this version.
       responses:
         '200':
           description: Validated selection saved for this account
         '403':
           description: Profile access denied
+        '409':
+          description: CARE_CONTEXT_CHANGED - read the current selection version and retry only if this is still the user's current intent
   /care/profiles/{profileId}/entitlements:
     x-swagger-router-controller: care
     get:

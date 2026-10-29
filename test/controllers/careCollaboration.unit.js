@@ -9,14 +9,32 @@ const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringi
 const newId = () => crypto.randomBytes(16).toString('hex');
 function fixture({ atomicProfile = null } = {}) {
   const families = {}, profiles = {}, blobs = {}, accounts = {}, accountContexts = [], profileContexts = [];
-  let profileCasContextHook = null;
+  let accountCasContextHook = null, profileCasContextHook = null;
   const writes = { communicator: 0, profile: 0, atomicProfile: 0 };
   const keys = { test: crypto.randomBytes(32).toString('hex') };
   const encryption = createCareCrypto(keys, 'test');
   const store = {
     getAccount: async id => clone(accounts[id]),
-    createAccount: async (d, context = {}) => { accountContexts.push(clone(context)); if (accounts[d._id]) return false; accounts[d._id] = clone(d); return true; },
-    casAccount: async (id, rev, update, context = {}) => { accountContexts.push(clone(context)); if (accounts[id].rev !== rev) return false; accounts[id] = { ...accounts[id], ...clone(update) }; return true; },
+    createAccount: async (d, context = {}) => {
+      accountContexts.push(clone(context));
+      if (accountCasContextHook) {
+        const hook = accountCasContextHook;
+        accountCasContextHook = null;
+        await hook(d._id, context);
+      }
+      if (accounts[d._id]) return false;
+      accounts[d._id] = clone(d); return true;
+    },
+    casAccount: async (id, rev, update, context = {}) => {
+      accountContexts.push(clone(context));
+      if (accountCasContextHook) {
+        const hook = accountCasContextHook;
+        accountCasContextHook = null;
+        await hook(id, context);
+      }
+      if (accounts[id].rev !== rev) return false;
+      accounts[id] = { ...accounts[id], ...clone(update) }; return true;
+    },
     createFamily: async d => { families[d._id] = clone(d); },
     getFamily: async id => clone(families[id]),
     casFamily: async (id, rev, update) => { if ((families[id].rev || 0) !== rev) return false; families[id] = { ...families[id], ...clone(update) }; return true; },
@@ -50,6 +68,7 @@ function fixture({ atomicProfile = null } = {}) {
     read: async k => blobs[k], remove: async k => { delete blobs[k]; } };
   const service = createCareService({ store, encryption, media });
   return { service, profiles, families, blobs, accounts, accountContexts, profileContexts, encryption, store, keys, media, writes,
+    setAccountCasContextHook(hook) { accountCasContextHook = hook; },
     setProfileCasContextHook(hook) { profileCasContextHook = hook; } };
 }
 async function setup(f, user = 'familyA') {
@@ -286,6 +305,141 @@ describe('patient collaboration security and offline recovery', () => {
     await f.service.command('familyA', profile.id, { action: 'grant', operationId: newId(), member: 'reader', permissions: [] });
     assert.equal((await f.service.context('reader')).selectedProfileId, null);
   });
+  it('keeps the newer profile when an older selection reaches account CAS after it', async () => {
+    const f = fixture();
+    const { family, profile: profileA } = await setup(f);
+    const profileB = await f.service.createProfile('familyA', {
+      familyId: family.id,
+      name: '合成患者乙'
+    });
+    await f.service.context('familyA', { profileId: profileB.id });
+
+    let enterA, releaseA;
+    const aReachedPersistence = new Promise(resolve => { enterA = resolve; });
+    const allowA = new Promise(resolve => { releaseA = resolve; });
+    f.setAccountCasContextHook(async (_, context) => {
+      assert.deepEqual(context, { mode: 'select-profile', profileId: profileA.id });
+      enterA();
+      await allowA;
+    });
+
+    let older;
+    try {
+      older = f.service.context('familyA', { profileId: profileA.id });
+      await aReachedPersistence;
+      assert.deepEqual(await f.service.context('familyA', { profileId: profileB.id }), {
+        selectedProfileId: profileB.id, selectionVersion: 2
+      });
+      releaseA();
+      await assert.rejects(older, error => error.status === 409 && error.code === 'CARE_CONTEXT_CHANGED');
+      assert.deepEqual(await f.service.context('familyA'), {
+        selectedProfileId: profileB.id, selectionVersion: 2
+      });
+    } finally {
+      releaseA();
+      if (older) await older.catch(() => {});
+    }
+  });
+  it('rejects an explicitly stale selection version after B commits first', async () => {
+    const f = fixture(); const { family, profile: profileA } = await setup(f);
+    const profileB = await f.service.createProfile('familyA', { familyId: family.id, name: '合成患者乙' });
+    const initial = await f.service.context('familyA', { profileId: profileB.id });
+    let enterA, releaseA;
+    const entered = new Promise(resolve => { enterA = resolve; });
+    const released = new Promise(resolve => { releaseA = resolve; });
+    f.setAccountCasContextHook(async () => { enterA(); await released; });
+    let oldA;
+    try {
+      oldA = f.service.context('familyA', { profileId: profileA.id, expectedSelectionVersion: initial.selectionVersion });
+      await entered;
+      const selectedB = await f.service.context('familyA', { profileId: profileB.id, expectedSelectionVersion: initial.selectionVersion });
+      assert.equal(selectedB.selectionVersion, initial.selectionVersion + 1);
+      releaseA();
+      await assert.rejects(oldA, error => error.code === 'CARE_CONTEXT_CHANGED' && error.status === 409);
+      assert.deepEqual(await f.service.context('familyA'), selectedB);
+    } finally { releaseA(); if (oldA) await oldA.catch(() => {}); }
+  });
+  it('lets the still-current B retry with a fresh version after A commits first', async () => {
+    const f = fixture(); const { family, profile: profileA } = await setup(f);
+    const profileB = await f.service.createProfile('familyA', { familyId: family.id, name: '合成患者乙' });
+    const initial = await f.service.context('familyA', { profileId: profileA.id });
+    let enterB, releaseB;
+    const entered = new Promise(resolve => { enterB = resolve; });
+    const released = new Promise(resolve => { releaseB = resolve; });
+    f.setAccountCasContextHook(async () => { enterB(); await released; });
+    let pendingB;
+    try {
+      pendingB = f.service.context('familyA', { profileId: profileB.id, expectedSelectionVersion: initial.selectionVersion });
+      await entered;
+      const selectedA = await f.service.context('familyA', { profileId: profileA.id, expectedSelectionVersion: initial.selectionVersion });
+      releaseB();
+      await assert.rejects(pendingB, error => error.code === 'CARE_CONTEXT_CHANGED' && error.status === 409);
+      const latest = await f.service.context('familyA');
+      assert.deepEqual(latest, selectedA);
+      const retriedB = await f.service.context('familyA', { profileId: profileB.id, expectedSelectionVersion: latest.selectionVersion });
+      assert.equal(retriedB.selectedProfileId, profileB.id);
+      assert.equal(retriedB.selectionVersion, latest.selectionVersion + 1);
+    } finally { releaseB(); if (pendingB) await pendingB.catch(() => {}); }
+  });
+  it('protects the first account creation race with selectionVersion zero', async () => {
+    const f = fixture(); const { family, profile: profileA } = await setup(f);
+    const profileB = await f.service.createProfile('familyA', { familyId: family.id, name: '合成患者乙' });
+    let enterA, releaseA;
+    const entered = new Promise(resolve => { enterA = resolve; });
+    const released = new Promise(resolve => { releaseA = resolve; });
+    f.setAccountCasContextHook(async () => { enterA(); await released; });
+    let oldA;
+    try {
+      oldA = f.service.context('familyA', { profileId: profileA.id, expectedSelectionVersion: 0 });
+      await entered;
+      const selectedB = await f.service.context('familyA', { profileId: profileB.id, expectedSelectionVersion: 0 });
+      assert.deepEqual(selectedB, { selectedProfileId: profileB.id, selectionVersion: 1 });
+      releaseA();
+      await assert.rejects(oldA, error => error.code === 'CARE_CONTEXT_CHANGED' && error.status === 409);
+      assert.deepEqual(await f.service.context('familyA'), selectedB);
+    } finally { releaseA(); if (oldA) await oldA.catch(() => {}); }
+  });
+  it('keeps favorite account CAS independent from selectionVersion', async () => {
+    const f = fixture(); const { profile } = await setup(f);
+    const selected = await f.service.context('familyA', { profileId: profile.id });
+    const put = id => f.service.favorite('familyA', profile.id, {
+      action: 'put', resourceId: id, operationId: `${id}-put`, baseVersion: 0,
+      value: { sentence: id === 'favorite-a' ? '合成收藏甲' : '合成收藏乙' }
+    });
+    await Promise.all([put('favorite-a'), put('favorite-b')]);
+    const after = await f.service.context('familyA');
+    assert.deepEqual(after, selected);
+    assert.deepEqual((await f.service.favorites('familyA', profile.id)).items.map(item => item.id).sort(), ['favorite-a', 'favorite-b']);
+  });
+  it('rejects invalid, unauthorized and stale clear writes without crossing accounts', async () => {
+    const f = fixture(); const { family, profile: profileA } = await setup(f);
+    const profileB = await f.service.createProfile('familyA', { familyId: family.id, name: '合成患者乙' });
+    const other = await setup(f, 'familyB');
+    const selectedA = await f.service.context('familyA', { profileId: profileA.id });
+    const selectedOther = await f.service.context('familyB', { profileId: other.profile.id });
+    for (const invalid of [-1, 1.5, '1']) {
+      await assert.rejects(f.service.context('familyA', { profileId: profileB.id, expectedSelectionVersion: invalid }),
+        error => error.code === 'INVALID_CONTEXT_VERSION' && error.status === 400);
+    }
+    await assert.rejects(
+      f.service.context('familyA', { profileId: other.profile.id, expectedSelectionVersion: selectedA.selectionVersion }),
+      error => error.code === 'PROFILE_ACCESS_DENIED' && error.status === 403
+    );
+    let enterClear, releaseClear;
+    const entered = new Promise(resolve => { enterClear = resolve; });
+    const released = new Promise(resolve => { releaseClear = resolve; });
+    f.setAccountCasContextHook(async () => { enterClear(); await released; });
+    let staleClear;
+    try {
+      staleClear = f.service.context('familyA', { profileId: null, expectedSelectionVersion: selectedA.selectionVersion });
+      await entered;
+      const selectedB = await f.service.context('familyA', { profileId: profileB.id, expectedSelectionVersion: selectedA.selectionVersion });
+      releaseClear();
+      await assert.rejects(staleClear, error => error.code === 'CARE_CONTEXT_CHANGED' && error.status === 409);
+      assert.deepEqual(await f.service.context('familyA'), selectedB);
+      assert.deepEqual(await f.service.context('familyB'), selectedOther);
+    } finally { releaseClear(); if (staleClear) await staleClear.catch(() => {}); }
+  });
   it('rejects orphan profiles and invitations even when entitlements are disabled', async () => {
     const f = fixture(); const { family, profile } = await setup(f);
     const invitation = await f.service.command('familyA', profile.id, { action: 'invite', operationId: newId(), permissions: ['read'] });
@@ -329,7 +483,7 @@ describe('patient collaboration security and offline recovery', () => {
       }
       assert.deepEqual(await f.service.families('familyA'), []);
       assert.deepEqual(await f.service.profiles('familyA'), []);
-      assert.deepEqual(await f.service.context('familyA'), { selectedProfileId: null });
+      assert.deepEqual(await f.service.context('familyA'), { selectedProfileId: null, selectionVersion: 1 });
     }
   });
   it('reloads authorization when ownership changes between profile load and CAS', async () => {
