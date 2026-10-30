@@ -7,6 +7,21 @@ const clone = value => JSON.parse(JSON.stringify(value));
 const permissions = ['read', 'library.edit', 'preferences.edit', 'members.manage'];
 const fail = (status, code) => { const e = new Error(code); e.status = status; e.code = code; throw e; };
 const validId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
+function validateBoardLayout(value, oldValue) {
+  const layout = value.layout;
+  if (oldValue && oldValue.layout && Object.keys(oldValue.layout).some(key => !['rows','columns','tileIds','cells'].includes(key))) fail(409, 'UNSUPPORTED_BOARD_LAYOUT');
+  if (oldValue && oldValue.layout && Array.isArray(oldValue.layout.cells) && (!layout || !Array.isArray(layout.cells))) {
+    fail(409, 'FIXED_BOARD_LAYOUT_REQUIRED');
+  }
+  if (!layout) return;
+  if (Object.keys(layout).some(key => !['rows','columns','tileIds','cells'].includes(key))) fail(400, 'UNSUPPORTED_BOARD_LAYOUT');
+  if (!Number.isSafeInteger(layout.rows) || !Number.isSafeInteger(layout.columns) || layout.rows < 1 || layout.columns < 1 || layout.rows * layout.columns > 2000 ||
+      !Array.isArray(layout.tileIds) || JSON.stringify(layout.tileIds) !== JSON.stringify(value.tileIds)) fail(400, 'INVALID_BOARD_LAYOUT');
+  if (layout.cells === undefined) return;
+  if (!Array.isArray(layout.cells) || layout.cells.length !== layout.rows * layout.columns) fail(400, 'INVALID_BOARD_CELLS');
+  const occupied = layout.cells.filter(id => id !== null);
+  if (occupied.length !== value.tileIds.length || new Set(occupied).size !== occupied.length || occupied.some(id => !validId(id) || !value.tileIds.includes(id))) fail(400, 'INVALID_BOARD_CELLS');
+}
 function mediaReferences(value, ids = new Set(), depth = 0) {
   if (depth > 24) fail(400, 'INVALID_VALUE_DEPTH');
   if (value && typeof value === 'object') {
@@ -240,7 +255,7 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
       const { doc, state } = await load(profileId, user);
       await checkEntitlement(doc.familyId, 'download');
       if (!Number.isSafeInteger(since) || since < -1 || since > doc.rev) fail(400, 'INVALID_CURSOR');
-      return { ...view(doc, state, user, since), ...(enforceEntitlements ? { entitlements: (await familyPolicy(doc.familyId)).rights } : {}), relationship: (state.relationships || {})[user] || null };
+      return { ...view(doc, state, user, since), capabilities: { fixedBoardLayout: 1 }, ...(enforceEntitlements ? { entitlements: (await familyPolicy(doc.familyId)).rights } : {}), relationship: (state.relationships || {})[user] || null };
     },
     async command(user, profileId, body) {
       if (!body || !validId(body.operationId)) fail(400, 'INVALID_OPERATION_ID');
@@ -324,6 +339,7 @@ function createCareService({ store, encryption, media, mediaQuota = null, now = 
             if (body.kind === 'preference' && body.resourceId === 'cardDensity' && ![2, 3, 4].includes(body.value.value)) fail(400, 'INVALID_CARD_DENSITY');
             if (body.kind === 'board' && (!Array.isArray(body.value.tileIds) || body.value.tileIds.length > 2000 ||
                 body.value.tileIds.some(v => !validId(v)) || new Set(body.value.tileIds).size !== body.value.tileIds.length)) fail(400, 'INVALID_BOARD_ORDER');
+            if (body.kind === 'board') validateBoardLayout(body.value, old && old.value);
           }
           const resource = { kind: body.kind, id: body.resourceId, version: (old ? old.version : 0) + 1,
             deleted: action === 'delete', value: action === 'delete' ? null : clone(body.value), seq: doc.rev + 1, updatedBy: user,

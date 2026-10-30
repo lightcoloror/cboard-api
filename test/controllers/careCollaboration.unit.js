@@ -83,6 +83,23 @@ async function invite(f, p, member, grant = ['read', 'library.edit', 'preference
   await f.service.accept(member, v.token); return v;
 }
 describe('patient collaboration security and offline recovery', () => {
+  it('preserves fixed layout, rejects stale clients that omit it, and validates geometry before writes', async () => {
+    const f=fixture();const {profile}=await setup(f);
+    const value={name:'合成固定板',tileIds:['a','b','c'],layout:{rows:2,columns:3,tileIds:['a','b','c'],cells:['a',null,'b',null,'c',null]}};
+    const put=(v,baseVersion=0)=>f.service.command('familyA',profile.id,{action:'put',kind:'board',resourceId:'fixed',operationId:newId(),baseVersion,value:v});
+    await put(value);
+    const before=await f.service.snapshot('familyA',profile.id);
+    assert.equal(before.capabilities.fixedBoardLayout,1);
+    await assert.rejects(()=>put({name:'old',tileIds:value.tileIds},1),e=>e.status===409&&e.code==='FIXED_BOARD_LAYOUT_REQUIRED');
+    for(const cells of [['a','a','b',null,'c',null],['a',null,'b'],['a',null,'b',null,'unknown',null]]) {
+      await assert.rejects(()=>put({...value,layout:{...value.layout,cells}},1),e=>e.status===400);
+    }
+    await assert.rejects(()=>put({...value,layout:{...value.layout,rows:2001}},1),e=>e.code==='INVALID_BOARD_LAYOUT');
+    const after=await f.service.snapshot('familyA',profile.id);
+    assert.deepEqual(after.resources,before.resources);
+    await put({...value,name:'明确修改'},1);
+    assert.deepEqual((await f.service.snapshot('familyA',profile.id)).resources[0].value.layout,value.layout);
+  });
   it('rejects noncanonical base64 before quota reservation or encrypted storage', async () => {
     const f = fixture();
     const { family, profile } = await setup(f);
