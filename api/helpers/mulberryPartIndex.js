@@ -355,6 +355,28 @@ function scoreLexicalCandidate(part, queryNorm, lowQuery) {
     }
   }
 
+  // Bounded 2-3 char CJK stem overlap fallback when no exact/subword/superstring hit exists
+  if (bestScore === 0 && queryNorm.length >= 2) {
+    const terms = [zh, ...syns].filter(t => t && t.length >= 2);
+    let maxOverlap = 0;
+    for (const term of terms) {
+      for (const gramLen of [3, 2]) {
+        if (queryNorm.length < gramLen || term.length < gramLen) continue;
+        for (let i = 0; i <= queryNorm.length - gramLen; i += 1) {
+          const gram = queryNorm.slice(i, i + gramLen);
+          if (!/^[\u4e00-\u9fff]{2,3}$/.test(gram)) continue;
+          if (term.includes(gram) && gramLen > maxOverlap) {
+            maxOverlap = gramLen;
+          }
+        }
+      }
+    }
+    if (maxOverlap >= 2) {
+      bestScore = 320 + maxOverlap * 40;
+      matchReason = 'shared_stem_zh';
+    }
+  }
+
   return { score: bestScore, matchReason };
 }
 
@@ -509,11 +531,64 @@ function decomposeConceptToMulberryParts(phrase, options = {}) {
   };
 }
 
+function gatherOpenVocabCandidates(phrase, options = {}) {
+  const cleanPhrase = normalizeText(phrase);
+  const limit = Math.max(1, Math.min(16, Number(options.limit) || 8));
+  const includeDecompose = options.includeDecompose !== false;
+
+  const searchRes = searchMulberryParts(cleanPhrase, {
+    limit,
+    queryVector: options.queryVector || null
+  });
+  const decomposition = includeDecompose
+    ? decomposeConceptToMulberryParts(cleanPhrase)
+    : { phrase: cleanPhrase, matchedParts: [], unmatchedSpans: [], recommendedTier: 'regen_from_ref' };
+
+  const byId = new Map();
+  for (const cand of searchRes.candidates) {
+    byId.set(cand.partId, cand);
+  }
+  for (const matched of decomposition.matchedParts || []) {
+    if (!byId.has(matched.partId)) {
+      const fullPart = getMulberryPart(matched.partId);
+      if (fullPart && fullPart.autoComposeAllowed) {
+        byId.set(matched.partId, {
+          partId: fullPart.partId,
+          file: fullPart.file,
+          symbolId: fullPart.symbolId,
+          zh: fullPart.zh,
+          en: fullPart.en,
+          domain: fullPart.domain,
+          partRole: fullPart.partRole,
+          trustTier: fullPart.trustTier,
+          autoComposeAllowed: fullPart.autoComposeAllowed,
+          inDefaultBoards: fullPart.inDefaultBoards,
+          tightViewBox: fullPart.tightViewBox,
+          score: 700,
+          bgeCosine: null,
+          matchReason: 'decompose_part'
+        });
+      }
+    }
+  }
+
+  const merged = Array.from(byId.values())
+    .sort((a, b) => (b.score || 0) - (a.score || 0) || a.partId.localeCompare(b.partId))
+    .slice(0, limit);
+
+  return {
+    phrase: cleanPhrase,
+    candidates: merged,
+    decomposition
+  };
+}
+
 module.exports = {
   loadMulberryPartIndex,
   getMulberryPart,
   loadCleanMulberrySvg,
   searchMulberryParts,
   decomposeConceptToMulberryParts,
+  gatherOpenVocabCandidates,
   scoreBgeInt8TopK
 };

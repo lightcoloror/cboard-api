@@ -164,7 +164,7 @@ def main():
         "partIds": part_ids,
         "scales": [round(float(x), 8) for x in scales.tolist()],
     }
-    out_meta.write_text(json.dumps(meta_doc, ensure_ascii=False) + "\n", encoding="utf-8")
+    out_meta.write_text(json.dumps(meta_doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     npz_path = audit_dir / "mulberry_bge_vectors.npz"
     with open(npz_path, "wb") as f:

@@ -15,6 +15,47 @@ const DEFAULT_FRAME_DELAYS_MS = Object.freeze([500, 450, 500, 950]);
 const MULBERRY_LICENSE = 'CC BY-SA 2.0';
 const MULBERRY_ATTRIBUTION = 'Mulberry Symbols (https://mulberrysymbols.org), CC BY-SA 2.0';
 
+const ALLOWED_RECIPE_OPS = Object.freeze([
+  'single_part',
+  'focus_part_of',
+  'locate_on',
+  'container_put',
+  'link_flow',
+  'act_with',
+  'modify_attr',
+  'negate_thought',
+  'sequence_ab',
+  'regen_only'
+]);
+
+const ALLOWED_MODIFIERS = Object.freeze([
+  'hot',
+  'cold',
+  'up',
+  'down',
+  'open',
+  'close',
+  'find',
+  'replace',
+  'clean',
+  'fold',
+  'broken',
+  'more',
+  'less'
+]);
+
+const MODIFIER_PREFIX_RULES = Object.freeze([
+  { re: /^(找|寻找)(.{1,6})$/, modifier: 'find' },
+  { re: /^(换|更换)(.{1,6})$/, modifier: 'replace' },
+  { re: /^(打开|开)(.{1,6})$/, modifier: 'open' },
+  { re: /^(关闭|关上|关|拉上|拉)(.{1,6})$/, modifier: 'close' },
+  { re: /^(调高|升高|开大)(.{1,6})$/, modifier: 'up' },
+  { re: /^(调低|降低|关小)(.{1,6})$/, modifier: 'down' },
+  { re: /^(热|温热|烧热)(.{1,6})$/, modifier: 'hot' },
+  { re: /^(冷|冰)(.{1,6})$/, modifier: 'cold' },
+  { re: /^(擦|洗|清理)(.{1,6})$/, modifier: 'clean' }
+]);
+
 const SHORTCUT_PART_IDS = Object.freeze({
   吃饭: 'rice',
   饭: 'rice',
@@ -363,6 +404,62 @@ function planSymbolComposition(rawLabel) {
     }
   }
 
+  // Pattern 4.5a: Direct verified whole-phrase library symbol match (e.g. 开灯 / 擦桌子 / 剪指甲 / 换尿不湿 / 测体温 / 洗头发)
+  const exactRes = searchMulberryParts(label, { limit: 3 });
+  const exactHit =
+    exactRes.candidates &&
+    exactRes.candidates.find(
+      c =>
+        (c.matchReason === 'exact_zh' || c.matchReason === 'exact_synonym_zh') &&
+        c.score >= 920
+    );
+  if (exactHit) {
+    return {
+      label,
+      ruleId: 'rule_exact_library_part',
+      mode: 'compose',
+      op: 'single_part',
+      head: exactHit.partId,
+      context: null,
+      modifier: null,
+      motion: 'pulse_head',
+      badgeText: '标准图符',
+      needsRegenFallback: false,
+      referencePartId: exactHit.partId,
+      regenHint: '',
+      license: MULBERRY_LICENSE,
+      attribution: MULBERRY_ATTRIBUTION,
+      sourceParts: summarizeSourceParts([exactHit.partId])
+    };
+  }
+
+  // Pattern 4.5b: Universal high-precision prefix attribute/action modifier rules (找X / 换X / 拉X / 调高X / 热X)
+  for (const rule of MODIFIER_PREFIX_RULES) {
+    const m = label.match(rule.re);
+    if (!m || !m[2]) continue;
+    const tail = m[2].trim();
+    const targetPart = tail ? resolvePartForPhrase(tail) : null;
+    if (targetPart) {
+      return {
+        label,
+        ruleId: 'rule_modify_attr',
+        mode: 'compose',
+        op: 'modify_attr',
+        head: targetPart.partId,
+        context: null,
+        modifier: rule.modifier,
+        motion: `mod_${rule.modifier}`,
+        badgeText: '拼合示意',
+        needsRegenFallback: false,
+        referencePartId: targetPart.partId,
+        regenHint: '',
+        license: MULBERRY_LICENSE,
+        attribution: MULBERRY_ATTRIBUTION,
+        sourceParts: summarizeSourceParts([targetPart.partId])
+      };
+    }
+  }
+
   // Pattern 5: General compound part decomposition fallback
   const dec = decomposeConceptToMulberryParts(label);
   if (dec.matchedParts.length >= 2 && dec.recommendedTier === 'compose_ready') {
@@ -425,6 +522,117 @@ function planSymbolComposition(rawLabel) {
     attribution: MULBERRY_ATTRIBUTION,
     sourceParts: []
   };
+}
+
+function renderModifierBadgeMarkup(modifier, frameIdx, cx = 236, cy = 104) {
+  const f = Math.max(0, Math.min(3, Number(frameIdx) || 0));
+  const dy = [0, -3, -6, -2][f];
+  const pulse = [0.92, 1.0, 1.08, 1.0][f];
+
+  switch (modifier) {
+    case 'hot':
+      return `
+        <g transform="translate(${cx}, ${cy})">
+          <rect x="-34" y="-34" width="68" height="68" rx="16" fill="#FEF2F2" stroke="#FCA5A5" stroke-width="3"/>
+          <g fill="none" stroke="#DC2626" stroke-width="5" stroke-linecap="round" transform="translate(0, ${dy})">
+            <path d="M-16 18 Q-22 6 -14 -4 Q-6 -14 -14 -22"/>
+            <path d="M0 20 Q-6 8 2 -2 Q10 -12 2 -22"/>
+            <path d="M16 18 Q10 6 18 -4 Q26 -14 18 -22"/>
+          </g>
+        </g>
+      `;
+    case 'cold':
+      return `
+        <g transform="translate(${cx}, ${cy}) scale(${pulse})">
+          <rect x="-34" y="-34" width="68" height="68" rx="16" fill="#EFF6FF" stroke="#93C5FD" stroke-width="3"/>
+          <g stroke="#0284C7" stroke-width="5" stroke-linecap="round">
+            <line x1="0" y1="-22" x2="0" y2="22"/>
+            <line x1="-19" y1="-11" x2="19" y2="11"/>
+            <line x1="-19" y1="11" x2="19" y2="-11"/>
+          </g>
+        </g>
+      `;
+    case 'up':
+    case 'more':
+      return `
+        <g transform="translate(${cx}, ${cy})">
+          <rect x="-34" y="-34" width="68" height="68" rx="16" fill="#F0FDF4" stroke="#86EFAC" stroke-width="3"/>
+          <path d="M0 ${20 + dy} L0 ${-16 + dy} M-14 ${-4 + dy} L0 ${-20 + dy} L14 ${-4 + dy}" fill="none" stroke="#16A34A" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+      `;
+    case 'down':
+    case 'less':
+      return `
+        <g transform="translate(${cx}, ${cy})">
+          <rect x="-34" y="-34" width="68" height="68" rx="16" fill="#FFF7ED" stroke="#FDBA74" stroke-width="3"/>
+          <path d="M0 ${-20 - dy} L0 ${16 - dy} M-14 ${4 - dy} L0 ${20 - dy} L14 ${4 - dy}" fill="none" stroke="#EA580C" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+      `;
+    case 'find': {
+      const scanX = [-4, 0, 5, 0][f];
+      return `
+        <g transform="translate(${cx + scanX}, ${cy})">
+          <rect x="-34" y="-34" width="68" height="68" rx="16" fill="#EFF6FF" stroke="#93C5FD" stroke-width="3"/>
+          <circle cx="-5" cy="-5" r="15" fill="#FFFFFF" stroke="#0284C7" stroke-width="5.5"/>
+          <line x1="7" y1="7" x2="21" y2="21" stroke="#1F2937" stroke-width="6.5" stroke-linecap="round"/>
+        </g>
+      `;
+    }
+    case 'replace':
+      return `
+        <g transform="translate(${cx}, ${cy}) scale(${pulse})">
+          <rect x="-34" y="-34" width="68" height="68" rx="16" fill="#F0FDF4" stroke="#93C5FD" stroke-width="3"/>
+          <path d="M-18 -8 A20 20 0 0 1 16 -12 M10 -18 L18 -10 L8 -4" fill="none" stroke="#0284C7" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M18 8 A20 20 0 0 1 -16 12 M-10 18 L-18 10 L-8 4" fill="none" stroke="#16A34A" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+      `;
+    case 'open': {
+      const spread = [0, 3, 6, 4][f];
+      return `
+        <g transform="translate(${cx}, ${cy})">
+          <rect x="-34" y="-34" width="68" height="68" rx="16" fill="#EFF6FF" stroke="#93C5FD" stroke-width="3"/>
+          <path d="M${-4 - spread} 0 L${-22 - spread} 0 M${-15 - spread} -9 L${-23 - spread} 0 L${-15 - spread} 9" fill="none" stroke="#0284C7" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M${4 + spread} 0 L${22 + spread} 0 M${15 + spread} -9 L${23 + spread} 0 L${15 + spread} 9" fill="none" stroke="#0284C7" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+      `;
+    }
+    case 'close': {
+      const squeeze = [6, 3, 0, 2][f];
+      return `
+        <g transform="translate(${cx}, ${cy})">
+          <rect x="-34" y="-34" width="68" height="68" rx="16" fill="#FFF7ED" stroke="#FDBA74" stroke-width="3"/>
+          <path d="M${-24 + squeeze} 0 L${-6 + squeeze} 0 M${-13 + squeeze} -9 L${-5 + squeeze} 0 L${-13 + squeeze} 9" fill="none" stroke="#EA580C" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M${24 - squeeze} 0 L${6 - squeeze} 0 M${13 - squeeze} -9 L${5 - squeeze} 0 L${13 - squeeze} 9" fill="none" stroke="#EA580C" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+      `;
+    }
+    case 'clean':
+      return `
+        <g transform="translate(${cx}, ${cy}) scale(${pulse})">
+          <rect x="-34" y="-34" width="68" height="68" rx="16" fill="#F0F9FF" stroke="#7DD3FC" stroke-width="3"/>
+          <path d="M-4 -22 L0 -8 L14 -4 L0 0 L-4 14 L-8 0 L-22 -4 L-8 -8 Z" fill="#F59E0B" stroke="#1F2937" stroke-width="2"/>
+          <path d="M14 4 L17 11 L24 14 L17 17 L14 24 L11 17 L4 14 L11 11 Z" fill="#0284C7"/>
+        </g>
+      `;
+    case 'fold':
+      return `
+        <g transform="translate(${cx}, ${cy}) scale(${pulse})">
+          <rect x="-34" y="-34" width="68" height="68" rx="16" fill="#FFF7ED" stroke="#FDBA74" stroke-width="3"/>
+          <path d="M-16 14 L-2 -14 L16 12" fill="none" stroke="#1F2937" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="-2" cy="-14" r="6" fill="#F59E0B" stroke="#1F2937" stroke-width="2.5"/>
+          <path d="M-16 -2 Q-2 -20 14 -4" fill="none" stroke="#EA580C" stroke-width="4" stroke-dasharray="4 3"/>
+        </g>
+      `;
+    case 'broken':
+      return `
+        <g transform="translate(${cx}, ${cy}) scale(${pulse})">
+          <rect x="-34" y="-34" width="68" height="68" rx="16" fill="#FEF2F2" stroke="#FCA5A5" stroke-width="3"/>
+          <path d="M4 -22 L-10 -2 L4 2 L-8 22" fill="none" stroke="#DC2626" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+      `;
+    default:
+      return '';
+  }
 }
 
 function buildFrameLayers(recipe, frameIdx, includeLabel) {
@@ -556,7 +764,7 @@ function buildFrameLayers(recipe, frameIdx, includeLabel) {
     `;
   }
 
-  if (recipe.op === 'act_with' && recipe.head && recipe.context) {
+  if (recipe.ruleId === 'curated_hold_umbrella' && recipe.head && recipe.context) {
     const rainOffset = [0, 6, 12, 8][f];
     const umbLift = [5, 2, 0, 0][f];
     return `
@@ -575,6 +783,28 @@ function buildFrameLayers(recipe, frameIdx, includeLabel) {
         opacity: 1.0,
         instancePrefix: slotPrefix('head')
       })}
+    `;
+  }
+
+  if (recipe.op === 'act_with' && recipe.head && recipe.context) {
+    const slideX = [0, 5, 10, 6][f];
+    const hasMod = Boolean(recipe.modifier);
+    const modifierBadge = hasMod
+      ? `<g transform="translate(238, ${72 + yShift}) scale(0.82)">${renderModifierBadgeMarkup(recipe.modifier, f, 0, 0)}</g>`
+      : '';
+    return `
+      <g>
+        ${embedCleanMulberryPart(recipe.head, 18 + slideX, 54 + yShift, 114, 124, {
+          opacity: 1.0,
+          instancePrefix: slotPrefix('head')
+        })}
+        <path d="M124 ${132 + yShift} L156 ${152 + yShift}" stroke="#0284C7" stroke-width="5.5" stroke-linecap="round" marker-end="url(#blueArrow)"/>
+        ${embedCleanMulberryPart(recipe.context, 152, (hasMod ? 108 : 92) + yShift, 124, hasMod ? 116 : 130, {
+          opacity: 1.0,
+          instancePrefix: slotPrefix('ctx')
+        })}
+        ${modifierBadge}
+      </g>
     `;
   }
 
@@ -667,6 +897,18 @@ function buildFrameLayers(recipe, frameIdx, includeLabel) {
         <line x1="90" y1="8" x2="90" y2="32" stroke="#475569" stroke-width="5"/>
         <line x1="101" y1="8" x2="101" y2="32" stroke="#475569" stroke-width="5"/>
         <line x1="112" y1="8" x2="112" y2="32" stroke="#475569" stroke-width="5"/>
+      </g>
+    `;
+  }
+
+  if (recipe.op === 'modify_attr' && recipe.head && recipe.modifier) {
+    return `
+      <g>
+        ${embedCleanMulberryPart(recipe.head, 26, 56 + yShift, 160, 158, {
+          opacity: 1.0,
+          instancePrefix: slotPrefix('head')
+        })}
+        ${renderModifierBadgeMarkup(recipe.modifier, f, 234, 134 + yShift)}
       </g>
     `;
   }
@@ -776,7 +1018,15 @@ async function composeMissingPictogram(rawLabel, options = {}) {
   const includeLabel = options.includeLabel !== false;
   const includeNoLabelPng = Boolean(options.includeNoLabelPng);
 
-  const recipe = planSymbolComposition(rawLabel);
+  const recipe =
+    options.recipe && typeof options.recipe === 'object'
+      ? {
+          ...options.recipe,
+          label: sanitizeCompositionLabel(options.recipe.label || rawLabel),
+          license: options.recipe.license || MULBERRY_LICENSE,
+          attribution: options.recipe.attribution || MULBERRY_ATTRIBUTION
+        }
+      : planSymbolComposition(rawLabel);
   const svg = renderRecipeToSvg(recipe, { frameIdx: 3, includeLabel });
 
   let pngBuffer = null;
@@ -819,6 +1069,8 @@ async function composeMissingPictogram(rawLabel, options = {}) {
 }
 
 module.exports = {
+  ALLOWED_MODIFIERS,
+  ALLOWED_RECIPE_OPS,
   COMPOSER_CANVAS_SIZE,
   DEFAULT_FRAME_DELAYS_MS,
   MAX_COMPOSITION_LABEL_LENGTH,
@@ -827,6 +1079,8 @@ module.exports = {
   composeMissingPictogram,
   escapeXml,
   planSymbolComposition,
+  renderModifierBadgeMarkup,
   renderRecipeToSvg,
-  sanitizeCompositionLabel
+  sanitizeCompositionLabel,
+  summarizeSourceParts
 };

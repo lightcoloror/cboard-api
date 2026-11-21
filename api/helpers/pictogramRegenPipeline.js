@@ -15,8 +15,10 @@ const {
 const {
   composeMissingPictogram,
   escapeXml,
+  planSymbolComposition,
   sanitizeCompositionLabel
 } = require('./pictogramComposer');
+const { shouldInvokeRecipePlanner } = require('./pictogramRecipePlanner');
 const {
   buildForbiddenConfusionsForLabel,
   verifyIconicityByBlindBackTranslation
@@ -421,7 +423,8 @@ function createTwoTierPictogramPipeline({
   vlmClient = null,
   vlmModel = '',
   cache = null,
-  vectorizer = null
+  vectorizer = null,
+  recipePlanner = null
 } = {}) {
   return {
     async resolveMissingPictogram(input = {}, context = {}) {
@@ -459,8 +462,46 @@ function createTwoTierPictogramPipeline({
         }
       }
 
-      // Stage 1: Deterministic Tier-1 Mulberry composition + micro-GIF
+      const anonymization = anonymizePersonReferenceLabel(label, input.registeredPersonNames);
+      const detRecipe = planSymbolComposition(label);
+      let plannedRecipe = detRecipe;
+      let plannerMeta = {
+        usedLlm: false,
+        skippedReason: recipePlanner ? 'deterministic_sufficient' : 'planner_not_configured',
+        fallbackReason: null,
+        candidateCount: 0,
+        latencyMs: 0,
+        usage: null
+      };
+
+      if (
+        recipePlanner &&
+        typeof recipePlanner.planOpenVocabRecipe === 'function' &&
+        (Boolean(input.forceRecipePlanner) || shouldInvokeRecipePlanner(detRecipe))
+      ) {
+        const plannerRes = await recipePlanner.planOpenVocabRecipe({
+          label,
+          sanitizedLabel: anonymization.sanitizedLabel,
+          deterministicRecipe: detRecipe,
+          force: Boolean(input.forceRecipePlanner)
+        });
+        if (plannerRes && plannerRes.recipe) {
+          plannedRecipe = plannerRes.recipe;
+        }
+        plannerMeta = {
+          usedLlm: Boolean(plannerRes && plannerRes.usedLlm),
+          skippedReason: (plannerRes && plannerRes.skippedReason) || null,
+          fallbackReason: (plannerRes && plannerRes.fallbackReason) || null,
+          negationEnforced: Boolean(plannerRes && plannerRes.negationEnforced),
+          candidateCount: Number((plannerRes && plannerRes.candidateCount) || 0),
+          latencyMs: Number((plannerRes && plannerRes.latencyMs) || 0),
+          usage: (plannerRes && plannerRes.usage) || null
+        };
+      }
+
+      // Stage 1: Tier-1 Mulberry composition + micro-GIF
       const tier1 = await composeMissingPictogram(label, {
+        recipe: plannedRecipe,
         format: 'all',
         includeLabel,
         includeNoLabelPng: true
@@ -487,6 +528,7 @@ function createTwoTierPictogramPipeline({
           noLabelPngBuffer: tier1.noLabelPngBuffer,
           svg: tier1.svg,
           recipe: tier1.recipe,
+          planner: plannerMeta,
           license: tier1.recipe.license,
           attribution: tier1.recipe.attribution,
           sourceParts: tier1.recipe.sourceParts,
@@ -496,7 +538,6 @@ function createTwoTierPictogramPipeline({
 
       // Stage 2: Privacy check + anonymization + Reference-based regeneration
       assertNoPersonalIdentityLeak(input);
-      const anonymization = anonymizePersonReferenceLabel(label, input.registeredPersonNames);
       const isAnimatedAction =
         typeof input.isAnimatedAction === 'boolean'
           ? input.isAnimatedAction
@@ -579,6 +620,7 @@ function createTwoTierPictogramPipeline({
                   svg: tier1.svg,
                   gifBytes: tier1.metrics.gifBytes
                 },
+            planner: plannerMeta,
             usage: (editRes && editRes.usage) || null,
             metrics: { totalMs: Date.now() - t0 }
           };
@@ -605,6 +647,7 @@ function createTwoTierPictogramPipeline({
         noLabelPngBuffer: tier2.noLabelPngBuffer,
         svg: tier2.svg || null,
         recipe: tier1.recipe,
+        planner: plannerMeta,
         gate,
         anonymization,
         license: 'Device-Private Generated (Ref: Mulberry CC BY-SA 2.0)',

@@ -1,5 +1,5 @@
 {
-  "version": "2026-11-21.1",
+  "version": "2026-11-21.2",
   "overrides": {
     "box_,_to.svg": {
       "zh": "拳击",
@@ -396,6 +396,90 @@
       "excludeQueries": [],
       "partRoleOverride": "medical_item",
       "reason": "Normalize MT 拐杖子 -> 拐杖"
+    },
+    "kettle.svg": {
+      "zh": "水壶",
+      "synonymsZh": ["烧水壶", "热水壶", "开水壶"],
+      "excludeQueries": ["键值", "键"],
+      "partRoleOverride": "object_entity",
+      "reason": "Fix Crowdin mistranslation 键值 -> 水壶"
+    },
+    "hot.svg": {
+      "zh": "热",
+      "synonymsZh": ["热水", "烫", "很热", "滚烫"],
+      "excludeQueries": ["热点", "Wi-Fi"],
+      "partRoleOverride": "attribute_modifier",
+      "reason": "Fix Crowdin tech mistranslation 热点 -> 热"
+    },
+    "clip_nails_,_to.svg": {
+      "zh": "剪指甲",
+      "synonymsZh": ["修指甲", "指甲剪"],
+      "excludeQueries": ["指针", "剪切指针"],
+      "partRoleOverride": "verb_action",
+      "reason": "Fix Crowdin mistranslation 剪切指针 -> 剪指甲"
+    },
+    "wipe_table_,_to.svg": {
+      "zh": "擦桌子",
+      "synonymsZh": ["抹桌子", "清理桌面"],
+      "excludeQueries": ["擦除表", "数据表"],
+      "partRoleOverride": "verb_action",
+      "reason": "Fix Crowdin mistranslation 擦除表 -> 擦桌子"
+    },
+    "arm_chair.svg": {
+      "zh": "扶手椅",
+      "synonymsZh": ["单人沙发", "靠背椅"],
+      "excludeQueries": ["手枪", "枪", "武器"],
+      "partRoleOverride": "object_entity",
+      "reason": "Fix critical Crowdin mistranslation 手枪 (arm=weapon) -> 扶手椅"
+    },
+    "fangs.svg": {
+      "zh": "獠牙",
+      "synonymsZh": ["尖牙", "毒牙"],
+      "excludeQueries": ["扇形", "扇子", "电风扇"],
+      "partRoleOverride": "object_entity",
+      "reason": "Fix Crowdin typo 扇形 -> 獠牙"
+    },
+    "change_nappy_,_to.svg": {
+      "zh": "换尿布",
+      "synonymsZh": ["换尿不湿", "换纸尿裤"],
+      "excludeQueries": [],
+      "partRoleOverride": "verb_action",
+      "reason": "Add everyday elderly/care synonym 换尿不湿"
+    },
+    "nappy.svg": {
+      "zh": "尿布",
+      "synonymsZh": ["尿不湿", "纸尿裤"],
+      "excludeQueries": [],
+      "partRoleOverride": "object_entity",
+      "reason": "Add everyday care synonym 尿不湿"
+    },
+    "shampoo_hair_,_to.svg": {
+      "zh": "洗头发",
+      "synonymsZh": ["洗头", "抹洗发水"],
+      "excludeQueries": [],
+      "partRoleOverride": "verb_action",
+      "reason": "Normalize verb label 给头发打洗发水 -> 洗头发"
+    },
+    "turn_on_light_switch_,_to.svg": {
+      "zh": "开灯",
+      "synonymsZh": ["打开灯", "开电灯", "打开灯的开关"],
+      "excludeQueries": ["关灯"],
+      "partRoleOverride": "verb_action",
+      "reason": "Normalize verbose label 打开灯的开关 -> 开灯"
+    },
+    "turn_off_light_switch_,_to.svg": {
+      "zh": "关灯",
+      "synonymsZh": ["关闭灯", "关电灯", "关闭灯的开关"],
+      "excludeQueries": ["开灯"],
+      "partRoleOverride": "verb_action",
+      "reason": "Normalize verbose label 关闭灯的开关 -> 关灯"
+    },
+    "thermometer.svg": {
+      "zh": "体温计",
+      "synonymsZh": ["测体温", "量体温", "体温表"],
+      "excludeQueries": [],
+      "partRoleOverride": "medical_item",
+      "reason": "Add direct care action aliases 测体温/量体温"
     }
   }
 }

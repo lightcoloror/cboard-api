@@ -82,7 +82,8 @@ function createPictogramCompositionRouter({
   limiter = null,
   allowClientScopeInDev = false,
   maxJsonBytes = '2mb',
-  isTier2Configured = false
+  isTier2Configured = false,
+  isRecipePlannerConfigured = false
 } = {}) {
   if (!pipeline || typeof pipeline.resolveMissingPictogram !== 'function') {
     throw new Error('pipeline with resolveMissingPictogram is required');
@@ -189,6 +190,7 @@ function createPictogramCompositionRouter({
       enabled: true,
       tier1Ready: true,
       tier2Configured: Boolean(isTier2Configured),
+      recipePlannerConfigured: Boolean(isRecipePlannerConfigured),
       cacheReady: Boolean(cache),
       partCount: loadMulberryPartIndex().parts.length
     });
@@ -304,6 +306,7 @@ function createPictogramCompositionRouter({
             label,
             scopeId: req.pictogramScopeId,
             forceRefinement: Boolean(body.forceRefinement),
+            forceRecipePlanner: Boolean(body.forceRecipePlanner),
             bypassCache: Boolean(body.bypassCache),
             isAnimatedAction: typeof body.isAnimatedAction === 'boolean' ? body.isAnimatedAction : undefined,
             includeLabel: body.includeLabel !== false,
@@ -333,6 +336,7 @@ function createPictogramCompositionRouter({
           svg: result.svg || null,
           gate: result.gate || null,
           recipe: result.recipe || null,
+          planner: result.planner || null,
           license: result.license || null,
           attribution: result.attribution || null,
           hitCount: result.hitCount || null,

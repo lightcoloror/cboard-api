@@ -6,6 +6,7 @@ const {
   createTwoTierPictogramPipeline
 } = require('./pictogramRegenPipeline');
 const { createPictogramVectorizer } = require('./pictogramVectorizer');
+const { createSymbolRecipePlanner } = require('./pictogramRecipePlanner');
 const {
   createCommunicationPictogramGenerationProvider
 } = require('./communicationPictogramGenerationProvider');
@@ -28,6 +29,13 @@ function resolveCompositionConfig(env = process.env) {
 
   const vlmModel = String(env.COMMUNICATION_PICTOGRAM_VLM_MODEL || '').trim();
 
+  const recipePlannerFlag = String(env.PICTOGRAM_COMPOSITION_RECIPE_PLANNER_ENABLED || '')
+    .trim()
+    .toLowerCase();
+  const recipePlannerEnabled = recipePlannerFlag === 'true' || recipePlannerFlag === '1';
+  const recipeModel =
+    String(env.PICTOGRAM_COMPOSITION_RECIPE_MODEL || env.AI_MODEL || '').trim() || 'gpt-4o-mini';
+
   const rawOrigins = String(env.PICTOGRAM_COMPOSITION_ALLOWED_ORIGINS || '').trim();
   const allowedOrigins = rawOrigins
     ? rawOrigins
@@ -41,6 +49,8 @@ function resolveCompositionConfig(env = process.env) {
     cacheDbPath,
     enableVectorizer,
     vlmModel,
+    recipePlannerEnabled,
+    recipeModel,
     allowedOrigins
   };
 }
@@ -76,20 +86,32 @@ function createDefaultPictogramCompositionRuntime(options = {}) {
   const vlmClient = options.vlmClient || null;
   const vlmModel = options.vlmModel !== undefined ? options.vlmModel : config.vlmModel;
 
+  let recipePlanner = options.recipePlanner || null;
+  if (!recipePlanner && options.recipeLlmClient) {
+    recipePlanner = createSymbolRecipePlanner({
+      llmClient: options.recipeLlmClient,
+      model: options.recipeModel || config.recipeModel,
+      embedQuery: options.embedQuery || null
+    });
+  }
+
   const pipeline = createTwoTierPictogramPipeline({
     imageEditClient,
     vlmClient,
     vlmModel,
     cache,
-    vectorizer
+    vectorizer,
+    recipePlanner
   });
 
   return {
     config,
     cache,
     vectorizer,
+    recipePlanner,
     pipeline,
     isTier2Configured: Boolean(imageEditClient),
+    isRecipePlannerConfigured: Boolean(recipePlanner),
     close() {
       if (cache && typeof cache.close === 'function') {
         cache.close();

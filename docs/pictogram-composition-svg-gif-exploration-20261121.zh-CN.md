@@ -1,4 +1,4 @@
-# 图语家缺词补图 SVG 拼凑、基准生图与微动图探索报告（Step 1–4 全记录）
+# 图语家缺词补图 SVG 拼凑、基准生图与微动图探索报告（Step 1–5 全记录）
 
 > 归档日期：2026-11-21 ｜ 特性分支：`feature/pictogram-composition-v2` ｜ 后端服务与前端适配双仓同步验证
 
@@ -630,3 +630,46 @@ export async function verifyIconicityByBlindBackTranslation({
 - **`cboard-api` 全仓回归**：`npm run test:unit` -> **916 passing / 6 failing**（较 Step 3 `905` 净增 Step 4 新增的 11 项全部通过；仅未改动历史测试 `test/controllers/careInitializationScript.unit.js` 的 6 项因 Windows Git Bash 缺 `python3` 命令失败，非本次修改引入）。
 - **`cboard` Jest 组件与契约单测**：`CI=true npx craco test --watchAll=false src/common/communicationSupport/composedPictogramClient.test.js src/components/Board/CommunicationSupport/MissingPictogramComposerCard.component.test.js` -> **2 suites passed, 5 tests passed (2.697s)**。
 - **诚实声明**：Step 4 路由、前端组件与矢量化器已通过本地真实 HTTP 回环、Scheme D 离线参考图矢量化及 Jest/Mocha 自动化验证；为避让工作区并行任务，尚未在 `app.js` / `swagger.yaml` / `MissingTokenQueue.component.js` 中写入挂载连线（后续干净工作区仅需 `app.use('/pictograms/v2', ...)` 4 行即可上线），且尚未执行外网真实 `images.edit` API 计费调用或真实患者临床试测；`mulberry/*.svg` 与 历史纪要库 保持 0 改动。
+
+
+---
+
+## Step 5（2026-11-21 17:07:37 | Antigravity）—— 开放词二元词干共享召回、万能视觉修饰算子与 ~75-Token `SymbolRecipe` 轻量规划器
+
+在保持 `app.js`、`api/swagger/swagger.yaml`、`api/controllers/gpt.js` 及 `cboard` 既有脏文件零修改的前提下，补齐了此前“确定性规则词外开放新词覆盖不足”的核心能力缺口：
+
+### 一、Crowdin 危险词义扩充修正与 BGE 离线全库重建
+
+1. **[mulberryPartSenseOverrides.json](../api/data/mulberryPartSenseOverrides.json)（`v2026-11-21.2`，72 条覆写）**：
+   - 新增 12 项高频照护实词修复与安全隔离：修正高危错译 `arm_chair.svg`（原标 **`手枪`** → 正义 **`扶手椅`** 并拉黑 `手枪`/`武器`）、`kettle.svg`（原标 **`键值`** → **`水壶/烧水壶/热水壶`**）、`hot.svg`（原标 **`热点`** → **`热/热水/滚烫`**）、`clip_nails_,_to.svg`（原标 **`剪切指针`** → **`剪指甲`**）、`wipe_table_,_to.svg`（原标 **`擦除表`** → **`擦桌子`**）、`fangs.svg`（原标 **`扇形`** → **`獠牙`** 并拉黑 `扇子`/`电风扇`）；同步补全 `change_nappy_to`（`换尿不湿`）、`nappy`（`尿不湿`）、`shampoo_hair_to`（`洗头发`）、`turn_on_light_switch_to`（`开灯`）、`turn_off_light_switch_to`（`关灯`）、`thermometer`（`测体温`/`量体温`）。
+2. **离线重编索引与 BGE `int8` 向量**：
+   - 固化 [buildMulberryPartBgeVectors.py](../scripts/buildMulberryPartBgeVectors.py) 为多行美化 JSON 输出（永久消除单行序列化触发密钥扫描器误报），在纯离线 CPU 环境下重跑：`totalParts: 3436`、`networkAttempts: 0`、`maxCosineErr: 0.002842`、`top3Agreement: 20/20`。
+   - 离线 BGE 实测真实召回验证：`倒热水` Top-8 直接命中 `hot`（`0.6188`）、`kettle`（`0.5486`）、`pour_to`（`0.6929`）、`water`（`0.6097`）；`调高空调` 命中 `turn_up_heat_to`（`0.7646`）；`给花浇水` 命中 `water_plants_to`（`0.828`）。
+
+### 二、开放词召回桥接、万能修饰算子与 ~75-Token `SymbolRecipe` 规划器
+
+1. **[mulberryPartIndex.js](../api/helpers/mulberryPartIndex.js)**：
+   - 新增有界 `2–3` 字中文连续词干重叠兜底（`shared_stem_zh`，`score: 400–440`，严格排在精确/子词/超集命中之后）与 `gatherOpenVocabCandidates`（融合词法 + 离线 BGE `int8` 向量 + 子词切分输出 Top-K 安全候选）。
+2. **[pictogramComposer.js](../api/helpers/pictogramComposer.js)**：
+   - 新增 `ALLOWED_RECIPE_OPS` 与 13 类通用动态/静态视觉修饰算子（`renderModifierBadgeMarkup`：`hot` 红蒸汽、`cold` 雪花、`up/down` 升降箭头、`find` 放大镜扫描、`replace` 双向替换箭头、`open/close` 开合箭头、`clean` 擦亮星花、`fold` 折叠铰链、`broken` 裂纹、`more/less`）；
+   - 新增 **全词精确图符快道（`rule_exact_library_part`）** 与 **0-Token 前缀修饰规则（`rule_modify_attr`）**，并升级通用 `act_with`（支持主客体左右构图 + 箭头 + 右上角 `modifier` 角标），`composeMissingPictogram` 支持直接渲染经校验的 `options.recipe`。
+3. **[pictogramRecipePlanner.js](../api/helpers/pictogramRecipePlanner.js)（超薄开放词配方规划器）**：
+   - `shouldInvokeRecipePlanner` 对强确定性规则与精确全库图符直接短路为 **0 LLM 调用**；
+   - 仅当触发长尾开放词或缺少现成双件规则时，将脱敏后目标词（`PERSON_1` 占位）与 Top-8 Mulberry 候选传入轻量文本模型（`max_tokens: 120`, `temperature: 0`, `response_format: json_object`），严禁产出 SVG/HTML/闲聊文本；
+   - 内置 `validatePlannedRecipe` 三重硬防线：**候选集 ID 白名单防幻觉**、**`crowdin_suspect` 隔离拒绝**、**否定极性硬纠偏**（凡以 `不想/不要/别/不/没` 开头而模型误报正向 `op` 时，强制锁回 `negate_thought`）。
+4. **全链路集成（[pictogramRegenPipeline.js](../api/helpers/pictogramRegenPipeline.js)、[pictogramCompositionRuntime.js](../api/helpers/pictogramCompositionRuntime.js)、[pictogramCompositionRouter.js](../api/helpers/pictogramCompositionRouter.js)）**：
+   - Stage 1 先跑匿名化与确定性配方规划，按需自动升级 `recipePlanner` 后进渲染；`GET /health` 暴露 `recipePlannerConfigured`，`POST /resolve` 返回完整 `planner` 遥测指标。
+
+![step5_open_vocab_8_cards_preview.png](assets/pictogram-composition-20261121/step5_open_vocab_8_cards_preview.png)
+
+| Step 5 实测开放词 LLM 配方微 GIF：`倒热水` (`46 tokens`, `12.4 KB`) | Step 5 实测 0-Token 万能算子微 GIF：`找遥控器` (`8.1 KB`) |
+| :---: | :---: |
+| ![step5_pour_hot_water.gif](assets/pictogram-composition-20261121/step5_pour_hot_water.gif) | ![step5_find_remote.gif](assets/pictogram-composition-20261121/step5_find_remote.gif) |
+
+### 三、Step 5 回归、安全扫描与证据边界
+
+- **8 词开放词产图与 BGE 实测（详见 `step5_metrics.json`（本地基准产物：`outputs/tuyujia-step5-recipe-planner-20261121/step5_metrics.json`））**：`倒热水`（真实 BGE Top-8 + LLM `46 completion_tokens` -> `act_with(kettle -> water, hot)`，`6,614 B` SVG / `12,732 B` 4 帧 `GIF89a`）、`找遥控器`（`8,309 B` GIF / `59 ms`）、`拉窗帘`（`6,916 B` GIF / `53 ms`）、`换尿不湿` / `剪指甲` / `擦桌子` / `测体温` / `洗头发`（均 **0 Token**, `40–55 ms` 热态成图）。
+- **`cboard-api` 专项 9 套件**：`npx mocha` 全跑 Step 1–5 全部 9 个单测文件 -> **53 passing (4s)**；`node ./scripts/syncPictogramSemantics.js --check` -> **Pictogram semantics copies match**。
+- **`cboard-api` 全仓单元回归**：`npm run test:unit` -> **921 passing / 6 failing**（较 Step 4 `916` 净增 Step 5 新增的 5 项全部通过；仅未改动历史测试 `test/controllers/careInitializationScript.unit.js` 的 6 项因 Windows Git Bash 缺 `python3` 命令失败，非本次修改引入）。
+- **Gitleaks v8.30.1 安全扫描**：Step 5 新增及修改的 10 个文件逐一扫描全部 **`0 leaks`**。
+- **诚实边界声明**：`createSymbolRecipePlanner` 的开放词规划端到端单测与 `倒热水` 产图演示中 `embedQuery` 使用了本地真实离线 `BAAI/bge-small-zh-v1.5` 编码向量，`llmClient` 采用确定性模拟 JSON 响应桩，尚未接入线上真实文本 LLM 计费 API，亦未重新推送至远端 `feature/pictogram-composition-v2` 分支（需用户确认后增量推送）。
