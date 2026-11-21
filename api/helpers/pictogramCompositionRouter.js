@@ -83,7 +83,9 @@ function createPictogramCompositionRouter({
   allowClientScopeInDev = false,
   maxJsonBytes = '2mb',
   isTier2Configured = false,
-  isRecipePlannerConfigured = false
+  isRecipePlannerConfigured = false,
+  embedQuery = null,
+  isBgeRuntimeReady = Boolean(embedQuery)
 } = {}) {
   if (!pipeline || typeof pipeline.resolveMissingPictogram !== 'function') {
     throw new Error('pipeline with resolveMissingPictogram is required');
@@ -191,12 +193,13 @@ function createPictogramCompositionRouter({
       tier1Ready: true,
       tier2Configured: Boolean(isTier2Configured),
       recipePlannerConfigured: Boolean(isRecipePlannerConfigured),
+      bgeRuntimeReady: Boolean(isBgeRuntimeReady),
       cacheReady: Boolean(cache),
       partCount: loadMulberryPartIndex().parts.length
     });
   });
 
-  router.get('/parts/search', (req, res) => {
+  router.get('/parts/search', async (req, res) => {
     res.set('Cache-Control', 'no-store');
     const query = String(req.query && req.query.q ? req.query.q : '').trim().slice(0, 40);
     if (!query) {
@@ -209,9 +212,24 @@ function createPictogramCompositionRouter({
     }
     const limit = clampSearchLimit(req.query && req.query.limit);
     const includeSuspect = String(req.query && req.query.includeSuspect) === 'true';
-    const results = searchMulberryParts(query, { limit, includeSuspect });
+
+    let queryVector = null;
+    if (typeof embedQuery === 'function') {
+      try {
+        queryVector = await embedQuery(query);
+      } catch (_) {
+        queryVector = null;
+      }
+    }
+
+    const results = searchMulberryParts(query, { limit, includeSuspect, queryVector });
     const decomposition = decomposeConceptToMulberryParts(query);
-    return res.status(200).json({ query, results, decomposition });
+    return res.status(200).json({
+      query,
+      bgeUsed: Boolean(queryVector),
+      results,
+      decomposition
+    });
   });
 
   router.get('/parts/:partId/svg', (req, res) => {

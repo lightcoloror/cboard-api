@@ -7,6 +7,7 @@ const {
 } = require('./pictogramRegenPipeline');
 const { createPictogramVectorizer } = require('./pictogramVectorizer');
 const { createSymbolRecipePlanner } = require('./pictogramRecipePlanner');
+const { createAutoBgeEmbedder } = require('./mulberryBgeEmbedder');
 const {
   createCommunicationPictogramGenerationProvider
 } = require('./communicationPictogramGenerationProvider');
@@ -36,6 +37,13 @@ function resolveCompositionConfig(env = process.env) {
   const recipeModel =
     String(env.PICTOGRAM_COMPOSITION_RECIPE_MODEL || env.AI_MODEL || '').trim() || 'gpt-4o-mini';
 
+  const bgeEmbedUrl = String(env.PICTOGRAM_BGE_EMBED_URL || '').trim();
+  const bgeEmbedApiKey = String(env.PICTOGRAM_BGE_EMBED_API_KEY || '').trim();
+  const bgeEmbedModel = String(env.PICTOGRAM_BGE_EMBED_MODEL || '').trim() || 'bge-small-zh-v1.5';
+  const bgeModelPath = String(env.PICTOGRAM_BGE_MODEL_PATH || '').trim();
+  const bgeDepsPath = String(env.PICTOGRAM_BGE_DEPS_PATH || '').trim();
+  const bgePythonBin = String(env.PICTOGRAM_BGE_PYTHON_BIN || '').trim() || 'python';
+
   const rawOrigins = String(env.PICTOGRAM_COMPOSITION_ALLOWED_ORIGINS || '').trim();
   const allowedOrigins = rawOrigins
     ? rawOrigins
@@ -51,6 +59,12 @@ function resolveCompositionConfig(env = process.env) {
     vlmModel,
     recipePlannerEnabled,
     recipeModel,
+    bgeEmbedUrl,
+    bgeEmbedApiKey,
+    bgeEmbedModel,
+    bgeModelPath,
+    bgeDepsPath,
+    bgePythonBin,
     allowedOrigins
   };
 }
@@ -75,6 +89,37 @@ function createDefaultPictogramCompositionRuntime(options = {}) {
       ? createPictogramVectorizer(options.vectorizerOptions || {})
       : null;
 
+  let bgeEmbedder = options.bgeEmbedder !== undefined ? options.bgeEmbedder : null;
+  if (bgeEmbedder === null && typeof options.embedQuery !== 'function' && options.bgeEmbedder !== null) {
+    const resolvedEmbedUrl =
+      options.bgeEmbedUrl !== undefined ? options.bgeEmbedUrl : config.bgeEmbedUrl;
+    const resolvedModelPath =
+      options.bgeModelPath !== undefined ? options.bgeModelPath : config.bgeModelPath;
+    const resolvedDepsPath =
+      options.bgeDepsPath !== undefined ? options.bgeDepsPath : config.bgeDepsPath;
+    const resolvedPythonBin =
+      options.bgePythonBin !== undefined ? options.bgePythonBin : config.bgePythonBin;
+
+    if (resolvedEmbedUrl || resolvedModelPath) {
+      bgeEmbedder = createAutoBgeEmbedder({
+        embedUrl: resolvedEmbedUrl,
+        embedApiKey: options.bgeEmbedApiKey !== undefined ? options.bgeEmbedApiKey : config.bgeEmbedApiKey,
+        embedModel: options.bgeEmbedModel !== undefined ? options.bgeEmbedModel : config.bgeEmbedModel,
+        modelPath: resolvedModelPath,
+        depsPath: resolvedDepsPath,
+        pythonBin: resolvedPythonBin,
+        fetchImpl: options.bgeFetchImpl
+      });
+    }
+  }
+
+  const embedQuery =
+    typeof options.embedQuery === 'function'
+      ? options.embedQuery
+      : bgeEmbedder && typeof bgeEmbedder.embed === 'function'
+      ? text => bgeEmbedder.embed(text)
+      : null;
+
   let imageEditClient = options.imageEditClient || null;
   if (!imageEditClient && options.autoWireImageProvider) {
     const provider = createCommunicationPictogramGenerationProvider({ env });
@@ -91,7 +136,7 @@ function createDefaultPictogramCompositionRuntime(options = {}) {
     recipePlanner = createSymbolRecipePlanner({
       llmClient: options.recipeLlmClient,
       model: options.recipeModel || config.recipeModel,
-      embedQuery: options.embedQuery || null
+      embedQuery
     });
   }
 
@@ -108,11 +153,17 @@ function createDefaultPictogramCompositionRuntime(options = {}) {
     config,
     cache,
     vectorizer,
+    bgeEmbedder,
+    embedQuery,
     recipePlanner,
     pipeline,
     isTier2Configured: Boolean(imageEditClient),
     isRecipePlannerConfigured: Boolean(recipePlanner),
+    isBgeRuntimeReady: Boolean(embedQuery),
     close() {
+      if (bgeEmbedder && typeof bgeEmbedder.close === 'function') {
+        bgeEmbedder.close();
+      }
       if (cache && typeof cache.close === 'function') {
         cache.close();
       }

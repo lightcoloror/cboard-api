@@ -1,5 +1,5 @@
 {
-  "version": "2026-11-21.2",
+  "version": "2026-11-21.3",
   "overrides": {
     "box_,_to.svg": {
       "zh": "拳击",
@@ -480,6 +480,97 @@
       "excludeQueries": [],
       "partRoleOverride": "medical_item",
       "reason": "Add direct care action aliases 测体温/量体温"
+    },
+    "underarm.svg": {
+      "zh": "腋下",
+      "synonymsZh": ["腋窝", "胳肢窝"],
+      "excludeQueries": ["手枪", "低手枪", "枪"],
+      "partRoleOverride": "body_part",
+      "reason": "Fix critical Crowdin mistranslation 低手枪 -> 腋下"
+    },
+    "nod_,_to.svg": {
+      "zh": "点头",
+      "synonymsZh": ["是的", "同意"],
+      "excludeQueries": ["节点", "到节点"],
+      "partRoleOverride": "verb_action",
+      "reason": "Fix tech jargon mistranslation 到节点 -> 点头"
+    },
+    "nail_file.svg": {
+      "zh": "指甲锉",
+      "synonymsZh": ["修甲锉", "美甲锉"],
+      "excludeQueries": ["文件", "指甲文件"],
+      "partRoleOverride": "object_entity",
+      "reason": "Fix homograph mistranslation 指甲文件 -> 指甲锉"
+    },
+    "bunk_beds.svg": {
+      "zh": "上下铺",
+      "synonymsZh": ["双层床", "高低床"],
+      "excludeQueries": ["掩体", "掩体床位"],
+      "partRoleOverride": "object_entity",
+      "reason": "Fix military homograph mistranslation 掩体床位 -> 上下铺"
+    },
+    "clothes_hanger.svg": {
+      "zh": "衣架",
+      "synonymsZh": ["晾衣架", "挂衣架"],
+      "excludeQueries": ["挂机", "衣服挂机"],
+      "partRoleOverride": "object_entity",
+      "reason": "Fix Crowdin mistranslation 衣服挂机 -> 衣架"
+    },
+    "computer_chair.svg": {
+      "zh": "电脑椅",
+      "synonymsZh": ["办公椅", "转椅"],
+      "excludeQueries": ["讲席", "计算机讲席"],
+      "partRoleOverride": "object_entity",
+      "reason": "Fix homograph mistranslation 计算机讲席 -> 电脑椅"
+    },
+    "maths.svg": {
+      "zh": "数学",
+      "synonymsZh": ["算术"],
+      "excludeQueries": ["数组"],
+      "partRoleOverride": "abstract_state",
+      "reason": "Fix Crowdin mistranslation 数组 -> 数学"
+    },
+    "nightgown.svg": {
+      "zh": "睡衣",
+      "synonymsZh": ["睡裙", "睡袍"],
+      "excludeQueries": ["夜晚"],
+      "partRoleOverride": "object_entity",
+      "reason": "Fix truncated exclamation 夜晚！ -> 睡衣"
+    },
+    "dip_food_,_to.svg": {
+      "zh": "蘸食物",
+      "synonymsZh": ["蘸酱", "蘸一下"],
+      "excludeQueries": ["去掉食物", "丢掉"],
+      "partRoleOverride": "verb_action",
+      "reason": "Fix inverted Crowdin mistranslation 去掉食物！ -> 蘸食物"
+    },
+    "blow_bubbles.svg": {
+      "zh": "吹泡泡",
+      "synonymsZh": ["泡泡"],
+      "excludeQueries": ["打击气泡", "打"],
+      "partRoleOverride": "verb_action",
+      "reason": "Fix literal MT 打击气泡。 -> 吹泡泡"
+    },
+    "trim_,_to.svg": {
+      "zh": "修剪",
+      "synonymsZh": ["剪短", "修整"],
+      "excludeQueries": ["文件", "修剪文件"],
+      "partRoleOverride": "verb_action",
+      "reason": "Fix Crowdin tech jargon mistranslation 修剪文件 -> 修剪"
+    },
+    "switch_access.svg": {
+      "zh": "辅助开关",
+      "synonymsZh": ["开关接入", "无障碍开关"],
+      "excludeQueries": ["交换机", "路由器"],
+      "partRoleOverride": "object_entity",
+      "reason": "Fix network switch jargon 交换机 -> 辅助开关"
+    },
+    "rice_cake.svg": {
+      "zh": "年糕",
+      "synonymsZh": ["米糕", "米饼"],
+      "excludeQueries": [],
+      "partRoleOverride": "object_entity",
+      "reason": "Normalize punctuation 大米蛋糕！ -> 年糕/米糕"
     }
   }
 }

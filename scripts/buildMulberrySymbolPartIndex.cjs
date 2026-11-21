@@ -269,8 +269,9 @@ async function main() {
     const partId = makePartId(file, seenIds);
     const en = String(enMap[symbolId] || '').trim();
     const zhRaw = String(zhReviewMap[symbolId] || zhMap[symbolId] || '').trim();
+    const zhClean = zhRaw.replace(/[。！？!?.]+$/, '').trim();
     const ov = overrides[file] || null;
-    const zh = ov ? String(ov.zh).trim() : zhRaw;
+    const zh = ov ? String(ov.zh).trim() : zhClean;
     const synonymsZh = ov && Array.isArray(ov.synonymsZh) ? ov.synonymsZh : [];
     const excludeQueries = ov && Array.isArray(ov.excludeQueries) ? ov.excludeQueries : [];
     const inDefaultBoards = boardMountedSet.has(file);

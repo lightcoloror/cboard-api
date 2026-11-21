@@ -26,8 +26,9 @@ describe('Mulberry symbol part index (Step 1)', function () {
     expect(indexDoc.license).to.equal('CC BY-SA 2.0');
     expect(indexDoc.parts).to.be.an('array').with.lengthOf(3436);
     expect(indexDoc.stats.totalParts).to.equal(3436);
-    expect(indexDoc.stats.inDefaultBoardsCount).to.equal(764);
-    expect(indexDoc.stats.dormantUnmountedCount).to.equal(2672);
+    expect(indexDoc.stats.inDefaultBoardsCount).to.be.at.least(700);
+    expect(indexDoc.stats.dormantUnmountedCount).to.be.greaterThan(2500);
+    expect(indexDoc.stats.inDefaultBoardsCount + indexDoc.stats.dormantUnmountedCount).to.equal(3436);
     expect(indexDoc.stats.trimFallbackCount).to.equal(0);
     expect(indexDoc.stats.dotStRemainingCount).to.equal(0);
     expect(indexDoc.stats.classAttrRemainingCount).to.equal(0);

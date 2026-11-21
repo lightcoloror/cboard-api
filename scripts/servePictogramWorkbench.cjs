@@ -388,13 +388,19 @@ function createWorkbenchApp({
   dbPath = ':memory:',
   imageEditClient = null,
   vlmClient = null,
-  vectorizerOptions
+  vectorizerOptions,
+  bgeModelPath,
+  bgeDepsPath,
+  bgeEmbedUrl
 } = {}) {
   const runtime = createDefaultPictogramCompositionRuntime({
     cacheDbPath: dbPath,
     imageEditClient,
     vlmClient,
-    vectorizerOptions
+    vectorizerOptions,
+    bgeModelPath,
+    bgeDepsPath,
+    bgeEmbedUrl
   });
 
   const app = express();
@@ -407,7 +413,10 @@ function createWorkbenchApp({
       requireAuth: false,
       allowClientScopeInDev: true,
       allowedOrigins: [],
-      isTier2Configured: runtime.isTier2Configured
+      isTier2Configured: runtime.isTier2Configured,
+      isRecipePlannerConfigured: runtime.isRecipePlannerConfigured,
+      embedQuery: runtime.embedQuery,
+      isBgeRuntimeReady: runtime.isBgeRuntimeReady
     })
   );
 
@@ -430,15 +439,17 @@ function createWorkbenchApp({
 
 if (require.main === module) {
   const args = process.argv.slice(2);
-  const dbFlagIdx = args.indexOf('--db');
-  const dbPath =
-    dbFlagIdx !== -1 && args[dbFlagIdx + 1]
-      ? path.resolve(args[dbFlagIdx + 1])
-      : path.join(os.tmpdir(), 'tuyujia-pictogram-workbench.sqlite');
+  const readFlag = flag => {
+    const idx = args.indexOf(flag);
+    return idx !== -1 && args[idx + 1] ? path.resolve(args[idx + 1]) : undefined;
+  };
+  const dbPath = readFlag('--db') || path.join(os.tmpdir(), 'tuyujia-pictogram-workbench.sqlite');
+  const bgeModelPath = readFlag('--bge-model');
+  const bgeDepsPath = readFlag('--bge-deps');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
   const port = Number(process.env.PORT || 4173);
-  const workbench = createWorkbenchApp({ dbPath });
+  const workbench = createWorkbenchApp({ dbPath, bgeModelPath, bgeDepsPath });
   const server = workbench.app.listen(port, '127.0.0.1', () => {
     const addr = server.address();
     console.log(`Tuyujia Pictogram Workbench listening at http://127.0.0.1:${addr.port}/ (db: ${dbPath})`);

@@ -1,4 +1,4 @@
-# 图语家缺词补图 SVG 拼凑、基准生图与微动图探索报告（Step 1–5 全记录）
+# 图语家缺词补图 SVG 拼凑、基准生图与微动图探索报告（Step 1–6 全记录）
 
 > 归档日期：2026-11-21 ｜ 特性分支：`feature/pictogram-composition-v2` ｜ 后端服务与前端适配双仓同步验证
 
@@ -673,3 +673,38 @@ export async function verifyIconicityByBlindBackTranslation({
 - **`cboard-api` 全仓单元回归**：`npm run test:unit` -> **921 passing / 6 failing**（较 Step 4 `916` 净增 Step 5 新增的 5 项全部通过；仅未改动历史测试 `test/controllers/careInitializationScript.unit.js` 的 6 项因 Windows Git Bash 缺 `python3` 命令失败，非本次修改引入）。
 - **Gitleaks v8.30.1 安全扫描**：Step 5 新增及修改的 10 个文件逐一扫描全部 **`0 leaks`**。
 - **诚实边界声明**：`createSymbolRecipePlanner` 的开放词规划端到端单测与 `倒热水` 产图演示中 `embedQuery` 使用了本地真实离线 `BAAI/bge-small-zh-v1.5` 编码向量，`llmClient` 采用确定性模拟 JSON 响应桩，尚未接入线上真实文本 LLM 计费 API，亦未重新推送至远端 `feature/pictogram-composition-v2` 分支（需用户确认后增量推送）。
+
+
+---
+
+## Step 6（2026-11-21 18:02:45 | Antigravity）—— 运行时离线 BGE 查询引擎闭环与全库 Crowdin 高危错译/标点清扫
+
+在无需人工真人盲测交互的条件下，补齐了最后一处关键离线运行断点（Node.js 运行时实时将任意新词编码为 512 维 BGE 查询向量）并完成全库未审 Crowdin 词表自动化安全扫描清洗：
+
+### 一、全库未审 Crowdin 危险错译与尾标点清扫
+
+1. **自动化扫描发现**：在 `2,503` 条未审 Crowdin 译文中筛出 `13` 项高危/极性颠倒错译及 `14` 项句末多余标点（如 `underarm.svg` 竟被译成 **`低手枪`**、`dip_food_,_to.svg` 译成语义完全反向的 **`去掉食物！`**、`nod_,_to.svg` 译成 **`到节点`**、`bunk_beds.svg` 译成 **`掩体床位`**、`switch_access.svg` 译成 **`交换机`**）。
+2. **[mulberryPartSenseOverrides.json](../api/data/mulberryPartSenseOverrides.json)（升级至 `v2026-11-21.3`，共 85 条覆写）** + **[buildMulberrySymbolPartIndex.cjs](../scripts/buildMulberrySymbolPartIndex.cjs)**：
+   - 修复上述 13 项高危词并同步加入误导词 `excludeQueries` 黑名单；
+   - 在构建脚本自动剥离非覆写译文句末 `。！？!?.`（`14` 项全清零）；
+   - 离线重建 3,436 件索引与 BGE `int8` 向量（因并行前端任务更新 `boards.json`，当前默认板挂载数为 `768`，休眠库 `2,668`，总计严守 `3,436`；`networkAttempts: 0`、`top3Agreement: 20/20`、`maxCosineErr: 0.002842`）。
+
+### 二、运行时零依赖 BGE 查询编码器与全链路接入
+
+1. **[bgeEmbedWorker.py](../scripts/bgeEmbedWorker.py)**（纯离线 CPU JSONL 常驻工作进程）：
+   - 强制注入 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`CUDA_VISIBLE_DEVICES=""` 及 `sys.addaudithook` 阻断 `socket.connect` / `socket.getaddrinfo`，并重定向库日志至 `stderr` 保证 `stdout` 纯净 JSONL 通信。
+2. **[mulberryBgeEmbedder.js](../api/helpers/mulberryBgeEmbedder.js)**（Node.js 零新增 npm 依赖接入层）：
+   - 提供 `createHttpBgeEmbedder`（兼容 OpenAI `/embeddings` 与自定义服务端点）、`createSubprocessBgeEmbedder`（懒启动守护进程 + 请求 ID 并发多路复用 + LRU 缓存 512 条 + 超时/崩溃优雅退化为 `null` 纯词法回退 + `close()` 零僵尸进程回收）及 `createAutoBgeEmbedder` 自动路由器。
+3. **运行期贯通（[pictogramCompositionRuntime.js](../api/helpers/pictogramCompositionRuntime.js)、[pictogramCompositionRouter.js](../api/helpers/pictogramCompositionRouter.js)、[servePictogramWorkbench.cjs](../scripts/servePictogramWorkbench.cjs)）**：
+   - `GET /health` 暴露 `bgeRuntimeReady`；`GET /parts/search` 自动调用 `embedQuery` 将新词融入 `searchMulberryParts(..., { queryVector })` 并返回 `bgeUsed` 标志；`recipePlanner` 同源复用实时 `embedQuery`；`servePictogramWorkbench.cjs` 支持 `--bge-model` / `--bge-deps` 直接挂起离线语义召回。
+
+### 三、Step 6 实测延迟、单测回归与安全验证
+
+- **真实离线 CPU HTTP 端到端压测（详见本地基准产物 `outputs/tuyujia-step6-bge-runtime-20261121/step6_bge_runtime_metrics.json`）**：
+  - 首查懒加载（含 PyTorch + `bge-small-zh-v1.5` 冷加载）：`倒热水` `4,357 ms`（返回 `hot` / `kettle` / `hot_drink_2` / `pour_to`）；
+  - **热态稳定查询**：`调高空调` **`24 ms`**（命中 `turn_up_heat_to`）、`把窗帘拉上` **`23 ms`**（命中 `curtains`）、`给花浇水` **`20 ms`**（命中 `water_plants_to`）；
+  - **LRU 缓存二次命中**：`调高空调` **`10 ms`**，进程无泄漏干净退出。
+- **`cboard-api` 专项 10 套件（含新增 [mulberryBgeEmbedder.unit.js](../test/controllers/mulberryBgeEmbedder.unit.js)）**：**57 passing (8s)**；`node ./scripts/syncPictogramSemantics.js --check` → **Pictogram semantics copies match**。
+- **`cboard-api` 全仓单元回归**：`npm run test:unit` → **925 passing / 6 failing**（较 Step 5 `921` 净增 Step 6 的 4 项全部通过；仅未改动 `test/controllers/careInitializationScript.unit.js` 的 6 项因 Windows Git Bash 缺 `python3` 命令失败，非本次引入）。
+- **Gitleaks v8.30.1 安全扫描**：Step 6 新增与修改全部 10 个文件 **`0 leaks`**。
+- **诚实边界声明**：本次 Step 6 代码与离线索引增量已随本报告同步推送至远端 `feature/pictogram-composition-v2` 分支；外部付费 LLM / 真人失语症患者盲看验证仍待具备条件时执行。
