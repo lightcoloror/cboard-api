@@ -1,0 +1,401 @@
+{
+  "version": "2026-11-21.1",
+  "overrides": {
+    "box_,_to.svg": {
+      "zh": "拳击",
+      "synonymsZh": ["打拳", "拳击运动"],
+      "excludeQueries": ["盒", "盒子", "箱", "箱子", "纸箱", "收纳盒", "眼镜盒", "box"],
+      "partRoleOverride": "verb_action",
+      "reason": "symbol.sport.toBox depicts two boxers, not a container box"
+    },
+    "walking_stick.svg": {
+      "zh": "手杖",
+      "synonymsZh": ["拐杖", "助行杖", "折叠拐杖"],
+      "excludeQueries": [],
+      "partRoleOverride": "medical_item",
+      "reason": "Replace literal MT 行走棍子 with standard AAC Chinese 手杖/拐杖"
+    },
+    "stick.svg": {
+      "zh": "树枝",
+      "synonymsZh": ["枝条", "木棍"],
+      "excludeQueries": ["拐杖", "手杖", "助行杖", "折叠拐杖"],
+      "partRoleOverride": "object_entity",
+      "reason": "symbol.plantsAndTrees.stick is a tree branch, never a mobility cane"
+    },
+    "boxing_day.svg": {
+      "zh": "节礼日",
+      "synonymsZh": ["拆礼物日"],
+      "excludeQueries": ["拳击", "盒", "盒子"],
+      "reason": "Fix Crowdin MT 拳击日 -> 节礼日"
+    },
+    "outbox.svg": {
+      "zh": "发件箱",
+      "synonymsZh": ["已发邮件箱"],
+      "excludeQueries": ["外箱", "纸箱", "盒子"],
+      "partRoleOverride": "object_entity",
+      "reason": "Fix Crowdin MT 外箱 -> computerIcon 发件箱"
+    },
+    "frozen_food_box.svg": {
+      "zh": "冷冻食品盒",
+      "synonymsZh": ["冻食盒", "食品盒"],
+      "excludeQueries": [],
+      "partRoleOverride": "container",
+      "reason": "Fix literal MT 冻结的食物箱"
+    },
+    "mars.svg": {
+      "zh": "火星",
+      "synonymsZh": ["火星行星"],
+      "excludeQueries": ["火车"],
+      "reason": "Fix Crowdin typo 火车 -> 火星"
+    },
+    "skunk.svg": {
+      "zh": "臭鼬",
+      "synonymsZh": [],
+      "excludeQueries": ["滑雪"],
+      "reason": "Fix Crowdin mistranslation 滑雪 -> 臭鼬"
+    },
+    "celery.svg": {
+      "zh": "芹菜",
+      "synonymsZh": ["西芹"],
+      "excludeQueries": ["拼图"],
+      "reason": "Fix Crowdin mistranslation 拼图 -> 芹菜"
+    },
+    "vase.svg": {
+      "zh": "花瓶",
+      "synonymsZh": [],
+      "excludeQueries": ["拼图"],
+      "partRoleOverride": "container",
+      "reason": "Fix Crowdin mistranslation 拼图 -> 花瓶"
+    },
+    "cupboard.svg": {
+      "zh": "橱柜",
+      "synonymsZh": ["碗柜", "柜子"],
+      "excludeQueries": ["杯", "杯子", "水杯"],
+      "partRoleOverride": "container",
+      "reason": "Fix Crowdin mistranslation 杯子 -> 橱柜"
+    },
+    "apple_pie.svg": {
+      "zh": "苹果派",
+      "synonymsZh": ["苹果馅饼"],
+      "excludeQueries": ["苹果"],
+      "reason": "Disambiguate apple pie from whole apple"
+    },
+    "file.svg": {
+      "zh": "锉刀",
+      "synonymsZh": ["金属锉"],
+      "excludeQueries": ["文件", "文件夹"],
+      "reason": "symbol.toolsWorkshop.file is a workshop rasp, not a folder"
+    },
+    "arch_lever_file.svg": {
+      "zh": "文件夹",
+      "synonymsZh": ["档案夹", "活页夹"],
+      "excludeQueries": ["锉刀"],
+      "partRoleOverride": "container",
+      "reason": "Canonical stationery binder"
+    },
+    "earrings.svg": {
+      "zh": "耳环",
+      "synonymsZh": ["耳坠", "耳饰"],
+      "excludeQueries": ["耳机", "助听器"],
+      "reason": "Fix Crowdin mistranslation 耳机 -> 耳环"
+    },
+    "headphones.svg": {
+      "zh": "耳机",
+      "synonymsZh": ["头戴式耳机", "耳罩"],
+      "excludeQueries": ["耳环"],
+      "reason": "Canonical headphones"
+    },
+    "paw.svg": {
+      "zh": "爪子",
+      "synonymsZh": ["动物爪"],
+      "excludeQueries": ["锯", "锯子"],
+      "reason": "Fix Crowdin mistranslation 锯子 -> 爪子"
+    },
+    "paw_1.svg": {
+      "zh": "爪子",
+      "synonymsZh": ["动物爪"],
+      "excludeQueries": ["锯", "锯子"],
+      "reason": "Fix Crowdin mistranslation 锯子 -> 爪子"
+    },
+    "sausages.svg": {
+      "zh": "香肠",
+      "synonymsZh": ["烤肠", "腊肠"],
+      "excludeQueries": ["锯", "锯子"],
+      "reason": "Fix Crowdin mistranslation 锯子 -> 香肠"
+    },
+    "sausages_2.svg": {
+      "zh": "香肠",
+      "synonymsZh": ["烤肠", "腊肠"],
+      "excludeQueries": ["锯", "锯子"],
+      "reason": "Fix Crowdin mistranslation 锯子 -> 香肠"
+    },
+    "pastry.svg": {
+      "zh": "糕点",
+      "synonymsZh": ["酥皮点心", "西点"],
+      "excludeQueries": ["粘贴"],
+      "reason": "Fix Crowdin mistranslation 粘贴 -> 糕点"
+    },
+    "pluto.svg": {
+      "zh": "冥王星",
+      "synonymsZh": [],
+      "excludeQueries": ["插图", "插头"],
+      "reason": "Fix Crowdin mistranslation 插图 -> 冥王星"
+    },
+    "plug_2.svg": {
+      "zh": "插头",
+      "synonymsZh": ["电源插头"],
+      "excludeQueries": ["插图"],
+      "reason": "Fix Crowdin mistranslation 插图 -> 插头"
+    },
+    "blink_,_to.svg": {
+      "zh": "眨眼",
+      "synonymsZh": ["眨眼睛"],
+      "excludeQueries": ["闪光灯", "灯泡"],
+      "partRoleOverride": "verb_action",
+      "reason": "Fix Crowdin mistranslation 闪光灯 -> 眨眼"
+    },
+    "lightbulb.svg": {
+      "zh": "灯泡",
+      "synonymsZh": ["电灯泡"],
+      "excludeQueries": ["闪光灯"],
+      "reason": "Fix Crowdin mistranslation 闪光灯 -> 灯泡"
+    },
+    "bow.svg": {
+      "zh": "蝴蝶结",
+      "synonymsZh": ["领结", "丝带结"],
+      "excludeQueries": ["弓箭手", "弓"],
+      "reason": "Fix clothesAccessories.bow 弓箭手 -> 蝴蝶结"
+    },
+    "bowler_1.svg": {
+      "zh": "投球手",
+      "synonymsZh": ["保龄球手"],
+      "excludeQueries": ["弓箭手"],
+      "partRoleOverride": "person_role",
+      "reason": "Fix sport.bowler 弓箭手 -> 投球手"
+    },
+    "copy.svg": {
+      "zh": "复制",
+      "synonymsZh": ["拷贝"],
+      "excludeQueries": ["收到"],
+      "partRoleOverride": "verb_action",
+      "reason": "Fix computerIcon.copy 收到 -> 复制"
+    },
+    "cream.svg": {
+      "zh": "奶油",
+      "synonymsZh": ["鲜奶油", "乳霜"],
+      "excludeQueries": ["爬行者"],
+      "reason": "Fix foodDairy.cream 爬行者 -> 奶油"
+    },
+    "v_-_upper_case.svg": {
+      "zh": "字母V",
+      "synonymsZh": ["大写V"],
+      "excludeQueries": ["五", "5"],
+      "reason": "Disambiguate letter V from Roman numeral five"
+    },
+    "eighth.svg": {
+      "zh": "第八",
+      "synonymsZh": ["八分之一"],
+      "excludeQueries": ["八", "8"],
+      "reason": "Disambiguate ordinal eighth from cardinal eight"
+    },
+    "cafe.svg": {
+      "zh": "咖啡馆",
+      "synonymsZh": ["咖啡店", "茶座"],
+      "excludeQueries": ["咖啡"],
+      "reason": "Disambiguate venue cafe from drink coffee"
+    },
+    "cafe_2.svg": {
+      "zh": "咖啡馆",
+      "synonymsZh": ["咖啡店", "茶座"],
+      "excludeQueries": ["咖啡"],
+      "reason": "Disambiguate venue cafe from drink coffee"
+    },
+    "escape_,_to.svg": {
+      "zh": "逃跑",
+      "synonymsZh": ["逃离"],
+      "excludeQueries": ["跳过"],
+      "partRoleOverride": "verb_action",
+      "reason": "Fix to escape 跳过 -> 逃跑"
+    },
+    "perfume.svg": {
+      "zh": "香水",
+      "synonymsZh": ["花露水"],
+      "excludeQueries": ["香料", "辣"],
+      "reason": "Disambiguate perfume from spice"
+    },
+    "spicy.svg": {
+      "zh": "辛辣",
+      "synonymsZh": ["辣", "辣味"],
+      "excludeQueries": ["香料", "香水"],
+      "reason": "Disambiguate spicy from generic spice"
+    },
+    "open.svg": {
+      "zh": "打开",
+      "synonymsZh": ["开启", "开着的"],
+      "excludeQueries": ["开门"],
+      "partRoleOverride": "state_modifier",
+      "reason": "Keep generic open distinct from open_door per chineseLexicon"
+    },
+    "cross_fingers_,_to.svg": {
+      "zh": "祈福手势",
+      "synonymsZh": ["保佑", "祝好运"],
+      "excludeQueries": ["祈祷"],
+      "partRoleOverride": "verb_action",
+      "reason": "Distinct from religious prayer"
+    },
+    "battery_1a.svg": {
+      "zh": "电池",
+      "synonymsZh": ["单节电池", "纽扣电池", "干电池"],
+      "excludeQueries": [],
+      "partRoleOverride": "object_entity",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "battery_1.svg": {
+      "zh": "电池组",
+      "synonymsZh": ["电池", "双节电池", "充电电池"],
+      "excludeQueries": [],
+      "partRoleOverride": "object_entity",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "hearing_aid_1.svg": {
+      "zh": "助听器",
+      "synonymsZh": ["耳背式助听器"],
+      "excludeQueries": [],
+      "partRoleOverride": "medical_item",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "cushion_2.svg": {
+      "zh": "坐垫",
+      "synonymsZh": ["软垫", "靠垫", "防褥疮垫"],
+      "excludeQueries": [],
+      "partRoleOverride": "object_entity",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "wheelchair.svg": {
+      "zh": "轮椅",
+      "synonymsZh": ["手推轮椅"],
+      "excludeQueries": [],
+      "partRoleOverride": "medical_item",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "glasses.svg": {
+      "zh": "眼镜",
+      "synonymsZh": ["老花镜", "近视镜"],
+      "excludeQueries": [],
+      "partRoleOverride": "medical_item",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "first_aid_box.svg": {
+      "zh": "急救箱",
+      "synonymsZh": ["药箱", "医疗箱", "收纳箱"],
+      "excludeQueries": [],
+      "partRoleOverride": "container",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "lunch_box.svg": {
+      "zh": "饭盒",
+      "synonymsZh": ["午餐盒", "便当盒", "收纳盒"],
+      "excludeQueries": [],
+      "partRoleOverride": "container",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "cleaning_box.svg": {
+      "zh": "收纳箱",
+      "synonymsZh": ["清洁箱", "整理箱", "盒子"],
+      "excludeQueries": [],
+      "partRoleOverride": "container",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "chocolate_box.svg": {
+      "zh": "礼盒",
+      "synonymsZh": ["巧克力盒", "盒子"],
+      "excludeQueries": [],
+      "partRoleOverride": "container",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "umbrella.svg": {
+      "zh": "雨伞",
+      "synonymsZh": ["伞", "阳伞"],
+      "excludeQueries": [],
+      "partRoleOverride": "object_entity",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "rain.svg": {
+      "zh": "下雨",
+      "synonymsZh": ["雨", "雨水"],
+      "excludeQueries": [],
+      "partRoleOverride": "state_modifier",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "tablets.svg": {
+      "zh": "药片",
+      "synonymsZh": ["药", "药丸", "吃药"],
+      "excludeQueries": [],
+      "partRoleOverride": "medical_item",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "medicine.svg": {
+      "zh": "药水",
+      "synonymsZh": ["药瓶", "药物", "药品"],
+      "excludeQueries": [],
+      "partRoleOverride": "medical_item",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "eat_1_,_to.svg": {
+      "zh": "吃",
+      "synonymsZh": ["进食", "服用"],
+      "excludeQueries": [],
+      "partRoleOverride": "verb_action",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "finger.svg": {
+      "zh": "手指",
+      "synonymsZh": ["指尖"],
+      "excludeQueries": [],
+      "partRoleOverride": "body_part",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "blood_pressure.svg": {
+      "zh": "测血压",
+      "synonymsZh": ["血压", "血压计"],
+      "excludeQueries": [],
+      "partRoleOverride": "medical_item",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "mobile_phone.svg": {
+      "zh": "手机",
+      "synonymsZh": ["智能手机", "电话"],
+      "excludeQueries": [],
+      "partRoleOverride": "object_entity",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "electric_charger.svg": {
+      "zh": "充电器",
+      "synonymsZh": ["充电头", "电源适配器"],
+      "excludeQueries": [],
+      "partRoleOverride": "object_entity",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "ear.svg": {
+      "zh": "耳朵",
+      "synonymsZh": ["耳"],
+      "excludeQueries": [],
+      "partRoleOverride": "body_part",
+      "reason": "2026-11-13 missing word AAC core part"
+    },
+    "xylophone.svg": {
+      "zh": "木琴",
+      "synonymsZh": ["敲琴", "乐器"],
+      "excludeQueries": ["眼镜", "眼镜盒", "眼镜座"],
+      "partRoleOverride": "object_entity",
+      "reason": "Fix Crowdin mistranslation 眼镜座 -> 木琴 surfaced by BGE probe"
+    },
+    "crutches.svg": {
+      "zh": "拐杖",
+      "synonymsZh": ["双拐", "腋杖", "折叠拐杖"],
+      "excludeQueries": [],
+      "partRoleOverride": "medical_item",
+      "reason": "Normalize MT 拐杖子 -> 拐杖"
+    }
+  }
+}

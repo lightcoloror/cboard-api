@@ -1,14 +1,79 @@
 'use strict';
 
 const pictogramSearch = require('../helpers/pictogramSearch');
+const pictogramComposer = require('../helpers/pictogramComposer');
 
 module.exports = {
+  composePictogram,
   getArasaacImage,
   getGlobalSymbolsImage,
   getOpenSymbolsImage,
   searchGlobalSymbols,
   searchPictograms
 };
+
+async function composePictogram(req, res) {
+  const body = req.body || {};
+  const rawLabel = typeof body.label === 'string' ? body.label.trim() : '';
+  const collapsed = rawLabel.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!collapsed || collapsed.length > pictogramComposer.MAX_COMPOSITION_LABEL_LENGTH) {
+    return res.status(400).json({
+      error: { message: 'label must be a non-empty string up to 24 characters' }
+    });
+  }
+
+  const format =
+    body.format !== undefined ? String(body.format).trim().toLowerCase() : 'gif';
+  if (!['svg', 'png', 'gif', 'all'].includes(format)) {
+    return res.status(400).json({
+      error: { message: 'format must be one of svg, png, gif, all' }
+    });
+  }
+
+  const includeLabel = body.includeLabel !== false;
+
+  try {
+    const result = await pictogramComposer.composeMissingPictogram(collapsed, {
+      format,
+      includeLabel
+    });
+
+    let mimeType = 'image/gif';
+    let imageBuffer = result.gifBuffer;
+    let mediaType = 'gif';
+    if (format === 'svg') {
+      mimeType = 'image/svg+xml';
+      imageBuffer = Buffer.from(result.svg, 'utf8');
+      mediaType = 'image';
+    } else if (format === 'png') {
+      mimeType = 'image/png';
+      imageBuffer = result.pngBuffer;
+      mediaType = 'image';
+    }
+
+    return res.status(200).json({
+      label: result.recipe.label,
+      mode: result.recipe.mode,
+      op: result.recipe.op,
+      ruleId: result.recipe.ruleId,
+      needsRegenFallback: Boolean(result.recipe.needsRegenFallback),
+      referencePartId: result.recipe.referencePartId || null,
+      regenHint: result.recipe.regenHint || '',
+      mediaType,
+      mimeType,
+      imageBase64: imageBuffer ? imageBuffer.toString('base64') : '',
+      svg: result.svg,
+      license: result.recipe.license,
+      attribution: result.recipe.attribution,
+      sourceParts: result.recipe.sourceParts,
+      metrics: result.metrics
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: { message: 'Failed to compose pictogram' }
+    });
+  }
+}
 
 async function searchPictograms(req, res) {
   const tokens = req.body && req.body.tokens;
